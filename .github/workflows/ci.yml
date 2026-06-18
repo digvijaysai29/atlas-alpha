@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# Least privilege by default; individual jobs/steps escalate only if/when they need to.
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref (e.g. repeated pushes to the same PR branch).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  fast-fail:
+    name: fast-fail (lint, types, tests)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0 # v7.0.0, pinned to a released tag (9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0)
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0 # v8.2.0, pinned to a released tag (fac544c07dec837d0ccb6301d7b5580bf5edae39)
+        with:
+          enable-cache: true
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
+      - name: Lint (ruff check)
+        run: uv run ruff check src tests scripts
+
+      - name: Format check (ruff format)
+        run: uv run ruff format --check src tests scripts
+
+      - name: Type check (mypy)
+        run: uv run mypy src tests
+
+      - name: Test + coverage (pytest)
+        run: uv run pytest --cov=atlas --cov-report=term-missing --cov-fail-under=80
+
+  security:
+    name: security (semgrep, bandit, pip-audit, gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0 # v7.0.0, pinned to a released tag (9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0)
+        with:
+          fetch-depth: 0 # full history so gitleaks can scan all commits in the push/PR range
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0 # v8.2.0, pinned to a released tag (fac544c07dec837d0ccb6301d7b5580bf5edae39)
+        with:
+          enable-cache: true
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
+      - name: Semgrep (p/python, p/security-audit, p/secrets)
+        # SEMGREP_APP_TOKEN is optional: when unset, semgrep still runs the named community
+        # rulesets locally without reporting to Semgrep AppSec Platform.
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+        run: |
+          uv run --with semgrep semgrep scan \
+            --config p/python \
+            --config p/security-audit \
+            --config p/secrets \
+            --error \
+            src tests scripts evals main.py
+
+      - name: Bandit (static security analysis)
+        run: uv run bandit -r src -q
+
+      - name: pip-audit (dependency CVE scan)
+        run: uv run pip-audit
+
+      - name: Gitleaks (secret scanning)
+        uses: gitleaks/gitleaks-action@v3.0.0 # v3.0.0, pinned to a released tag (e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Optional: only needed for Gitleaks Enterprise features. Community scanning works
+          # without it.
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+  agent-eval:
+    name: agent-eval (LangSmith golden-trace gate)
+    needs: fast-fail
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0 # v7.0.0, pinned to a released tag (9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0)
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0 # v8.2.0, pinned to a released tag (fac544c07dec837d0ccb6301d7b5580bf5edae39)
+        with:
+          enable-cache: true
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
+      - name: Run evaluation gate
+        # Never echo secret values. run_evals.py only checks for presence of LANGSMITH_API_KEY and
+        # exits 0 with a clear log message when it is absent (golden traces are an M2 deliverable).
+        env:
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: uv run python evals/run_evals.py

@@ -1,0 +1,27 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets — never commit real environment values (.env.example is the committed template)
+.env
+.env.*
+!.env.example
+
+# Tooling caches / coverage
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local agent state (SQLite checkpoints)
+*.sqlite
+*.sqlite3
+*.db

@@ -1,0 +1,54 @@
+# atlas
+
+[![CI](https://github.com/digvijaysai29/atlas-alpha/actions/workflows/ci.yml/badge.svg)](https://github.com/digvijaysai29/atlas-alpha/actions/workflows/ci.yml)
+
+An **agent-first enterprise workspace**. One unified agent sits at the center and uses apps as
+tools, powered by a Personal + Organizational Knowledge Graph. Security, human-in-the-loop approval,
+and auditability are first-class.
+
+- 📜 Project constitution: [`CLAUDE.md`](./CLAUDE.md)
+- 🏛️ System design: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
+
+## Status — Milestone 1 (runnable HITL core)
+
+A working LangGraph orchestration layer with a **fail-closed, human-in-the-loop approval gate**:
+
+```
+planner → (approval / interrupt) → executor → responder
+```
+
+- Risk tiers are **declared by tools**, never inferred by the LLM.
+- Irreversible actions (send / write / delete / pay) require explicit human approval.
+- Approvals are bound to a specific `action_id`; the executor enforces the gate in code.
+- Every propose / approve / reject / execute event is recorded in an append-only audit log.
+
+## Quickstart
+
+```bash
+uv sync                                   # Python 3.13
+uv run pytest                             # policy + approval (approve & reject) + tools
+uv run python scripts/demo_approval.py    # watch the HITL gate in action
+```
+
+No `ANTHROPIC_API_KEY` is required for M1 — the planner falls back to a deterministic heuristic so
+everything runs offline. Set the key (and `LANGSMITH_*`) in `.env` to use real Claude + tracing.
+
+## Project layout
+
+```
+src/atlas/
+  config.py              # Pydantic Settings (env-only secrets)
+  llm.py                 # Claude model factory
+  actions.py             # RiskTier, action contracts (frozen), requires_approval policy
+  tools.py               # Tool protocol + registry + mock tools
+  governance.py          # append-only audit log
+  orchestration/
+    state.py             # AgentState (graph channels)
+    nodes.py             # planner · approval · executor · responder
+    graph.py             # build_graph() + checkpointer factory
+scripts/demo_approval.py # end-to-end approve/reject demo
+tests/                   # policy, approval paths, tools
+```
+
+See [`ARCHITECTURE.md`](./ARCHITECTURE.md) §Roadmap for Milestone 2 (Postgres, RBAC, Knowledge
+Graph, evaluation).
