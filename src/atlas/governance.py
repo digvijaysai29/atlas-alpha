@@ -1,15 +1,26 @@
-"""Governance: the append-only audit log.
+"""Governance: the append-only, hash-chained audit log.
 
 The audit log is atlas's system of record for "who proposed what, who approved it, and what
-happened." It is **append-only by construction**: there is no API to mutate or delete an event.
-Events are immutable (``frozen=True``). M1 keeps them in memory; M2 swaps in a durable store behind
-the same :class:`AuditLog` interface, with hash-chaining for tamper-evidence.
+happened." Two invariants:
+
+1. **Append-only by construction** — there is no API to mutate or delete an event.
+2. **Tamper-evident** — every event is hash-chained to its predecessor, so any insertion, edit,
+   reorder, or deletion is detectable via :func:`verify_chain`.
+
+The security-critical hashing lives in ONE place (computed over a deterministic canonical
+serialization of a *pure* :class:`AuditEvent`). Storage backends (in-memory, Postgres) implement
+only ``_append``/``_load`` and inherit the chaining for free — so a future upgrade to a Merkle tree
+or external anchoring can replace :func:`compute_event_hash`/:func:`verify_chain` without touching
+any storage code.
 """
 
 from __future__ import annotations
 
 import abc
+import hashlib
+import json
 import uuid
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
@@ -17,6 +28,9 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from atlas.actions import ActionResult, ApprovalDecision, ProposedAction
+
+# Genesis link for the first event in a chain (64 hex zeros = sha256 width).
+GENESIS_HASH = "0" * 64
 
 
 class AuditEventType(str, Enum):
@@ -32,7 +46,7 @@ def _utc_now() -> datetime:
 
 
 class AuditEvent(BaseModel):
-    """One immutable entry in the audit trail."""
+    """One immutable entry in the audit trail (the pure domain object — carries no hash)."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -45,18 +59,125 @@ class AuditEvent(BaseModel):
     detail: dict[str, Any] = Field(default_factory=dict)
 
 
+# ---------------------------------------------------------------------------
+# Hashing — deterministic canonical serialization is the crux of tamper-evidence.
+# ---------------------------------------------------------------------------
+def canonical_event_bytes(event: AuditEvent) -> bytes:
+    """Return a deterministic, byte-stable representation of an event.
+
+    Determinism is essential: the same logical event must always hash identically, and any change to
+    any field must change the bytes. We dump to JSON-native types (``mode="json"`` → ISO-8601 UTC
+    timestamps and enum *values*), then serialize with sorted keys and compact separators so
+    whitespace/key-order can never vary.
+    """
+    payload = event.model_dump(mode="json")
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode(
+        "utf-8"
+    )
+
+
+def compute_event_hash(prev_hash: str, event: AuditEvent) -> str:
+    """Hash an event into the chain: ``sha256(prev_hash || canonical(event))``."""
+    hasher = hashlib.sha256()
+    hasher.update(prev_hash.encode("utf-8"))
+    hasher.update(canonical_event_bytes(event))
+    return hasher.hexdigest()
+
+
+class ChainedAuditRecord(BaseModel):
+    """An :class:`AuditEvent` plus its position and hash links. Immutable."""
+
+    model_config = ConfigDict(frozen=True)
+
+    seq: int
+    event: AuditEvent
+    prev_hash: str
+    event_hash: str
+
+
+class ChainVerification(BaseModel):
+    """Result of verifying a chain. ``ok`` is True only when every link checks out."""
+
+    model_config = ConfigDict(frozen=True)
+
+    ok: bool
+    broken_at: int | None = None  # seq of the first bad record, if any
+    reason: str | None = None
+
+
+def verify_chain(records: Sequence[ChainedAuditRecord]) -> ChainVerification:
+    """Verify continuity, prev-linkage, and recomputed hashes across the whole chain.
+
+    Detects mutated events, forged hashes, deleted/inserted records, and reordering.
+    """
+    expected_prev = GENESIS_HASH
+    for index, record in enumerate(records):
+        if record.seq != index:
+            return ChainVerification(
+                ok=False, broken_at=record.seq, reason=f"non-contiguous seq at index {index}"
+            )
+        if record.prev_hash != expected_prev:
+            return ChainVerification(
+                ok=False, broken_at=record.seq, reason="prev_hash does not match previous link"
+            )
+        recomputed = compute_event_hash(record.prev_hash, record.event)
+        if recomputed != record.event_hash:
+            return ChainVerification(
+                ok=False, broken_at=record.seq, reason="event_hash does not match event content"
+            )
+        expected_prev = record.event_hash
+    return ChainVerification(ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Audit log interface — chaining lives here; backends implement only storage.
+# ---------------------------------------------------------------------------
 class AuditLog(abc.ABC):
-    """Append-only audit interface. Implementations must never expose mutation/deletion."""
+    """Append-only, hash-chained audit interface.
+
+    Subclasses implement two storage primitives: ``_append_event`` (which must read the tail and
+    persist the new link **atomically**, so concurrent writers can't fork the chain) and ``_load``.
+    They must never expose mutation or deletion.
+    """
+
+    @staticmethod
+    def link(tail: ChainedAuditRecord | None, event: AuditEvent) -> ChainedAuditRecord:
+        """Compute the next chained record from the current tail. Hashing lives here, only here."""
+        seq = 0 if tail is None else tail.seq + 1
+        prev_hash = GENESIS_HASH if tail is None else tail.event_hash
+        return ChainedAuditRecord(
+            seq=seq,
+            event=event,
+            prev_hash=prev_hash,
+            event_hash=compute_event_hash(prev_hash, event),
+        )
 
     @abc.abstractmethod
+    def _append_event(self, event: AuditEvent) -> ChainedAuditRecord:
+        """Atomically read the tail, :meth:`link` the event onto it, persist, and return the record."""
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def _load(self) -> list[ChainedAuditRecord]:
+        """Load all records in insertion order."""
+        raise NotImplementedError
+
     def record(self, event: AuditEvent) -> AuditEvent:
-        """Persist an event and return it."""
-        raise NotImplementedError
+        """Chain and persist an event, then return it."""
+        self._append_event(event)
+        return event
 
-    @abc.abstractmethod
+    def records(self) -> tuple[ChainedAuditRecord, ...]:
+        """Immutable snapshot of the full chain."""
+        return tuple(self._load())
+
     def events(self) -> tuple[AuditEvent, ...]:
-        """Return an immutable snapshot of all events in insertion order."""
-        raise NotImplementedError
+        """Immutable snapshot of just the events, in order."""
+        return tuple(record.event for record in self._load())
+
+    def verify(self) -> ChainVerification:
+        """Verify the persisted chain is intact (tamper-evidence check)."""
+        return verify_chain(self._load())
 
     # --- convenience recorders ---------------------------------------------
     def proposed(self, action: ProposedAction) -> AuditEvent:
@@ -102,14 +223,16 @@ class AuditLog(abc.ABC):
 
 
 class InMemoryAuditLog(AuditLog):
-    """Append-only in-memory audit log (M1)."""
+    """Append-only, hash-chained in-memory audit log (dev/test default)."""
 
     def __init__(self) -> None:
-        self._events: list[AuditEvent] = []
+        self._records: list[ChainedAuditRecord] = []
 
-    def record(self, event: AuditEvent) -> AuditEvent:
-        self._events.append(event)
-        return event
+    def _append_event(self, event: AuditEvent) -> ChainedAuditRecord:
+        tail = self._records[-1] if self._records else None
+        record = self.link(tail, event)
+        self._records.append(record)
+        return record
 
-    def events(self) -> tuple[AuditEvent, ...]:
-        return tuple(self._events)
+    def _load(self) -> list[ChainedAuditRecord]:
+        return list(self._records)
