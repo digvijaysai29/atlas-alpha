@@ -49,6 +49,9 @@ jobs:
   security:
     name: security (semgrep, bandit, pip-audit, gitleaks)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read # gitleaks-action lists PR commits via the API on pull_request events
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.0 # v7.0.0, pinned to a released tag (9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0)
