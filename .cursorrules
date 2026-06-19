@@ -1,0 +1,23 @@
+You are working on **atlas** — an agent-first enterprise workspace.
+
+The binding rules live in the repo's canonical docs — read and follow them; this file is only a
+thin pointer that stays in sync with the current milestone:
+- `CLAUDE.md` — the project constitution: guardrails, security posture, the hard "never" list (law).
+- `HANDOFF.md` — onboarding + the next-milestone implementation plan (the map and the plan).
+- `ARCHITECTURE.md` — system design and roadmap.
+
+Non-negotiable principles (full detail in CLAUDE.md §6):
+- Security-first and fail-closed by default.
+- Every irreversible action goes through an explicit, action_id-bound approval gate enforced in code.
+- RBAC is default-deny; KG reads are RBAC-filtered before content reaches the planner/LLM/sources.
+- Risk tier is tool-declared, never LLM-assigned.
+- Any state model that rides through checkpoints must be in the `atlas_serde()` allowlist.
+- Prefer small, focused files; use Pydantic frozen models for data that should not mutate.
+- Always think about privilege-escalation and IDOR risk when touching Principal or Knowledge Graph code.
+
+Current focus (M2.3): the real `agent-eval` gate in `evals/` — a blocking, hermetic deterministic
+suite of security-behavior golden traces plus an optional, non-blocking LangSmith quality layer. Do
+not start M3 (concrete KG backend, FastAPI interface, auth/SSO, real integrations) yet.
+
+When editing orchestration code, always consider how changes affect checkpoint resume and the
+approval interrupt flow.

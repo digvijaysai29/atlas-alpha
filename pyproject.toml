@@ -40,6 +40,8 @@ packages = ["src/atlas"]
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
+# Put the repo root on sys.path so tests can import the (non-installed) `evals` gate package.
+pythonpath = ["."]
 asyncio_mode = "auto"
 markers = [
     "integration: requires a live Postgres via DATABASE_URL (skipped otherwise)",
@@ -67,4 +69,11 @@ disable_error_code = ["type-arg", "call-overload"]
 # Tests call the compiled graph's heavily-overloaded .invoke(); same LangGraph typing friction.
 [[tool.mypy.overrides]]
 module = "tests.*"
+disable_error_code = ["call-overload"]
+
+# The eval-gate runners drive the compiled graph's heavily-overloaded .invoke()/Command(resume=);
+# same LangGraph typing friction as orchestration.graph and tests. Scoped to just the two modules
+# that touch that API — the rest of evals stays under full strict typing.
+[[tool.mypy.overrides]]
+module = ["evals.deterministic.oracles", "evals.llm_judge.judge"]
 disable_error_code = ["call-overload"]
