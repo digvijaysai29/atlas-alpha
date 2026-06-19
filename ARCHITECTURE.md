@@ -22,7 +22,7 @@ Because the agent takes **real, irreversible actions**, the architecture is buil
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  INTERFACE LAYER            FastAPI · chat + approval endpoints (later)        │
+│  INTERFACE LAYER            FastAPI · /chat /approve /threads (M3.2)           │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  AGENT ORCHESTRATION LAYER  LangGraph state machine  ◄── THE CORE             │
 │      planner → (approval/interrupt) → executor → responder                    │
@@ -42,7 +42,7 @@ Because the agent takes **real, irreversible actions**, the architecture is buil
 
 | Layer | Responsibility | M1 status |
 |---|---|---|
-| **Interface** | HTTP surface; stream responses; expose approve/reject | deferred (M2+) |
+| **Interface** | HTTP surface; chat + approve/reject + thread reads | **built (M3.2)** |
 | **Agent Orchestration** | Stateful graph: plan, gate, execute, respond | **built (M1)** |
 | **Integration** | Declare tools (name, args schema, **risk tier**), run them | built (mock tools) |
 | **Knowledge** | RBAC-scoped read/write of PKG + OKG | interface + stub (M2) |
@@ -195,5 +195,8 @@ executor refuses to run a gated action without a matching, in-scope `ApprovalDec
 - **M3.1 (done):** durable `PostgresKnowledgeGraph` (`persistence/knowledge_store.py`) — Postgres
   full-text search behind the `KnowledgeGraph` interface; RBAC filter pushed into the SQL query;
   selected by `make_knowledge_graph` when `DATABASE_URL` is set; integration tests + demo.
-- **Later:** FastAPI Interface endpoints (M3.2) + resume-time principal binding; auth/SSO (M3.3);
-  pgvector semantic retrieval; real integrations (Gmail/Slack/Jira); Merkle/external audit anchoring.
+- **M3.2 (done):** FastAPI Interface (`src/atlas/interface/`) — `/chat`, `/approve`, `/threads/{id}`
+  over the compiled graph; **resume-time principal/thread binding** (caller must match the thread's
+  checkpointed owner → 403); interim trusted-network header identity shim; consistent error envelope.
+- **Later:** real auth/SSO (M3.3, replaces the header shim); pgvector semantic retrieval; real
+  integrations (Gmail/Slack/Jira); SSE streaming; Merkle/external audit anchoring.
