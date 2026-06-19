@@ -15,6 +15,7 @@ from pydantic import SecretStr
 
 from atlas.actions import ActionResult, ApprovalDecision, ProposedAction
 from atlas.config import Settings
+from atlas.governance.rbac import Principal
 from atlas.orchestration import build_graph
 from atlas.orchestration.graph import _pg_pool
 from atlas.orchestration.state import initial_state
@@ -39,7 +40,8 @@ def test_pending_approval_survives_a_simulated_restart(database_url: str) -> Non
     # First process: run until the approval interrupt, then "crash".
     _pg_pool.cache_clear()
     atlas1 = build_graph(plan_fn=_send_plan, settings=settings)
-    paused = atlas1.graph.invoke(initial_state("email a@b.com"), config=thread)
+    sender = Principal(user_id="alice", roles=("member",))  # permitted to use send_email
+    paused = atlas1.graph.invoke(initial_state("email a@b.com", principal=sender), config=thread)
     assert "__interrupt__" in paused
     del atlas1
     _pg_pool.cache_clear()  # drop the cached pool so the next graph opens fresh connections

@@ -9,6 +9,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
 from atlas.actions import ProposedAction
+from atlas.governance.rbac import Principal
 from atlas.orchestration import build_graph
 from atlas.orchestration.graph import Atlas
 from atlas.orchestration.nodes import PlanFn
@@ -17,6 +18,9 @@ from atlas.orchestration.state import initial_state
 from atlas.tools import ToolRegistry
 
 THREAD = {"configurable": {"thread_id": "test"}}
+# A principal permitted to use send_email ("tool:send"), so these tests exercise the APPROVAL gate
+# rather than the RBAC gate (RBAC denial is covered in test_rbac.py).
+SENDER = Principal(user_id="alice", roles=("member",))
 
 
 def _send_plan(_request: str, registry: ToolRegistry) -> list[ProposedAction]:
@@ -33,7 +37,7 @@ def _fresh(plan_fn: PlanFn) -> Atlas:
 
 def test_gated_action_pauses_for_approval() -> None:
     atlas = _fresh(_send_plan)
-    result = atlas.graph.invoke(initial_state("email a@b.com"), config=THREAD)
+    result = atlas.graph.invoke(initial_state("email a@b.com", principal=SENDER), config=THREAD)
     assert "__interrupt__" in result  # the graph paused at the approval gate
     # Nothing has executed yet.
     assert not result.get("action_results")
@@ -41,7 +45,7 @@ def test_gated_action_pauses_for_approval() -> None:
 
 def test_approve_executes_the_action() -> None:
     atlas = _fresh(_send_plan)
-    atlas.graph.invoke(initial_state("email a@b.com"), config=THREAD)
+    atlas.graph.invoke(initial_state("email a@b.com", principal=SENDER), config=THREAD)
     final = atlas.graph.invoke(Command(resume=True), config=THREAD)
 
     results = final["action_results"]
@@ -57,7 +61,7 @@ def test_approve_executes_the_action() -> None:
 
 def test_reject_skips_the_action() -> None:
     atlas = _fresh(_send_plan)
-    atlas.graph.invoke(initial_state("email a@b.com"), config=THREAD)
+    atlas.graph.invoke(initial_state("email a@b.com", principal=SENDER), config=THREAD)
     final = atlas.graph.invoke(Command(resume=False), config=THREAD)
 
     assert final["action_results"] == []  # the send never happened
@@ -80,7 +84,7 @@ def test_read_only_action_runs_without_any_interrupt() -> None:
 def test_approval_is_bound_to_action_id_unknown_ids_ignored() -> None:
     # Resuming with a decision for a different action id must NOT authorize the real action.
     atlas = _fresh(_send_plan)
-    atlas.graph.invoke(initial_state("email a@b.com"), config=THREAD)
+    atlas.graph.invoke(initial_state("email a@b.com", principal=SENDER), config=THREAD)
     final = atlas.graph.invoke(
         Command(resume=[{"action_id": "act_not_a_real_id", "approved": True}]),
         config=THREAD,

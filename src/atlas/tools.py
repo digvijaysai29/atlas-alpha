@@ -20,13 +20,17 @@ class BaseTool(abc.ABC):
     """Contract every tool must satisfy.
 
     Subclasses set ``name``, ``description``, ``risk_tier`` and ``ArgsSchema`` (a Pydantic model used
-    to validate arguments at the boundary), and implement :meth:`run`.
+    to validate arguments at the boundary), and implement :meth:`run`. A tool may optionally declare
+    ``required_permission`` — an RBAC capability string the calling principal must hold (default
+    ``None`` = no special permission required). Raw string for now; a richer ``ToolPermission`` model
+    is an M3/M4 placeholder.
     """
 
     name: str
     description: str
     risk_tier: RiskTier
     ArgsSchema: type[BaseModel]
+    required_permission: str | None = None
 
     @abc.abstractmethod
     def run(self, args: BaseModel) -> Any:
@@ -130,6 +134,7 @@ class SendEmailTool(BaseTool):
     name = "send_email"
     description = "Send an email to a recipient. Irreversible external action."
     risk_tier = RiskTier.SEND
+    required_permission = "tool:send"  # RBAC: only principals granted "tool:send" may use this
     ArgsSchema = _SendEmailArgs
 
     def run(self, args: BaseModel) -> Any:
