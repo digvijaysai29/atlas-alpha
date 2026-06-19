@@ -12,11 +12,12 @@ from __future__ import annotations
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from atlas.actions import ActionResult, ApprovalDecision, ProposedAction, RiskTier
+from atlas.governance.confidence import Source
 from atlas.governance.rbac import Principal
 from atlas.knowledge.interfaces import Entity
 
 # The complete set of custom types that may legitimately appear in checkpointed state.
-_ATLAS_TYPES = [RiskTier, ProposedAction, ApprovalDecision, ActionResult, Principal, Entity]
+_ATLAS_TYPES = [RiskTier, ProposedAction, ApprovalDecision, ActionResult, Principal, Entity, Source]
 
 
 def atlas_serde() -> JsonPlusSerializer:

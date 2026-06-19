@@ -49,7 +49,8 @@ def _print_outcome(state: dict[str, Any]) -> None:
         print(f"  {status}: {result.tool} -> {result.output if result.ok else ''}")
     if not state.get("action_results"):
         print("  (no actions executed)")
-    print(f"  confidence={state.get('confidence')}  sources={state.get('sources')}")
+    sources = [f"{s.kind}:{s.ref}" for s in state.get("sources") or []]
+    print(f"  confidence={state.get('confidence')}  sources={sources}")
 
 
 def _print_audit(audit: AuditLog) -> None:

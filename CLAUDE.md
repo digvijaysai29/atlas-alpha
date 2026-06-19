@@ -24,9 +24,9 @@ sub-phase is its own branch → PR into `main` → CI must be green.
 | **M1** | Runnable HITL core: `planner → approval(interrupt) → executor → responder`; fail-closed risk-tiered approval; append-only audit; mock tools; CI/CD | ✅ **merged** |
 | **M2.1** | Durable **Postgres checkpointer** + **hash-chained, tamper-evident audit store**; docker-compose Postgres + CI `integration` job | ✅ **merged (PR #1)** |
 | **M2.2a** | **RBAC + `Principal` threading**: default-deny `can()`, tool `required_permission`, deny-early + re-check-late; `governance/` package split | ✅ **merged (PR #2)** |
-| **M2.2b** | **RBAC-scoped Knowledge Graph** wired into the planner (`kg_context`); responder cites `kg:*` sources | 🔄 **PR #3 open (CI green)** |
-| **M2.2c** | **CURRENT FOCUS** → `governance/confidence.py` refactor + calibrated confidence (factoring KG grounding) + matured source attribution | ⏳ next |
-| **M2.3** | LangSmith golden-trace **eval gate** (turn the dormant `agent-eval` CI job into a real blocking gate). `LANGSMITH_API_KEY` secret already configured | planned |
+| **M2.2b** | **RBAC-scoped Knowledge Graph** wired into the planner (`kg_context`); responder cites KG sources | ✅ **merged (PR #3)** |
+| **M2.2c** | Structured `Source` attribution + grounding-aware confidence in `governance/confidence.py` | 🔄 **this PR** |
+| **M2.3** | **NEXT FOCUS** → LangSmith golden-trace **eval gate** (turn the dormant `agent-eval` CI job into a real blocking gate). `LANGSMITH_API_KEY` secret already configured | planned |
 | **M3+** | Concrete KG backend (Neo4j/pgvector), FastAPI Interface layer, real integrations, auth/SSO | future |
 
 ## 3. Tech Stack
