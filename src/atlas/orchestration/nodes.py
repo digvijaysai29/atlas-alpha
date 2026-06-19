@@ -14,7 +14,7 @@ Security invariants enforced here:
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from typing import Any
 
 from langchain_core.messages import AIMessage, AnyMessage
@@ -24,11 +24,12 @@ from atlas.actions import ApprovalDecision, ProposedAction, RiskTier, requires_a
 from atlas.config import Settings, get_settings
 from atlas.governance import AuditLog
 from atlas.governance.rbac import can, get_current_principal
+from atlas.knowledge.interfaces import Entity, KnowledgeGraph
 from atlas.orchestration.state import AgentState
 from atlas.tools import ToolRegistry
 
-# A planning strategy turns a user request + registry into proposed actions.
-PlanFn = Callable[[str, ToolRegistry], list[ProposedAction]]
+# A planning strategy turns a user request + registry + RBAC-scoped knowledge into proposed actions.
+PlanFn = Callable[[str, ToolRegistry, Sequence[Entity]], list[ProposedAction]]
 
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 _SEND_KEYWORDS = ("email", "send", "notify", "reply", "message")
@@ -51,8 +52,26 @@ def _last_user_text(messages: Iterable[AnyMessage]) -> str:
     return text
 
 
-def heuristic_plan(request: str, registry: ToolRegistry) -> list[ProposedAction]:
-    """Deterministic, offline planner. Keeps the demo and tests hermetic (no API key needed)."""
+def _format_kg_context(entities: Sequence[Entity]) -> str:
+    """Render retrieved knowledge as one small, bounded block for the LLM system prompt.
+
+    Deliberately dumb (name + a short content snippet per entity) — a grounding hook, not RAG.
+    """
+    if not entities:
+        return ""
+    lines = [f"- {entity.name}: {entity.content[:200]}" for entity in entities]
+    return "Relevant context you may use (already access-filtered for this user):\n" + "\n".join(
+        lines
+    )
+
+
+def heuristic_plan(
+    request: str, registry: ToolRegistry, context: Sequence[Entity]
+) -> list[ProposedAction]:
+    """Deterministic, offline planner. KG-free by design: ``context`` is intentionally ignored so
+    the demo and tests stay hermetic (no API key needed).
+    """
+    del context  # KG-free mode
     text = request.lower()
     actions: list[ProposedAction] = []
     if any(keyword in text for keyword in _SEND_KEYWORDS) and "send_email" in registry.names():
@@ -79,8 +98,13 @@ def heuristic_plan(request: str, registry: ToolRegistry) -> list[ProposedAction]
     return actions
 
 
-def llm_plan(request: str, registry: ToolRegistry, settings: Settings) -> list[ProposedAction]:
-    """LLM-driven planner using Claude tool-calling. Risk tiers still come from the registry."""
+def llm_plan(
+    request: str, registry: ToolRegistry, settings: Settings, context: Sequence[Entity]
+) -> list[ProposedAction]:
+    """LLM-driven planner using Claude tool-calling. Risk tiers still come from the registry.
+
+    Grounds the model with the RBAC-scoped ``context`` (only entities the principal may read).
+    """
     from atlas.llm import build_model  # local import: only needed when a key is present
 
     tool_specs: list[dict[str, Any]] = [
@@ -91,8 +115,12 @@ def llm_plan(request: str, registry: ToolRegistry, settings: Settings) -> list[P
         }
         for name in registry.names()
     ]
+    context_block = _format_kg_context(context)
+    system = (
+        f"{_PLANNER_SYSTEM_PROMPT}\n\n{context_block}" if context_block else _PLANNER_SYSTEM_PROMPT
+    )
     model = build_model(settings).bind_tools(tool_specs)
-    ai = model.invoke([("system", _PLANNER_SYSTEM_PROMPT), ("human", request)])
+    ai = model.invoke([("system", system), ("human", request)])
 
     actions: list[ProposedAction] = []
     for call in getattr(ai, "tool_calls", []) or []:
@@ -105,7 +133,7 @@ def default_plan_fn(settings: Settings | None = None) -> PlanFn:
     """Pick the LLM planner when a key is configured, else the offline heuristic."""
     settings = settings or get_settings()
     if settings.has_anthropic_key:
-        return lambda request, registry: llm_plan(request, registry, settings)
+        return lambda request, registry, context: llm_plan(request, registry, settings, context)
     return heuristic_plan
 
 
@@ -113,12 +141,14 @@ def default_plan_fn(settings: Settings | None = None) -> PlanFn:
 # Nodes
 # ---------------------------------------------------------------------------
 def make_planner_node(
-    plan_fn: PlanFn, registry: ToolRegistry, audit: AuditLog
+    plan_fn: PlanFn, registry: ToolRegistry, audit: AuditLog, knowledge: KnowledgeGraph
 ) -> Callable[[AgentState], dict[str, Any]]:
     def planner_node(state: AgentState) -> dict[str, Any]:
         principal = get_current_principal(state)
         request = _last_user_text(state.get("messages") or [])
-        proposed = plan_fn(request, registry)
+        # RBAC-scoped retrieval: only entities this principal may read reach the planner/LLM.
+        kg_context = knowledge.query(principal, request, limit=5)
+        proposed = plan_fn(request, registry, kg_context)
         # RBAC, deny-early: an action the principal isn't permitted to run is dropped here, so it is
         # never surfaced for human approval. (The executor re-checks as defense-in-depth.)
         authorized: list[ProposedAction] = []
@@ -129,7 +159,7 @@ def make_planner_node(
                 audit.denied(action, principal.user_id, reason=f"missing permission: {required}")
                 continue
             authorized.append(action)
-        return {"proposed_actions": authorized}
+        return {"proposed_actions": authorized, "kg_context": list(kg_context)}
 
     return planner_node
 
@@ -197,10 +227,13 @@ def make_responder_node() -> Callable[[AgentState], dict[str, Any]]:
         rejected = set(state.get("rejected_action_ids") or [])
         confidence = _confidence(results)
         summary = _summarize(proposed, results, rejected)
+        # Cite provenance: tool-output sources (gathered by the executor) + the KG entities used.
+        sources = list(state.get("sources") or [])
+        sources.extend(f"kg:{entity.id}" for entity in state.get("kg_context") or [])
         return {
             "messages": [AIMessage(content=summary)],
             "confidence": confidence,
-            "sources": state.get("sources") or [],
+            "sources": sources,
         }
 
     return responder_node

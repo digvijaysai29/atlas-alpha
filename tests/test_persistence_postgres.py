@@ -29,7 +29,7 @@ def _settings(url: str) -> Settings:
     return Settings(DATABASE_URL=SecretStr(url), ANTHROPIC_API_KEY=None)
 
 
-def _send_plan(_request: str, registry: ToolRegistry) -> list[ProposedAction]:
+def _send_plan(_request: str, registry: ToolRegistry, _context: object) -> list[ProposedAction]:
     return [registry.propose("send_email", {"to": "a@b.com", "subject": "hi", "body": "x"})]
 
 

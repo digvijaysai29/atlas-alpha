@@ -11,7 +11,7 @@ from atlas.tools import default_registry
 
 def test_send_intent_proposes_gated_email_with_extracted_recipient() -> None:
     registry = default_registry()
-    actions = heuristic_plan("Please email alice@example.com the update", registry)
+    actions = heuristic_plan("Please email alice@example.com the update", registry, [])
     sends = [a for a in actions if a.tool == "send_email"]
     assert len(sends) == 1
     assert sends[0].risk_tier is RiskTier.SEND
@@ -20,13 +20,13 @@ def test_send_intent_proposes_gated_email_with_extracted_recipient() -> None:
 
 def test_search_intent_proposes_read_action() -> None:
     registry = default_registry()
-    actions = heuristic_plan("find the revenue figures", registry)
+    actions = heuristic_plan("find the revenue figures", registry, [])
     assert any(a.tool == "search" and a.risk_tier is RiskTier.READ for a in actions)
 
 
 def test_no_recognized_intent_proposes_nothing() -> None:
     registry = default_registry()
-    assert heuristic_plan("hello there", registry) == []
+    assert heuristic_plan("hello there", registry, []) == []
 
 
 def test_route_sends_gated_action_to_approval() -> None:

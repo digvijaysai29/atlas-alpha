@@ -18,6 +18,8 @@ from langgraph.graph import END, START, StateGraph
 
 from atlas.config import Settings, get_settings
 from atlas.governance import AuditLog, InMemoryAuditLog
+from atlas.knowledge.interfaces import KnowledgeGraph
+from atlas.knowledge.memory_store import InMemoryKnowledgeGraph
 from atlas.orchestration.nodes import (
     PlanFn,
     default_plan_fn,
@@ -93,6 +95,13 @@ def make_audit_log(settings: Settings | None = None) -> AuditLog:
     return InMemoryAuditLog()
 
 
+def make_knowledge_graph(settings: Settings | None = None) -> KnowledgeGraph:
+    """Return the knowledge graph. M2.2b: an empty in-memory stub (demos/tests seed it); a concrete
+    Neo4j/pgvector backend slots behind this interface in M3.
+    """
+    return InMemoryKnowledgeGraph()
+
+
 @dataclass(frozen=True)
 class Atlas:
     """A compiled agent plus the collaborators a caller may want to inspect."""
@@ -100,6 +109,7 @@ class Atlas:
     graph: "CompiledStateGraph"
     audit: AuditLog
     registry: ToolRegistry
+    knowledge: KnowledgeGraph
 
 
 def build_graph(
@@ -107,22 +117,24 @@ def build_graph(
     registry: ToolRegistry | None = None,
     audit: AuditLog | None = None,
     plan_fn: PlanFn | None = None,
+    knowledge: KnowledgeGraph | None = None,
     checkpointer: "BaseCheckpointSaver | None" = None,
     settings: Settings | None = None,
 ) -> Atlas:
     """Build and compile the orchestration graph.
 
     All collaborators default to sensible production values but can be overridden — tests inject a
-    scripted ``plan_fn`` and an ``InMemorySaver`` for determinism.
+    scripted ``plan_fn``, a seeded ``knowledge`` graph, and an ``InMemorySaver`` for determinism.
     """
     settings = settings or get_settings()
     registry = registry or default_registry()
     audit = audit or make_audit_log(settings)
     plan_fn = plan_fn or default_plan_fn(settings)
+    knowledge = knowledge or make_knowledge_graph(settings)
     checkpointer = checkpointer or make_checkpointer(settings)
 
     builder: StateGraph = StateGraph(AgentState)
-    builder.add_node("planner", make_planner_node(plan_fn, registry, audit))
+    builder.add_node("planner", make_planner_node(plan_fn, registry, audit, knowledge))
     builder.add_node("approval", make_approval_node(audit))
     builder.add_node("executor", make_executor_node(registry, audit))
     builder.add_node("responder", make_responder_node())
@@ -138,4 +150,4 @@ def build_graph(
     builder.add_edge("responder", END)
 
     graph = builder.compile(checkpointer=checkpointer)
-    return Atlas(graph=graph, audit=audit, registry=registry)
+    return Atlas(graph=graph, audit=audit, registry=registry, knowledge=knowledge)
