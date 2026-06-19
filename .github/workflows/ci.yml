@@ -35,10 +35,10 @@ jobs:
         run: uv sync --all-extras --dev
 
       - name: Lint (ruff check)
-        run: uv run ruff check src tests scripts
+        run: uv run ruff check src tests scripts evals
 
       - name: Format check (ruff format)
-        run: uv run ruff format --check src tests scripts
+        run: uv run ruff format --check src tests scripts evals
 
       - name: Type check (mypy)
         run: uv run mypy src tests
@@ -130,9 +130,11 @@ jobs:
         run: uv run pytest -m integration
 
   agent-eval:
-    name: agent-eval (LangSmith golden-trace gate)
+    name: agent-eval (security-behavior gate)
     needs: fast-fail
-    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    # The deterministic gate is hermetic (no key, no network), so it runs broadly — on every push
+    # and PR, including forks — not just PRs into main. The optional LangSmith quality evals inside
+    # run_gate.py self-skip when the key is absent, so this is safe to run everywhere.
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -148,9 +150,10 @@ jobs:
         run: uv sync --all-extras --dev
 
       - name: Run evaluation gate
-        # Never echo secret values. run_evals.py only checks for presence of LANGSMITH_API_KEY and
-        # exits 0 with a clear log message when it is absent (golden traces are an M2 deliverable).
+        # The blocking deterministic suite needs no secrets. The keys are supplied only so the
+        # optional, NON-BLOCKING LangSmith quality evals can run when available; run_gate.py never
+        # echoes secret values and never lets the telemetry layer change the exit code.
         env:
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: uv run python evals/run_evals.py
+        run: uv run python evals/run_gate.py
