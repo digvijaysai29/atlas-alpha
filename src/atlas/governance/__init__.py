@@ -17,6 +17,13 @@ from atlas.governance.audit import (
     compute_event_hash,
     verify_chain,
 )
+from atlas.governance.confidence import (
+    GROUNDED_ANSWER,
+    UNGROUNDED_ANSWER,
+    Source,
+    collect_sources,
+    score_confidence,
+)
 from atlas.governance.rbac import (
     ROLE_PERMISSIONS,
     Principal,
@@ -41,4 +48,10 @@ __all__ = [
     "Principal",
     "can",
     "get_current_principal",
+    # confidence + sources
+    "GROUNDED_ANSWER",
+    "UNGROUNDED_ANSWER",
+    "Source",
+    "collect_sources",
+    "score_confidence",
 ]

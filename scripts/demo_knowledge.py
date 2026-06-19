@@ -42,7 +42,7 @@ def _run(label: str, principal: Principal, thread_id: str) -> None:
     print("  retrieved knowledge (RBAC-scoped):")
     for entity in result["kg_context"]:
         print(f"     • [{entity.scope:8}] {entity.id}  {entity.name}")
-    print(f"  responder sources: {result['sources']}")
+    print(f"  responder sources: {[f'{s.kind}:{s.ref}' for s in result['sources']]}")
 
 
 def main() -> None:

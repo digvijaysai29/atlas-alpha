@@ -67,7 +67,7 @@ def test_planner_attaches_full_context_for_member() -> None:
         initial_state("find the revenue and onboarding", principal=MEMBER), config=config
     )
     assert {e.id for e in result["kg_context"]} == {"doc-1", "note-1"}
-    assert "kg:doc-1" in result["sources"]
+    assert any(s.kind == "knowledge" and s.ref == "doc-1" for s in result["sources"])
 
 
 def test_planner_context_is_rbac_scoped_for_guest() -> None:
@@ -77,7 +77,7 @@ def test_planner_context_is_rbac_scoped_for_guest() -> None:
         initial_state("find the revenue and onboarding", principal=GUEST), config=config
     )
     assert {e.id for e in result["kg_context"]} == {"note-1"}  # org doc never retrieved
-    assert "kg:doc-1" not in result["sources"]
+    assert not any(s.kind == "knowledge" and s.ref == "doc-1" for s in result["sources"])
 
 
 # --- checkpoint resume preserves Entities ------------------------------------

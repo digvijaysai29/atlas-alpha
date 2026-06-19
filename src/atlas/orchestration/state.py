@@ -13,6 +13,7 @@ from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.graph.message import add_messages
 
 from atlas.actions import ActionResult, ProposedAction
+from atlas.governance.confidence import Source
 from atlas.governance.rbac import Principal
 from atlas.knowledge.interfaces import Entity
 
@@ -38,7 +39,7 @@ class AgentState(TypedDict, total=False):
 
     # Execution outputs and provenance for the final answer.
     action_results: list[ActionResult]
-    sources: list[str]
+    sources: list[Source]  # structured provenance (tool + knowledge), set by the responder
     confidence: float | None
 
 

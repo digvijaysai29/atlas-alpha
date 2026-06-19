@@ -20,9 +20,10 @@ from typing import Any
 from langchain_core.messages import AIMessage, AnyMessage
 from langgraph.types import interrupt
 
-from atlas.actions import ApprovalDecision, ProposedAction, RiskTier, requires_approval
+from atlas.actions import ApprovalDecision, ProposedAction, requires_approval
 from atlas.config import Settings, get_settings
 from atlas.governance import AuditLog
+from atlas.governance.confidence import collect_sources, score_confidence
 from atlas.governance.rbac import can, get_current_principal
 from atlas.knowledge.interfaces import Entity, KnowledgeGraph
 from atlas.orchestration.state import AgentState
@@ -196,7 +197,6 @@ def make_executor_node(
         principal = get_current_principal(state)
         approved = set(state.get("approved_action_ids") or [])
         results = []
-        sources = list(state.get("sources") or [])
         for action in state.get("proposed_actions") or []:
             # RBAC re-check (defense-in-depth): never run a tool the principal isn't permitted to use,
             # even if it somehow reached the executor.
@@ -211,11 +211,7 @@ def make_executor_node(
             result = registry.execute(action)
             audit.executed(result)
             results.append(result)
-            if action.risk_tier is RiskTier.READ and result.ok and isinstance(result.output, dict):
-                source = result.output.get("source")
-                if source:
-                    sources.append(str(source))
-        return {"action_results": results, "sources": sources}
+        return {"action_results": results}
 
     return executor_node
 
@@ -225,11 +221,12 @@ def make_responder_node() -> Callable[[AgentState], dict[str, Any]]:
         proposed = state.get("proposed_actions") or []
         results = state.get("action_results") or []
         rejected = set(state.get("rejected_action_ids") or [])
-        confidence = _confidence(results)
+        kg_context = state.get("kg_context") or []
+        # Confidence factors execution success + whether the answer was grounded in knowledge.
+        confidence = score_confidence(results, kg_context)
         summary = _summarize(proposed, results, rejected)
-        # Cite provenance: tool-output sources (gathered by the executor) + the KG entities used.
-        sources = list(state.get("sources") or [])
-        sources.extend(f"kg:{entity.id}" for entity in state.get("kg_context") or [])
+        # Structured provenance: tool outputs (from the results) + the RBAC-scoped KG entities used.
+        sources = collect_sources(results, kg_context)
         return {
             "messages": [AIMessage(content=summary)],
             "confidence": confidence,
@@ -289,14 +286,6 @@ def _parse_decisions(raw: Any, valid_ids: set[str]) -> list[ApprovalDecision]:
             if aid in valid_ids:
                 decisions.append(ApprovalDecision(action_id=str(aid), approved=bool(approved)))
     return decisions
-
-
-def _confidence(results: list[Any]) -> float:
-    """Placeholder confidence: fraction of actions that executed successfully (matured in M2)."""
-    if not results:
-        return 0.9  # answered without needing actions
-    ok = sum(1 for result in results if result.ok)
-    return round(ok / len(results), 2)
 
 
 def _summarize(

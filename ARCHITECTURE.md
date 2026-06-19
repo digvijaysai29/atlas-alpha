@@ -186,8 +186,8 @@ executor refuses to run a gated action without a matching, in-scope `ApprovalDec
   `required_permission`, deny-early (planner) + re-check-late (executor), `governance/` package split.
 - **M2.2b (done):** `KnowledgeGraph` interface + in-memory stub, **RBAC-scoped retrieval** wired into
   the planner (`kg_context`); responder cites `kg:*` sources; `Entity` in the serde allowlist.
-- **M2.2c (next):** `governance/confidence.py` refactor + calibrated confidence (factoring KG
-  grounding) + matured source attribution.
+- **M2.2c (done):** `governance/confidence.py` — structured `Source` attribution +
+  grounding-aware confidence (success ratio; grounded vs ungrounded when no actions ran).
 - **M2.3:** LangSmith golden-trace evaluation gate (turn the dormant `agent-eval` CI job into a real
   blocking gate).
 - **Later:** FastAPI Interface endpoints; concrete KG backend (Neo4j/pgvector); real integrations
