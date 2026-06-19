@@ -182,8 +182,12 @@ executor refuses to run a gated action without a matching, in-scope `ApprovalDec
   audit, SQLite/memory checkpointer, LangSmith via env, demo + tests.
 - **M2.1 (done):** Postgres checkpointer + durable, **hash-chained** append-only audit store;
   docker-compose Postgres + a CI integration job; restart-resume + tamper-evidence proven by tests.
-- **M2.2:** RBAC (`Principal`/default-deny) + `KnowledgeGraph` interface (in-memory stub) wired into
-  the planner; `governance/` package split; confidence/source maturation.
+- **M2.2a (done):** RBAC + `Principal` threading — default-deny `can()`, tool-declared
+  `required_permission`, deny-early (planner) + re-check-late (executor), `governance/` package split.
+- **M2.2b (done):** `KnowledgeGraph` interface + in-memory stub, **RBAC-scoped retrieval** wired into
+  the planner (`kg_context`); responder cites `kg:*` sources; `Entity` in the serde allowlist.
+- **M2.2c (next):** `governance/confidence.py` refactor + calibrated confidence (factoring KG
+  grounding) + matured source attribution.
 - **M2.3:** LangSmith golden-trace evaluation gate (turn the dormant `agent-eval` CI job into a real
   blocking gate).
 - **Later:** FastAPI Interface endpoints; concrete KG backend (Neo4j/pgvector); real integrations

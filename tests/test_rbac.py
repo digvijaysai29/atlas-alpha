@@ -23,7 +23,7 @@ MEMBER = Principal(user_id="alice", roles=("member",))  # has "tool:send"
 GUEST = Principal(user_id="bob", roles=("guest",))  # no "tool:send"
 
 
-def _send_plan(_request: str, registry: ToolRegistry) -> list[ProposedAction]:
+def _send_plan(_request: str, registry: ToolRegistry, _context: object) -> list[ProposedAction]:
     return [registry.propose("send_email", {"to": "a@b.com", "subject": "hi", "body": "x"})]
 
 

@@ -14,6 +14,7 @@ from langgraph.graph.message import add_messages
 
 from atlas.actions import ActionResult, ProposedAction
 from atlas.governance.rbac import Principal
+from atlas.knowledge.interfaces import Entity
 
 
 class AgentState(TypedDict, total=False):
@@ -24,6 +25,9 @@ class AgentState(TypedDict, total=False):
 
     # The identity this run executes as. RBAC checks are scoped to this principal.
     principal: Principal | None
+
+    # RBAC-scoped knowledge retrieved for this turn (grounds the planner; cited by the responder).
+    kg_context: list[Entity]
 
     # Actions the planner proposed this turn (each carries its tool-declared risk tier).
     proposed_actions: list[ProposedAction]
@@ -46,6 +50,7 @@ def initial_state(user_message: str, principal: Principal | None = None) -> Agen
     return {
         "messages": [HumanMessage(content=user_message)],
         "principal": principal or Principal.anonymous(),
+        "kg_context": [],
         "proposed_actions": [],
         "approved_action_ids": [],
         "rejected_action_ids": [],

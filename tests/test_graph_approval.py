@@ -23,11 +23,11 @@ THREAD = {"configurable": {"thread_id": "test"}}
 SENDER = Principal(user_id="alice", roles=("member",))
 
 
-def _send_plan(_request: str, registry: ToolRegistry) -> list[ProposedAction]:
+def _send_plan(_request: str, registry: ToolRegistry, _context: object) -> list[ProposedAction]:
     return [registry.propose("send_email", {"to": "a@b.com", "subject": "hi", "body": "x"})]
 
 
-def _search_plan(_request: str, registry: ToolRegistry) -> list[ProposedAction]:
+def _search_plan(_request: str, registry: ToolRegistry, _context: object) -> list[ProposedAction]:
     return [registry.propose("search", {"query": "quarterly numbers"})]
 
 
