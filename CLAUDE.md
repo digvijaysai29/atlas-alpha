@@ -2,7 +2,7 @@
 
 > The living context file for **atlas**. Read by every contributor — human, Claude, and Cursor.
 > When in doubt, choose the option that is **safer, clearer, and more auditable** — never the cleverer one.
-> Companion docs: [`ARCHITECTURE.md`](./ARCHITECTURE.md) (system design + roadmap), [`README.md`](./README.md) (quickstart).
+> Companion docs: [`ARCHITECTURE.md`](./ARCHITECTURE.md) (system design + roadmap), [`README.md`](./README.md) (quickstart), [`HANDOFF.md`](./HANDOFF.md) (onboarding + next-milestone plan).
 
 ---
 

@@ -8,6 +8,7 @@ and auditability are first-class.
 
 - 📜 Project constitution: [`CLAUDE.md`](./CLAUDE.md)
 - 🏛️ System design: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
+- 🧭 Onboarding + next-milestone plan: [`HANDOFF.md`](./HANDOFF.md)
 
 ## Status — Milestone 1 (runnable HITL core)
 
