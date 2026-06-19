@@ -29,6 +29,7 @@ from atlas.governance.rbac import (
     Principal,
     can,
     get_current_principal,
+    get_effective_permissions,
 )
 
 __all__ = [
@@ -48,6 +49,7 @@ __all__ = [
     "Principal",
     "can",
     "get_current_principal",
+    "get_effective_permissions",
     # confidence + sources
     "GROUNDED_ANSWER",
     "UNGROUNDED_ANSWER",

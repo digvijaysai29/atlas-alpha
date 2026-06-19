@@ -10,7 +10,12 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
 from atlas.actions import ProposedAction
-from atlas.governance.rbac import Principal, can, get_current_principal
+from atlas.governance.rbac import (
+    Principal,
+    can,
+    get_current_principal,
+    get_effective_permissions,
+)
 from atlas.orchestration import build_graph
 from atlas.orchestration.graph import Atlas
 from atlas.orchestration.nodes import PlanFn
@@ -57,6 +62,28 @@ def test_unknown_role_grants_nothing() -> None:
 
 def test_get_current_principal_defaults_to_anonymous() -> None:
     assert get_current_principal({}).user_id == "anonymous"
+
+
+# --- effective-permission expansion (the source of truth reused by the KG store) -------------
+def test_effective_permissions_none_principal_is_empty() -> None:
+    assert get_effective_permissions(None) == frozenset()
+    assert get_effective_permissions(Principal.anonymous()) == frozenset()
+
+
+def test_effective_permissions_expands_role_grants() -> None:
+    assert get_effective_permissions(MEMBER) == frozenset(
+        {"tool:send", "kg:read:org", "kg:read:personal"}
+    )
+    assert get_effective_permissions(GUEST) == frozenset({"kg:read:personal"})
+
+
+def test_effective_permissions_admin_collapses_to_wildcard() -> None:
+    admin = Principal(user_id="root", roles=("admin",))
+    assert get_effective_permissions(admin) == frozenset({"*"})
+
+
+def test_effective_permissions_unknown_role_contributes_nothing() -> None:
+    assert get_effective_permissions(Principal(user_id="x", roles=("wizard",))) == frozenset()
 
 
 # --- end-to-end enforcement -------------------------------------------------

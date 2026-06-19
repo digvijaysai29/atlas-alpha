@@ -118,8 +118,10 @@ ActionResult     = { action_id, tool, ok, output, error }
 - **Short-term (working memory):** the checkpointed thread state above, keyed by `thread_id`.
   Durable across process restarts — this is what makes a paused approval survive.
 - **Long-term (compounding memory):** PKG + OKG behind a `KnowledgeGraph` repository interface.
-  Reads are RBAC-scoped by the caller's principal. Concrete backend (Neo4j / pgvector) is chosen in
-  M2; an in-memory stub stands in for now.
+  Reads are RBAC-scoped by the caller's principal. M3.1 adds a durable `PostgresKnowledgeGraph`
+  (full-text search, RBAC filter pushed into the SQL `WHERE` + re-checked via `can_read`); the
+  in-memory stub remains the offline/test backend. Semantic retrieval (pgvector) is a later upgrade
+  behind the same interface.
 
 ## 6. Approval Workflow (HITL)
 
@@ -188,7 +190,10 @@ executor refuses to run a gated action without a matching, in-scope `ApprovalDec
   the planner (`kg_context`); responder cites `kg:*` sources; `Entity` in the serde allowlist.
 - **M2.2c (done):** `governance/confidence.py` — structured `Source` attribution +
   grounding-aware confidence (success ratio; grounded vs ungrounded when no actions ran).
-- **M2.3:** LangSmith golden-trace evaluation gate (turn the dormant `agent-eval` CI job into a real
-  blocking gate).
-- **Later:** FastAPI Interface endpoints; concrete KG backend (Neo4j/pgvector); real integrations
-  (Gmail/Slack/Jira); auth/SSO; Merkle/external anchoring of the audit chain.
+- **M2.3 (done):** golden-trace evaluation gate — blocking deterministic security oracles
+  (`evals/run_gate.py`) + optional non-blocking LangSmith quality evals; real `agent-eval` CI gate.
+- **M3.1 (done):** durable `PostgresKnowledgeGraph` (`persistence/knowledge_store.py`) — Postgres
+  full-text search behind the `KnowledgeGraph` interface; RBAC filter pushed into the SQL query;
+  selected by `make_knowledge_graph` when `DATABASE_URL` is set; integration tests + demo.
+- **Later:** FastAPI Interface endpoints (M3.2) + resume-time principal binding; auth/SSO (M3.3);
+  pgvector semantic retrieval; real integrations (Gmail/Slack/Jira); Merkle/external audit anchoring.

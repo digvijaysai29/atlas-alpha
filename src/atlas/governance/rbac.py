@@ -46,6 +46,27 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
 }
 
 
+def get_effective_permissions(principal: Principal | None) -> frozenset[str]:
+    """Expand a principal's roles into their concrete permission set (the single source of truth
+    for role expansion; reused by :func:`can` and the RBAC-scoped knowledge store).
+
+    - A ``None`` principal has no permissions (fail-closed) → empty set.
+    - Unknown roles contribute nothing.
+    - If any role grants the wildcard ``"*"`` the result is ``frozenset({"*"})`` (admin: grants all).
+    """
+    if principal is None:
+        return frozenset()
+    permissions: set[str] = set()
+    for role in principal.roles:
+        granted = ROLE_PERMISSIONS.get(role)
+        if granted is None:
+            continue  # unknown role grants nothing (fail-closed)
+        if "*" in granted:
+            return frozenset({"*"})
+        permissions.update(granted)
+    return frozenset(permissions)
+
+
 def can(principal: Principal | None, permission: str | None) -> bool:
     """Return True iff ``principal`` is authorized for ``permission`` (default-deny).
 
@@ -55,15 +76,8 @@ def can(principal: Principal | None, permission: str | None) -> bool:
     """
     if permission is None:
         return True
-    if principal is None:
-        return False
-    for role in principal.roles:
-        granted = ROLE_PERMISSIONS.get(role)
-        if granted is None:
-            continue  # unknown role grants nothing (fail-closed)
-        if "*" in granted or permission in granted:
-            return True
-    return False
+    granted = get_effective_permissions(principal)
+    return "*" in granted or permission in granted
 
 
 def get_current_principal(state: AgentState) -> Principal:

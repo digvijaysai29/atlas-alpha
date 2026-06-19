@@ -26,7 +26,7 @@ def database_url() -> str:
 
 @pytest.fixture
 def pg_pool(database_url: str) -> Iterator[ConnectionPool]:
-    """An open pool with a freshly-reset audit table (isolated per test)."""
+    """An open pool with freshly-reset atlas tables (audit + knowledge graph), isolated per test."""
     from psycopg.rows import dict_row
     from psycopg_pool import ConnectionPool
 
@@ -40,6 +40,8 @@ def pg_pool(database_url: str) -> Iterator[ConnectionPool]:
     pool.open()
     with pool.connection() as conn:
         conn.execute("DROP TABLE IF EXISTS atlas_audit_log")
+        conn.execute("DROP TABLE IF EXISTS atlas_kg_entities")
+        conn.execute("DROP TABLE IF EXISTS atlas_kg_relations")
     try:
         yield pool
     finally:
