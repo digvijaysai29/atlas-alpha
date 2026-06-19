@@ -21,12 +21,15 @@ branch → PR into `main` → CI must be green.
 | **M2.2a** | **RBAC + `Principal` threading**: default-deny `can()`, tool `required_permission`, deny-early + re-check-late; `governance/` package | ✅ merged (PR #2) |
 | **M2.2b** | **RBAC-scoped Knowledge Graph** wired into the planner (`kg_context`) | ✅ merged (PR #3) |
 | **M2.2c** | Structured `Source` attribution + grounding-aware confidence (`governance/confidence.py`) | ✅ PR #5 (CI green; merge it) |
-| **M2.3** | **← YOU ARE HERE.** Real `agent-eval` gate (deterministic blocking + optional LangSmith) | ⏭ next |
-| **M3+** | Concrete KG backend, FastAPI Interface, auth/SSO, real integrations | future |
+| **M2.3** | Real `agent-eval` gate (deterministic blocking + optional LangSmith) | ✅ merged (PR #7) |
+| **M3.1** | **← YOU ARE HERE.** Durable **`PostgresKnowledgeGraph`** (full-text search; RBAC filter in SQL) behind the existing `KnowledgeGraph` ABC | 🔄 this PR |
+| **M3.2** | FastAPI Interface (`/chat`, `/approve` resume) + resume-time principal/thread binding | ⏭ next |
+| **M3.3+** | Auth/SSO, real integrations, pgvector semantic retrieval, richer ACLs | future |
 
 **Net:** atlas is a secure, durable, identity-aware, knowledge-grounded HITL agent with a transparent
-sources+confidence layer — all behind a fail-closed security model. What's missing is a *real
-evaluation gate* (M2.3) and the *outer layers* (interface, auth, real tools, persistent KG).
+sources+confidence layer and a real blocking eval gate — all behind a fail-closed security model.
+With M3.1 the knowledge graph is durable too; what's missing is the *outer layers* (interface, auth,
+real tools, semantic retrieval).
 
 ## 2. System recap (pointers, not prose)
 
@@ -168,12 +171,17 @@ blocks** the gate (telemetry, not a security control) — a LangSmith outage mus
 
 Each is a separate milestone; keep the sub-phase discipline (small PRs, green CI, Corridor both ends).
 
-- **M3.1 — Concrete Knowledge Graph backend.** Pick **Neo4j** *or* **Postgres + pgvector**; implement
-  `KnowledgeGraph` behind the existing interface (`src/atlas/knowledge/interfaces.py`) — no orchestration
-  changes needed. Persistent storage + semantic/vector retrieval; push the RBAC filter (`can_read`) into
-  the DB query. **Security: adopt a fail-closed default `Entity.acl`** once untrusted `upsert_entity`
-  write paths exist (today the default `acl=()` = world-readable is safe only because the sole writer is
-  `seed_demo_graph`). Integration tests mirroring the M2.1 Postgres pattern (`-m integration`).
+- **M3.1 — Concrete Knowledge Graph backend.** ✅ **DONE (this PR).** `PostgresKnowledgeGraph`
+  (`src/atlas/persistence/knowledge_store.py`) implements `KnowledgeGraph` behind the existing
+  interface (`src/atlas/knowledge/interfaces.py`) — no orchestration changes. Durable **Postgres
+  full-text search** (tsvector + ILIKE substring fallback; **no vectors yet**); the RBAC filter is
+  pushed **into the SQL `WHERE`** (unreadable rows never fetched) and re-checked via `can_read`
+  (defense-in-depth, backend parity). Permission set derived from `get_effective_permissions`.
+  Wired by `make_knowledge_graph` (Postgres when `DATABASE_URL` set, never auto-seeds). Integration
+  tests in `tests/test_knowledge_postgres.py` (`-m integration`); demo `scripts/demo_knowledge_postgres.py`.
+  **Still open:** fail-closed default `Entity.acl` — deferred to when an *untrusted* (API/network)
+  `upsert_entity` write path exists in M3.2; today `acl=()` = world-readable is safe because the only
+  writers are trusted (seeds/demos). **Future:** swap full-text for pgvector semantic retrieval.
 - **M3.2 — FastAPI Interface layer.** `/chat` (SSE stream), `/threads`, `/approve` (→ `Command(resume=…)`);
   translate `interrupt()` ↔ an HTTP approval flow. **Security: resume-time principal/thread binding** —
   bind the authenticated caller to the `thread_id` and **reject a principal mismatch on resume** (today
@@ -195,7 +203,8 @@ Each is a separate milestone; keep the sub-phase discipline (small PRs, green CI
 These came out of the `/security-review` passes as *out-of-scope-for-now*; they become real when their
 enabling phase arrives:
 1. **Resume-time principal/thread binding** → **M3.2** (Interface layer makes it exploitable).
-2. **Fail-closed default `Entity.acl`** → **M3.1** (concrete KG backend introduces untrusted writers).
+2. **Fail-closed default `Entity.acl`** → **M3.2** (carried over from M3.1: still no *untrusted*
+   `upsert_entity` write path until the network-facing API lands; M3.1 writers are trusted).
 3. **Richer `ToolPermission`/ACL model** → M3/M4 (the current string permissions are a placeholder).
 4. **Merkle / external anchoring** of the hash-chained audit → cross-cutting hardening.
 

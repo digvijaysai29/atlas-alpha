@@ -25,9 +25,11 @@ sub-phase is its own branch → PR into `main` → CI must be green.
 | **M2.1** | Durable **Postgres checkpointer** + **hash-chained, tamper-evident audit store**; docker-compose Postgres + CI `integration` job | ✅ **merged (PR #1)** |
 | **M2.2a** | **RBAC + `Principal` threading**: default-deny `can()`, tool `required_permission`, deny-early + re-check-late; `governance/` package split | ✅ **merged (PR #2)** |
 | **M2.2b** | **RBAC-scoped Knowledge Graph** wired into the planner (`kg_context`); responder cites KG sources | ✅ **merged (PR #3)** |
-| **M2.2c** | Structured `Source` attribution + grounding-aware confidence in `governance/confidence.py` | 🔄 **this PR** |
-| **M2.3** | **NEXT FOCUS** → LangSmith golden-trace **eval gate** (turn the dormant `agent-eval` CI job into a real blocking gate). `LANGSMITH_API_KEY` secret already configured | planned |
-| **M3+** | Concrete KG backend (Neo4j/pgvector), FastAPI Interface layer, real integrations, auth/SSO | future |
+| **M2.2c** | Structured `Source` attribution + grounding-aware confidence in `governance/confidence.py` | ✅ **merged (PR #5)** |
+| **M2.3** | LangSmith golden-trace **eval gate** (deterministic blocking oracles + optional LangSmith) — real blocking `agent-eval` CI gate | ✅ **merged (PR #7)** |
+| **M3.1** | Concrete **Postgres-backed `KnowledgeGraph`** (full-text search, RBAC filter pushed into SQL); `persistence/knowledge_store.py`; `make_knowledge_graph` precedence by `DATABASE_URL` | 🔄 **this PR** |
+| **M3.2** | **NEXT FOCUS** → FastAPI Interface layer (`/chat`, `/approve` resume) + resume-time principal/thread binding | planned |
+| **M3.3+** | Auth/SSO (OIDC), real integrations (Gmail/Slack/Jira), pgvector semantic retrieval, richer ACLs | future |
 
 ## 3. Tech Stack
 
@@ -51,13 +53,16 @@ tools.py             BaseTool(risk_tier, required_permission, ArgsSchema); ToolR
 governance/
   audit.py           AuditEvent + AuditEventType(PROPOSED/APPROVED/REJECTED/EXECUTED/SKIPPED/DENIED);
                      hash-chained AuditLog (canonical_event_bytes→sha256, verify_chain); InMemoryAuditLog
-  rbac.py            Principal(frozen); ROLE_PERMISSIONS; can(); get_current_principal()
+  rbac.py            Principal(frozen); ROLE_PERMISSIONS; can(); get_current_principal();
+                     get_effective_permissions() (role→permission expansion, reused by the KG store)
   __init__.py        re-exports audit + rbac (keep `from atlas.governance import ...` stable)
 knowledge/
   interfaces.py      Entity / Relation (frozen); can_read(); KnowledgeGraph (ABC, RBAC-scoped query)
   memory_store.py    InMemoryKnowledgeGraph (keyword match, can_read-filtered); seed_demo_graph()
 persistence/
   audit_store.py     PostgresAuditLog — parameterized SQL, advisory-lock-serialized appends, UTC timestamps
+  knowledge_store.py PostgresKnowledgeGraph — full-text (tsvector + ILIKE) search; RBAC filter pushed
+                     into the SQL WHERE + re-checked via can_read; parameterized SQL, static DDL
 orchestration/       ← THE CORE
   state.py           AgentState (TypedDict): messages, principal, kg_context, proposed/approved/rejected,
                      action_results, sources, confidence; initial_state(msg, principal=None)
@@ -66,8 +71,9 @@ orchestration/       ← THE CORE
                      _format_kg_context; PlanFn = (str, ToolRegistry, Sequence[Entity]) -> list[ProposedAction]
   graph.py           build_graph(); make_checkpointer / make_audit_log / make_knowledge_graph; Atlas; _pg_pool
 ```
-`scripts/` = runnable demos (`demo_approval`, `demo_persistence`, `demo_rbac`, `demo_knowledge`).
-`evals/run_evals.py` = LangSmith gate (no-op until M2.3). `tests/` unit + `-m integration` (Postgres).
+`scripts/` = runnable demos (`demo_approval`, `demo_persistence`, `demo_rbac`, `demo_knowledge`,
+`demo_knowledge_postgres`). `evals/run_gate.py` = blocking deterministic security oracles + optional
+LangSmith quality evals. `tests/` unit + `-m integration` (Postgres).
 
 **Graph flow:** `START → planner → [route] → approval(interrupt) → executor → responder → END`.
 Planner denies RBAC-unauthorized actions **early**; executor re-checks **late**; approval pauses via
@@ -87,9 +93,14 @@ Planner denies RBAC-unauthorized actions **early**; executor re-checks **late**;
   `required_permission` (string; richer `ToolPermission` model is an M3/M4 placeholder). Enforcement
   is **defense-in-depth**: deny-early in the planner (before the approval gate) **and** re-check-late
   in the executor. `can()` is re-evaluated every call — persisted ACLs are never trusted as authz.
-- **Knowledge Graph = interface + in-memory stub.** `KnowledgeGraph.query(principal, text, limit)`
+- **Knowledge Graph = interface + two backends.** `KnowledgeGraph.query(principal, text, limit)`
   applies `can_read` **before** returning, so unreadable entities never reach the planner/LLM/sources.
-  `acl: tuple[str,...]` is a deliberate placeholder; concrete Neo4j/pgvector backend is **M3**.
+  M3.1 adds a durable **`PostgresKnowledgeGraph`** (full-text search) that pushes the RBAC filter
+  **into the SQL `WHERE`** (unreadable rows never fetched) **and** re-applies `can_read` in Python —
+  identical `can_read` semantics to the in-memory backend (backend parity). `make_knowledge_graph`
+  selects Postgres when `DATABASE_URL` is set, else the in-memory stub; it never auto-seeds. The
+  permission set comes from `get_effective_permissions` (single source of truth, no model input).
+  `acl: tuple[str,...]` is still a deliberate placeholder; pgvector/semantic retrieval is future.
 - **Two explicit planner modes.** `heuristic_plan` is **KG-free** and deterministic (offline/CI,
   hermetic tests); `llm_plan` grounds on a **bounded top-5** KG block via `_format_kg_context()`.
   Risk tiers ALWAYS come from the registry, never from the model.

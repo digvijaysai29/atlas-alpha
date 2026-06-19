@@ -96,9 +96,16 @@ def make_audit_log(settings: Settings | None = None) -> AuditLog:
 
 
 def make_knowledge_graph(settings: Settings | None = None) -> KnowledgeGraph:
-    """Return the knowledge graph. M2.2b: an empty in-memory stub (demos/tests seed it); a concrete
-    Neo4j/pgvector backend slots behind this interface in M3.
+    """Return the knowledge graph: a durable, RBAC-scoped Postgres backend if ``DATABASE_URL`` is
+    set, else the in-memory stub (demos/tests seed it). Shares the connection pool with the
+    checkpointer and audit log. The factory never seeds — seeding is an explicit caller/demo step so
+    CI and production never mutate the KG on connect.
     """
+    settings = settings or get_settings()
+    if settings.database_url:
+        from atlas.persistence import PostgresKnowledgeGraph
+
+        return PostgresKnowledgeGraph(_pg_pool(settings.database_url.get_secret_value()))
     return InMemoryKnowledgeGraph()
 
 
