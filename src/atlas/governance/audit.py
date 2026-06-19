@@ -9,9 +9,9 @@ happened." Two invariants:
 
 The security-critical hashing lives in ONE place (computed over a deterministic canonical
 serialization of a *pure* :class:`AuditEvent`). Storage backends (in-memory, Postgres) implement
-only ``_append``/``_load`` and inherit the chaining for free — so a future upgrade to a Merkle tree
-or external anchoring can replace :func:`compute_event_hash`/:func:`verify_chain` without touching
-any storage code.
+only ``_append_event``/``_load`` and inherit the chaining for free — so a future upgrade to a Merkle
+tree or external anchoring can replace :func:`compute_event_hash`/:func:`verify_chain` without
+touching any storage code.
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ class AuditEventType(str, Enum):
     REJECTED = "rejected"
     EXECUTED = "executed"
     SKIPPED = "skipped"  # a gated action that was never approved
+    DENIED = "denied"  # blocked by RBAC (the principal lacked the required permission)
 
 
 def _utc_now() -> datetime:
@@ -217,6 +218,18 @@ class AuditLog(abc.ABC):
                 event_type=AuditEventType.SKIPPED,
                 action_id=action.action_id,
                 tool=action.tool,
+                detail={"reason": reason},
+            )
+        )
+
+    def denied(self, action: ProposedAction, principal_id: str, reason: str) -> AuditEvent:
+        """Record an RBAC denial — the principal lacked the permission a tool required."""
+        return self.record(
+            AuditEvent(
+                event_type=AuditEventType.DENIED,
+                action_id=action.action_id,
+                tool=action.tool,
+                actor=principal_id,
                 detail={"reason": reason},
             )
         )

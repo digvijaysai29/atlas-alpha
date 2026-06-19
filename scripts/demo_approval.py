@@ -18,10 +18,14 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
 from atlas.governance import AuditLog
+from atlas.governance.rbac import Principal
 from atlas.orchestration import build_graph
 from atlas.orchestration.nodes import heuristic_plan
 from atlas.orchestration.serde import atlas_serde
 from atlas.orchestration.state import initial_state
+
+# A logged-in user permitted to send email ("tool:send" via the "member" role).
+ALICE = Principal(user_id="alice", roles=("member",))
 
 
 def _rule(title: str) -> None:
@@ -64,7 +68,8 @@ def main() -> None:
     atlas = build_graph(plan_fn=heuristic_plan, checkpointer=InMemorySaver(serde=atlas_serde()))
     config = _new_thread(1)
     paused = atlas.graph.invoke(
-        initial_state("Please email alice@example.com the status update"), config=config
+        initial_state("Please email alice@example.com the status update", principal=ALICE),
+        config=config,
     )
     _print_interrupt(paused)
     print("  → human approves")
@@ -77,7 +82,8 @@ def main() -> None:
     atlas = build_graph(plan_fn=heuristic_plan, checkpointer=InMemorySaver(serde=atlas_serde()))
     config = _new_thread(2)
     paused = atlas.graph.invoke(
-        initial_state("Email bob@example.com to cancel the contract"), config=config
+        initial_state("Email bob@example.com to cancel the contract", principal=ALICE),
+        config=config,
     )
     _print_interrupt(paused)
     print("  → human rejects")

@@ -18,6 +18,7 @@ import uuid
 from langgraph.types import Command
 
 from atlas.config import Settings
+from atlas.governance.rbac import Principal
 from atlas.orchestration import build_graph
 from atlas.orchestration.graph import _pg_pool
 from atlas.orchestration.nodes import heuristic_plan
@@ -46,8 +47,10 @@ def main() -> None:
         print("1) First 'process': run until the approval gate, then crash")
         print("=" * 72)
         atlas1 = build_graph(plan_fn=heuristic_plan, settings=settings)
+        sender = Principal(user_id="alice", roles=("member",))  # permitted to send email
         paused = atlas1.graph.invoke(
-            initial_state("Please email alice@example.com the status update"), config=thread
+            initial_state("Please email alice@example.com the status update", principal=sender),
+            config=thread,
         )
         interrupts = paused.get("__interrupt__")
         assert interrupts, "expected the graph to pause at the approval gate"

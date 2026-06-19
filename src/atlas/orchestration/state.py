@@ -13,6 +13,7 @@ from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.graph.message import add_messages
 
 from atlas.actions import ActionResult, ProposedAction
+from atlas.governance.rbac import Principal
 
 
 class AgentState(TypedDict, total=False):
@@ -20,6 +21,9 @@ class AgentState(TypedDict, total=False):
 
     # Conversation. ``add_messages`` appends/merges rather than overwriting.
     messages: Annotated[list[AnyMessage], add_messages]
+
+    # The identity this run executes as. RBAC checks are scoped to this principal.
+    principal: Principal | None
 
     # Actions the planner proposed this turn (each carries its tool-declared risk tier).
     proposed_actions: list[ProposedAction]
@@ -34,10 +38,14 @@ class AgentState(TypedDict, total=False):
     confidence: float | None
 
 
-def initial_state(user_message: str) -> AgentState:
-    """Build a fresh state for a new user request."""
+def initial_state(user_message: str, principal: Principal | None = None) -> AgentState:
+    """Build a fresh state for a new user request.
+
+    ``principal`` defaults to :meth:`Principal.anonymous` (fail-closed: no roles, no permissions).
+    """
     return {
         "messages": [HumanMessage(content=user_message)],
+        "principal": principal or Principal.anonymous(),
         "proposed_actions": [],
         "approved_action_ids": [],
         "rejected_action_ids": [],

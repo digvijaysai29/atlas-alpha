@@ -23,6 +23,7 @@ from langgraph.types import interrupt
 from atlas.actions import ApprovalDecision, ProposedAction, RiskTier, requires_approval
 from atlas.config import Settings, get_settings
 from atlas.governance import AuditLog
+from atlas.governance.rbac import can, get_current_principal
 from atlas.orchestration.state import AgentState
 from atlas.tools import ToolRegistry
 
@@ -115,11 +116,20 @@ def make_planner_node(
     plan_fn: PlanFn, registry: ToolRegistry, audit: AuditLog
 ) -> Callable[[AgentState], dict[str, Any]]:
     def planner_node(state: AgentState) -> dict[str, Any]:
+        principal = get_current_principal(state)
         request = _last_user_text(state.get("messages") or [])
         proposed = plan_fn(request, registry)
+        # RBAC, deny-early: an action the principal isn't permitted to run is dropped here, so it is
+        # never surfaced for human approval. (The executor re-checks as defense-in-depth.)
+        authorized: list[ProposedAction] = []
         for action in proposed:
             audit.proposed(action)
-        return {"proposed_actions": proposed}
+            required = registry.get(action.tool).required_permission
+            if not can(principal, required):
+                audit.denied(action, principal.user_id, reason=f"missing permission: {required}")
+                continue
+            authorized.append(action)
+        return {"proposed_actions": authorized}
 
     return planner_node
 
@@ -153,10 +163,17 @@ def make_executor_node(
     registry: ToolRegistry, audit: AuditLog
 ) -> Callable[[AgentState], dict[str, Any]]:
     def executor_node(state: AgentState) -> dict[str, Any]:
+        principal = get_current_principal(state)
         approved = set(state.get("approved_action_ids") or [])
         results = []
         sources = list(state.get("sources") or [])
         for action in state.get("proposed_actions") or []:
+            # RBAC re-check (defense-in-depth): never run a tool the principal isn't permitted to use,
+            # even if it somehow reached the executor.
+            required = registry.get(action.tool).required_permission
+            if not can(principal, required):
+                audit.denied(action, principal.user_id, reason=f"missing permission: {required}")
+                continue
             # The gate, enforced in code: a gated action runs only with a matching approval.
             if requires_approval(action.risk_tier) and action.action_id not in approved:
                 audit.skipped(action, reason="not approved")
