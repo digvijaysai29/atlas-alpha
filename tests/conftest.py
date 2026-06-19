@@ -1,0 +1,46 @@
+"""Shared test fixtures.
+
+Integration tests require a live Postgres reachable via ``DATABASE_URL``; when it is unset they skip
+(so the default ``uv run pytest`` stays green offline, and CI's ``integration`` job provides one).
+"""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Iterator
+from typing import TYPE_CHECKING
+
+import pytest
+
+if TYPE_CHECKING:
+    from psycopg_pool import ConnectionPool
+
+
+@pytest.fixture
+def database_url() -> str:
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        pytest.skip("DATABASE_URL not set; skipping Postgres integration test")
+    return url
+
+
+@pytest.fixture
+def pg_pool(database_url: str) -> Iterator[ConnectionPool]:
+    """An open pool with a freshly-reset audit table (isolated per test)."""
+    from psycopg.rows import dict_row
+    from psycopg_pool import ConnectionPool
+
+    pool = ConnectionPool(
+        database_url,
+        min_size=1,
+        max_size=3,
+        kwargs={"autocommit": True, "row_factory": dict_row},
+        open=False,
+    )
+    pool.open()
+    with pool.connection() as conn:
+        conn.execute("DROP TABLE IF EXISTS atlas_audit_log")
+    try:
+        yield pool
+    finally:
+        pool.close()

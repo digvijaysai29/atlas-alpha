@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import TYPE_CHECKING
 
 from langgraph.checkpoint.memory import InMemorySaver
@@ -33,15 +34,44 @@ from atlas.tools import ToolRegistry, default_registry
 if TYPE_CHECKING:
     from langgraph.checkpoint.base import BaseCheckpointSaver
     from langgraph.graph.state import CompiledStateGraph
+    from psycopg_pool import ConnectionPool
+
+
+@lru_cache(maxsize=8)
+def _pg_pool(conninfo: str) -> "ConnectionPool":
+    """One open connection pool per DSN (shared by the checkpointer and the audit store).
+
+    LangGraph's PostgresSaver requires connections with ``autocommit=True`` and the ``dict_row`` row
+    factory; the pool sets both for every connection it hands out.
+    """
+    from psycopg.rows import dict_row
+    from psycopg_pool import ConnectionPool
+
+    pool = ConnectionPool(
+        conninfo,
+        min_size=1,
+        max_size=5,
+        kwargs={"autocommit": True, "row_factory": dict_row},
+        open=False,
+    )
+    pool.open()
+    return pool
 
 
 def make_checkpointer(settings: Settings | None = None) -> "BaseCheckpointSaver":
-    """Return a checkpointer: SQLite if a path is configured, else in-memory.
-
-    Postgres (``DATABASE_URL``) is wired in M2. A checkpointer is mandatory for durable interrupts.
+    """Return a checkpointer: Postgres if ``DATABASE_URL`` set, else SQLite if a path is set, else
+    in-memory. A checkpointer is mandatory for durable interrupts.
     """
     settings = settings or get_settings()
     serde = atlas_serde()  # explicit allowlist — no arbitrary type deserialization from checkpoints
+    if settings.database_url:
+        from langgraph.checkpoint.postgres import PostgresSaver
+
+        pool = _pg_pool(settings.database_url.get_secret_value())
+        # pool carries dict_row + autocommit at runtime; psycopg's static row type doesn't reflect it.
+        saver = PostgresSaver(pool, serde=serde)  # type: ignore[arg-type]
+        saver.setup()  # idempotent: creates checkpoint tables if absent
+        return saver
     if settings.sqlite_path:
         from langgraph.checkpoint.sqlite import SqliteSaver
 
@@ -49,6 +79,18 @@ def make_checkpointer(settings: Settings | None = None) -> "BaseCheckpointSaver"
         conn = sqlite3.connect(settings.sqlite_path, check_same_thread=False)
         return SqliteSaver(conn, serde=serde)
     return InMemorySaver(serde=serde)
+
+
+def make_audit_log(settings: Settings | None = None) -> AuditLog:
+    """Return the audit log: Postgres-backed (durable, hash-chained) if ``DATABASE_URL`` set, else
+    in-memory. Shares the connection pool with the checkpointer.
+    """
+    settings = settings or get_settings()
+    if settings.database_url:
+        from atlas.persistence import PostgresAuditLog
+
+        return PostgresAuditLog(_pg_pool(settings.database_url.get_secret_value()))
+    return InMemoryAuditLog()
 
 
 @dataclass(frozen=True)
@@ -75,7 +117,7 @@ def build_graph(
     """
     settings = settings or get_settings()
     registry = registry or default_registry()
-    audit = audit or InMemoryAuditLog()
+    audit = audit or make_audit_log(settings)
     plan_fn = plan_fn or default_plan_fn(settings)
     checkpointer = checkpointer or make_checkpointer(settings)
 

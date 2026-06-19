@@ -147,9 +147,14 @@ executor refuses to run a gated action without a matching, in-scope `ApprovalDec
 
 - A **checkpointer factory** returns: `PostgresSaver` if `DATABASE_URL` is set (M2) → else
   `SqliteSaver` if a path is configured → else `InMemorySaver`.
-- A checkpointer is **required** for `interrupt()`/resume to work.
-- Audit events are append-only: in-memory in M1, a durable store (`persistence/audit_store.py`) in
-  M2. Hash-chaining is noted as future tamper-evidence hardening.
+- A checkpointer is **required** for `interrupt()`/resume to work. The checkpointer and the audit
+  store share one `psycopg_pool.ConnectionPool` (autocommit + `dict_row`).
+- Audit events are append-only **and hash-chained** (M2.1): each event stores
+  `sha256(prev_hash || canonical(event))` over a deterministic canonical serialization, so any
+  edit/insert/delete/reorder is caught by `verify_chain`. In-memory (`InMemoryAuditLog`) and Postgres
+  (`persistence/audit_store.py`, advisory-lock-serialized appends, parameterized SQL) share the same
+  chaining logic. A future Merkle/external-anchoring upgrade can replace the hash functions without
+  touching storage.
 
 ## 8. Governance & Security
 
@@ -175,7 +180,11 @@ executor refuses to run a gated action without a matching, in-scope `ApprovalDec
 
 - **M1 (this milestone):** runnable HITL core — policy, mock tools, the four-node graph, in-memory
   audit, SQLite/memory checkpointer, LangSmith via env, demo + tests.
-- **M2:** Postgres checkpointer + durable append-only audit store; RBAC; Knowledge Graph interface
-  wired into the planner; confidence/source maturation; simple gate-correctness evaluation hooks.
-- **Later:** FastAPI Interface endpoints; concrete KG backend; real integrations (Gmail/Slack/Jira);
-  auth/SSO; hash-chained audit.
+- **M2.1 (done):** Postgres checkpointer + durable, **hash-chained** append-only audit store;
+  docker-compose Postgres + a CI integration job; restart-resume + tamper-evidence proven by tests.
+- **M2.2:** RBAC (`Principal`/default-deny) + `KnowledgeGraph` interface (in-memory stub) wired into
+  the planner; `governance/` package split; confidence/source maturation.
+- **M2.3:** LangSmith golden-trace evaluation gate (turn the dormant `agent-eval` CI job into a real
+  blocking gate).
+- **Later:** FastAPI Interface endpoints; concrete KG backend (Neo4j/pgvector); real integrations
+  (Gmail/Slack/Jira); auth/SSO; Merkle/external anchoring of the audit chain.
