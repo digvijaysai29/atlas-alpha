@@ -123,6 +123,26 @@ def test_missing_token_is_401(keypair: tuple[RSAPrivateKey, Any]) -> None:
     assert resp.json()["ok"] is False
 
 
+def test_jwks_unavailable_is_503(keypair: tuple[RSAPrivateKey, Any]) -> None:
+    priv, _ = keypair
+
+    def _fail(_token: str) -> Any:
+        raise jwt.PyJWKClientError("Unable to fetch signing key")
+
+    auth = OidcAuthenticator(issuer=ISSUER, audience=AUDIENCE, get_signing_key=_fail)
+    atlas = build_graph(plan_fn=_send_plan, checkpointer=InMemorySaver(serde=atlas_serde()))
+    app = create_app(
+        atlas=atlas,
+        settings=Settings(ANTHROPIC_API_KEY=None),
+        authenticator=auth,
+    )
+    client = TestClient(app)
+    resp = client.post("/chat", json={"message": "email"}, headers=_bearer(_token(priv)))
+    assert resp.status_code == 503
+    assert resp.headers.get("WWW-Authenticate") is None
+    assert resp.json()["ok"] is False
+
+
 def test_non_bearer_scheme_is_401(keypair: tuple[RSAPrivateKey, Any]) -> None:
     priv, pub = keypair
     client, _ = _client(pub)

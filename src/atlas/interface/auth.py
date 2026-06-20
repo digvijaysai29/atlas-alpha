@@ -37,6 +37,10 @@ class AuthError(Exception):
     """Token verification failed. Carries only a generic, client-safe message."""
 
 
+class AuthDependencyError(Exception):
+    """JWKS / identity-provider dependency unavailable. Mapped to HTTP 503 at the seam."""
+
+
 def _parse_roles(raw: Any) -> tuple[str, ...]:
     """Defensively normalize a roles claim into a tuple of role strings.
 
@@ -77,6 +81,10 @@ class OidcAuthenticator:
         """Verify ``token`` and return the caller's Principal, or raise :class:`AuthError`."""
         try:
             key = self._get_signing_key(token)
+        except jwt.PyJWKClientError as exc:
+            raise AuthDependencyError("authentication service unavailable") from exc
+
+        try:
             claims: dict[str, Any] = jwt.decode(
                 token,
                 key,
@@ -87,7 +95,6 @@ class OidcAuthenticator:
                 options={"require": _REQUIRED_CLAIMS},
             )
         except jwt.PyJWTError as exc:
-            # Includes signature, expiry, audience, issuer, JWKS-lookup and decode failures.
             raise AuthError("invalid or expired token") from exc
 
         user_id = str(claims.get(self._user_claim) or "").strip()

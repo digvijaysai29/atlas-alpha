@@ -25,7 +25,7 @@ from fastapi import Depends, HTTPException, Request, status
 
 from atlas.config import Settings, get_settings
 from atlas.governance.rbac import Principal
-from atlas.interface.auth import AuthError, OidcAuthenticator
+from atlas.interface.auth import AuthDependencyError, AuthError, OidcAuthenticator
 
 if TYPE_CHECKING:
     from langgraph.types import StateSnapshot
@@ -72,6 +72,11 @@ def get_request_principal(request: Request) -> Principal:
             )
         try:
             return authenticator.principal_from_token(token)
+        except AuthDependencyError as exc:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "Authentication service temporarily unavailable.",
+            ) from exc
         except AuthError as exc:
             raise HTTPException(
                 status.HTTP_401_UNAUTHORIZED, "Invalid or expired token.", headers=_UNAUTHENTICATED

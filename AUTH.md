@@ -33,6 +33,7 @@ deployment.
 | Valid token, but not the thread owner (`/approve`, `/threads/{id}`) | `403` (owner-binding) |
 | Missing / malformed `Authorization` header | `401` (`WWW-Authenticate: Bearer`) |
 | Invalid / expired / wrong-`iss` / wrong-`aud` / bad-signature token | `401` |
+| JWKS / identity-provider unavailable (cannot fetch signing keys) | `503` |
 | `/healthz` | `200` (public, no token) |
 
 All errors use the structured `ErrorResponse` envelope (`{"ok": false, "error": {code, message}}`);
