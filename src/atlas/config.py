@@ -104,7 +104,8 @@ class Settings(BaseSettings):
                 ("ATLAS_OIDC_ISSUER", self.oidc_issuer),
                 ("ATLAS_OIDC_JWKS_URI", self.oidc_jwks_uri),
             ):
-                assert url is not None  # oidc_enabled guarantees all three are set
+                if url is None:
+                    continue
                 if not _is_secure_oidc_url(url):
                     msg = (
                         f"{env_name} must use https:// (or http://127.0.0.1 / http://localhost). "
