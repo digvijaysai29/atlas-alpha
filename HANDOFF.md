@@ -22,14 +22,16 @@ branch → PR into `main` → CI must be green.
 | **M2.2b** | **RBAC-scoped Knowledge Graph** wired into the planner (`kg_context`) | ✅ merged (PR #3) |
 | **M2.2c** | Structured `Source` attribution + grounding-aware confidence (`governance/confidence.py`) | ✅ PR #5 (CI green; merge it) |
 | **M2.3** | Real `agent-eval` gate (deterministic blocking + optional LangSmith) | ✅ merged (PR #7) |
-| **M3.1** | **← YOU ARE HERE.** Durable **`PostgresKnowledgeGraph`** (full-text search; RBAC filter in SQL) behind the existing `KnowledgeGraph` ABC | 🔄 this PR |
-| **M3.2** | FastAPI Interface (`/chat`, `/approve` resume) + resume-time principal/thread binding | ⏭ next |
-| **M3.3+** | Auth/SSO, real integrations, pgvector semantic retrieval, richer ACLs | future |
+| **M3.1** | Durable **`PostgresKnowledgeGraph`** (full-text search; RBAC filter in SQL) behind the `KnowledgeGraph` ABC | ✅ merged (PR #8) |
+| **M3.2** | **← YOU ARE HERE.** FastAPI Interface (`/chat`, `/approve`, `/threads/{id}`) + **resume-time principal/thread binding**; trusted-network header identity shim | 🔄 this PR |
+| **M3.3** | Real Auth/SSO (OIDC) replacing the header shim; sessions; org/role provisioning | ⏭ next |
+| **M4+** | Real integrations, pgvector semantic retrieval, richer ACLs, SSE streaming | future |
 
 **Net:** atlas is a secure, durable, identity-aware, knowledge-grounded HITL agent with a transparent
-sources+confidence layer and a real blocking eval gate — all behind a fail-closed security model.
-With M3.1 the knowledge graph is durable too; what's missing is the *outer layers* (interface, auth,
-real tools, semantic retrieval).
+sources+confidence layer, a real blocking eval gate, and now a **network interface** with resume-time
+owner binding — all behind a fail-closed security model. What's missing is *verified* identity (real
+SSO, M3.3 — the header shim is trusted-network/dev-only), real tool integrations, and semantic
+retrieval.
 
 ## 2. System recap (pointers, not prose)
 
@@ -182,11 +184,15 @@ Each is a separate milestone; keep the sub-phase discipline (small PRs, green CI
   **Still open:** fail-closed default `Entity.acl` — deferred to when an *untrusted* (API/network)
   `upsert_entity` write path exists in M3.2; today `acl=()` = world-readable is safe because the only
   writers are trusted (seeds/demos). **Future:** swap full-text for pgvector semantic retrieval.
-- **M3.2 — FastAPI Interface layer.** `/chat` (SSE stream), `/threads`, `/approve` (→ `Command(resume=…)`);
-  translate `interrupt()` ↔ an HTTP approval flow. **Security: resume-time principal/thread binding** —
-  bind the authenticated caller to the `thread_id` and **reject a principal mismatch on resume** (today
-  the executor trusts whatever `principal` is in the checkpoint; with a network-facing API this becomes
-  exploitable). Request validation + consistent error envelopes; never leak internals.
+- **M3.2 — FastAPI Interface layer.** ✅ **DONE (this PR).** `src/atlas/interface/` exposes `/chat`,
+  `/approve` (→ `Command(resume=…)`), `/threads/{id}`, `/healthz` over the compiled graph via
+  `create_app()` (sync handlers → threadpool; demo `scripts/run_api.py`). **Security: resume-time
+  principal/thread binding** — `verify_thread_owner` rejects a caller whose `user_id`+`org_id` doesn't
+  match the thread's checkpointed owner → **403** (closes the resume IDOR). Interim identity is a
+  **trusted-network/dev-only header shim** (`get_request_principal`, configurable header names);
+  fail-closed anonymous; request validation + consistent `ErrorResponse` envelope; no internal leaks.
+  **Carried to M3.3:** the header shim must be replaced by *verified* SSO/OIDC (today it trusts
+  headers and must sit behind a header-validating proxy). SSE streaming deferred.
 - **M3.3 — AuthN/AuthZ (SSO/OIDC).** Real identity → `Principal`; session management; org/role
   provisioning; replace the demo `ROLE_PERMISSIONS` (`governance/rbac.py`) with a policy store;
   per-principal rate limiting.
@@ -202,9 +208,11 @@ Each is a separate milestone; keep the sub-phase discipline (small PRs, green CI
 
 These came out of the `/security-review` passes as *out-of-scope-for-now*; they become real when their
 enabling phase arrives:
-1. **Resume-time principal/thread binding** → **M3.2** (Interface layer makes it exploitable).
-2. **Fail-closed default `Entity.acl`** → **M3.2** (carried over from M3.1: still no *untrusted*
-   `upsert_entity` write path until the network-facing API lands; M3.1 writers are trusted).
+1. **Resume-time principal/thread binding** → ✅ **DONE in M3.2** (`verify_thread_owner`).
+2. **Verified identity (replace the trusted-network header shim)** → **M3.3** — `get_request_principal`
+   trusts request headers, so until SSO/OIDC lands the API must run behind a header-validating proxy.
+3. **Fail-closed default `Entity.acl`** → **M3.3+** (still no *untrusted* `upsert_entity` write path —
+   M3.2 added no KG write endpoint; revisit when an API write path lands).
 3. **Richer `ToolPermission`/ACL model** → M3/M4 (the current string permissions are a placeholder).
 4. **Merkle / external anchoring** of the hash-chained audit → cross-cutting hardening.
 

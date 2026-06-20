@@ -44,6 +44,17 @@ class Settings(BaseSettings):
     sqlite_path: str | None = Field(default=None, alias="ATLAS_SQLITE_PATH")
     database_url: SecretStr | None = Field(default=None, alias="DATABASE_URL")
 
+    # --- Interface (M3.2 FastAPI) ------------------------------------------
+    # Bind address for the dev server (scripts/run_api.py).
+    api_host: str = Field(default="127.0.0.1", alias="ATLAS_API_HOST")
+    api_port: int = Field(default=8000, alias="ATLAS_API_PORT")
+    # Header names the trusted-network identity shim reads to build the request Principal. They are
+    # configurable so a deployment can align them with whatever its reverse proxy / ingress sets.
+    # SECURITY: these headers are trusted blindly — see atlas.interface.security. Real auth is M3.3.
+    api_user_header: str = Field(default="X-Atlas-User-Id", alias="ATLAS_API_USER_HEADER")
+    api_roles_header: str = Field(default="X-Atlas-Roles", alias="ATLAS_API_ROLES_HEADER")
+    api_org_header: str = Field(default="X-Atlas-Org", alias="ATLAS_API_ORG_HEADER")
+
     @property
     def has_anthropic_key(self) -> bool:
         """True when a real Claude API key is available."""

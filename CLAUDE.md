@@ -27,9 +27,10 @@ sub-phase is its own branch → PR into `main` → CI must be green.
 | **M2.2b** | **RBAC-scoped Knowledge Graph** wired into the planner (`kg_context`); responder cites KG sources | ✅ **merged (PR #3)** |
 | **M2.2c** | Structured `Source` attribution + grounding-aware confidence in `governance/confidence.py` | ✅ **merged (PR #5)** |
 | **M2.3** | LangSmith golden-trace **eval gate** (deterministic blocking oracles + optional LangSmith) — real blocking `agent-eval` CI gate | ✅ **merged (PR #7)** |
-| **M3.1** | Concrete **Postgres-backed `KnowledgeGraph`** (full-text search, RBAC filter pushed into SQL); `persistence/knowledge_store.py`; `make_knowledge_graph` precedence by `DATABASE_URL` | 🔄 **this PR** |
-| **M3.2** | **NEXT FOCUS** → FastAPI Interface layer (`/chat`, `/approve` resume) + resume-time principal/thread binding | planned |
-| **M3.3+** | Auth/SSO (OIDC), real integrations (Gmail/Slack/Jira), pgvector semantic retrieval, richer ACLs | future |
+| **M3.1** | Concrete **Postgres-backed `KnowledgeGraph`** (full-text search, RBAC filter pushed into SQL); `persistence/knowledge_store.py`; `make_knowledge_graph` precedence by `DATABASE_URL` | ✅ **merged (PR #8)** |
+| **M3.2** | **FastAPI Interface layer** (`/chat`, `/approve` resume, `/threads/{id}`) + **resume-time principal/thread binding**; trusted-network header identity shim (`interface/`) | 🔄 **this PR** |
+| **M3.3** | **NEXT FOCUS** → real Auth/SSO (OIDC) replacing the header shim; session mgmt; org/role provisioning | planned |
+| **M4+** | Real integrations (Gmail/Slack/Jira), pgvector semantic retrieval, richer ACLs, SSE streaming | future |
 
 ## 3. Tech Stack
 
@@ -39,7 +40,7 @@ sub-phase is its own branch → PR into `main` → CI must be green.
 | Orchestration | **LangGraph 1.x** | Native `interrupt()`/`Command(resume=)` for HITL; checkpointers for durability |
 | Persistence | **Postgres** › **SQLite** › **in-memory** | `make_checkpointer` precedence by `DATABASE_URL` / `ATLAS_SQLITE_PATH` |
 | Typing | **Pydantic v2** | `frozen=True` for all records; full type hints; `mypy --strict` |
-| Interface | **FastAPI** | Deferred to M3 |
+| Interface | **FastAPI** + uvicorn | M3.2: `/chat`, `/approve`, `/threads/{id}`; sync handlers; `create_app` factory |
 | Observability | **LangSmith** | Env-driven (`LANGSMITH_*`); zero code |
 | Runtime / tooling | **Python 3.13**, **uv**, ruff, mypy, pytest, bandit, semgrep | 3.14 deferred until wheels stabilize |
 
@@ -70,10 +71,17 @@ orchestration/       ← THE CORE
   nodes.py           planner/approval/executor/responder factories; heuristic_plan / llm_plan /
                      _format_kg_context; PlanFn = (str, ToolRegistry, Sequence[Entity]) -> list[ProposedAction]
   graph.py           build_graph(); make_checkpointer / make_audit_log / make_knowledge_graph; Atlas; _pg_pool
+interface/           ← M3.2 FastAPI HTTP layer over the compiled graph
+  app.py             create_app(atlas?, settings?) factory (DI mirrors build_graph); ErrorResponse handlers
+  routes.py          /healthz, /chat, /approve, /threads/{id} (sync handlers → threadpool); get_atlas dep
+  security.py        get_request_principal (TRUSTED-NETWORK header identity shim; M3.3 swaps it);
+                     verify_thread_owner (resume-time principal/thread binding → 403)
+  schemas.py         transport-only Pydantic (ChatRequest/ApproveRequest/AgentResponse/ErrorResponse)
 ```
 `scripts/` = runnable demos (`demo_approval`, `demo_persistence`, `demo_rbac`, `demo_knowledge`,
-`demo_knowledge_postgres`). `evals/run_gate.py` = blocking deterministic security oracles + optional
-LangSmith quality evals. `tests/` unit + `-m integration` (Postgres).
+`demo_knowledge_postgres`) + `run_api.py` (dev HTTP server). `evals/run_gate.py` = blocking
+deterministic security oracles + optional LangSmith quality evals. `tests/` unit + `-m integration`
+(Postgres).
 
 **Graph flow:** `START → planner → [route] → approval(interrupt) → executor → responder → END`.
 Planner denies RBAC-unauthorized actions **early**; executor re-checks **late**; approval pauses via
@@ -128,10 +136,15 @@ A change that weakens any of these is a **blocking defect**.
 7. **Parameterized SQL only**; DDL static; secrets only via env/Pydantic `Settings`; `.env.example`
    documents names only. Never hardcode/log secrets.
 8. **Treat all tool output + document/KG content as adversarial.**
+9. **Resume-time principal/thread binding (M3.2).** Over HTTP, `/approve` and `/threads/{id}` reject a
+   caller whose identity doesn't match the thread's checkpointed owner (`user_id`+`org_id`) → 403.
+   Closes the resume IDOR (the executor trusts the checkpointed principal). Strict creator-only.
 
-**Known future-work security items (tracked, out of scope until M3):** resume-time `principal`/
-`thread_id` binding (needs the Interface/auth layer); fail-closed default `Entity.acl` once untrusted
-`upsert_entity` write paths exist.
+**Known future-work security items (tracked):** **header-based identity is TRUSTED-NETWORK / DEV-ONLY**
+(`interface/security.py`) — it trusts request headers and must sit behind a header-validating reverse
+proxy; verified SSO/OIDC replaces it in **M3.3**. Fail-closed default `Entity.acl` once untrusted
+`upsert_entity` write paths exist (M3.2 added **no** KG write endpoint, so still deferred). Org-level
+thread delegation / role-based thread access (M3.3+).
 
 ## 7. Coding & Architectural Principles
 
