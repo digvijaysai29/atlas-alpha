@@ -4,9 +4,10 @@ A :class:`PolicyStore` owns the role→permission mapping that backs RBAC. It is
 other collaborators (audit, knowledge) so the mapping can be hardcoded (dev/tests), or durable and
 runtime-editable (Postgres) — without changing any enforcement code.
 
-Semantics are unchanged from the original hardcoded dict: default-deny / fail-closed, role expansion
-with the ``"*"`` admin wildcard (see :func:`atlas.governance.rbac.expand_roles`, the shared source of
-truth). This module imports **only** from :mod:`atlas.governance.rbac` (one-way) to avoid a cycle.
+Semantics match the original hardcoded dict: default-deny / fail-closed, role expansion with the
+``"*"`` admin wildcard (see :func:`atlas.governance.rbac.expand_roles`, the shared source of truth),
+plus hierarchical ``":*"`` grant matching (see :func:`atlas.governance.rbac.permission_satisfied`).
+This module imports **only** from :mod:`atlas.governance.rbac` (one-way) to avoid a cycle.
 """
 
 from __future__ import annotations
@@ -14,7 +15,12 @@ from __future__ import annotations
 import abc
 from collections.abc import Mapping
 
-from atlas.governance.rbac import ROLE_PERMISSIONS, WILDCARD, Principal, expand_roles
+from atlas.governance.rbac import (
+    ROLE_PERMISSIONS,
+    Principal,
+    expand_roles,
+    permission_satisfied,
+)
 
 
 class PolicyStore(abc.ABC):
@@ -28,13 +34,14 @@ class PolicyStore(abc.ABC):
     def can(self, principal: Principal | None, permission: str | None) -> bool:
         """Default-deny authorization check shared by every backend.
 
-        ``permission is None`` means "no special permission required" → allowed. The ``"*"`` wildcard
-        grants everything.
+        ``permission is None`` means "no special permission required" → allowed. The global ``"*"``
+        admin wildcard and hierarchical ``":*"`` grants are honored via
+        :func:`atlas.governance.rbac.permission_satisfied` (shared with the free ``can`` so every
+        backend matches identically).
         """
         if permission is None:
             return True
-        granted = self.effective_permissions(principal)
-        return WILDCARD in granted or permission in granted
+        return permission_satisfied(self.effective_permissions(principal), permission)
 
 
 class InMemoryPolicyStore(PolicyStore):

@@ -33,6 +33,7 @@ from atlas.governance.rbac import (
     expand_roles,
     get_current_principal,
     get_effective_permissions,
+    permission_satisfied,
 )
 
 __all__ = [
@@ -55,6 +56,7 @@ __all__ = [
     "expand_roles",
     "get_current_principal",
     "get_effective_permissions",
+    "permission_satisfied",
     # policy store
     "DEFAULT_POLICY",
     "InMemoryPolicyStore",

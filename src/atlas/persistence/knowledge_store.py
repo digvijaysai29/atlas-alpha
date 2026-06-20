@@ -67,8 +67,11 @@ ON CONFLICT (id) DO UPDATE SET
 _INSERT_RELATION = "INSERT INTO atlas_kg_relations (src_id, dst_id, type) VALUES (%s, %s, %s)"
 _SELECT_RELATIONS = "SELECT src_id, dst_id, type FROM atlas_kg_relations ORDER BY src_id, dst_id"
 
-# RBAC: readable iff the principal is an admin wildcard, the acl is NULL/empty (world-readable), or
-# the acl array overlaps (``&&``) the principal's effective permission set.
+# RBAC: readable iff the principal is an admin wildcard, the acl is NULL/empty (world-readable), the
+# acl array overlaps (``&&``) the principal's exact permission grants, OR an acl entry matches one of
+# the principal's hierarchical ``":*"`` grants (expanded to LIKE prefix patterns). Wildcards are
+# honored on the granted side only — keeping the SQL filter in parity with ``permission_satisfied``
+# / ``can_read`` so a ``kg:read:*`` grant reveals ``kg:read:org`` rows the SQL would otherwise hide.
 # Relevance: no search terms ⇒ match all; otherwise full-text match OR any-term substring (ILIKE
 # ANY) so behavior matches the in-memory keyword-OR stub.
 _QUERY = """
@@ -78,7 +81,10 @@ WHERE (
         %(is_admin)s = TRUE
         OR acl IS NULL
         OR cardinality(acl) = 0
-        OR acl && %(perms)s::text[]
+        OR acl && %(exact)s::text[]
+        OR EXISTS (
+            SELECT 1 FROM unnest(acl) AS a WHERE a LIKE ANY(%(wildcard_like)s::text[])
+        )
     )
     AND (
         %(match_all)s = TRUE
@@ -159,10 +165,16 @@ class PostgresKnowledgeGraph(KnowledgeGraph):
     def query(self, principal: Principal | None, text: str, *, limit: int = 5) -> list[Entity]:
         permissions = self._policy.effective_permissions(principal)
         is_admin = _ADMIN_WILDCARD in permissions
+        # Exact grants drive the array-overlap (``&&``) clause; hierarchical ``a:b:*`` grants become
+        # LIKE prefix patterns ("a:b:%"), with the prefix ``_like_escape``-d so a permission string
+        # can never inject LIKE metacharacters. ``LIKE ANY('{}')`` is harmless (false) when empty.
+        exact = [p for p in permissions if p != _ADMIN_WILDCARD and not p.endswith(":*")]
+        wildcard_like = [f"{_like_escape(p[:-1])}%" for p in permissions if p.endswith(":*")]
         terms = [term for term in text.lower().split() if term]
         params = {
             "is_admin": is_admin,
-            "perms": list(permissions),
+            "exact": exact,
+            "wildcard_like": wildcard_like,
             "match_all": not terms,
             "text": text,
             "patterns": [f"%{_like_escape(term)}%" for term in terms],

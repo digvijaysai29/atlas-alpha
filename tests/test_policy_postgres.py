@@ -52,6 +52,18 @@ def test_grant_is_idempotent_and_revoke_removes(pg_pool: object) -> None:
     assert store.can(MEMBER, "tool:send") is False
 
 
+def test_wildcard_grant_resolves_and_round_trips(pg_pool: object) -> None:
+    # M3.5: a hierarchical `kg:read:*` grant satisfies concrete leaves and survives grant/revoke.
+    store = PostgresPolicyStore(pg_pool)  # type: ignore[arg-type]
+    store.grant("member", "kg:read:*")
+    assert store.effective_permissions(MEMBER) == frozenset({"kg:read:*"})
+    assert store.can(MEMBER, "kg:read:org") is True
+    assert store.can(MEMBER, "kg:read:personal") is True
+    assert store.can(MEMBER, "kg:write:org") is False  # wildcard stays within its prefix
+    store.revoke("member", "kg:read:*")
+    assert store.can(MEMBER, "kg:read:org") is False  # back to deny
+
+
 def test_policy_is_durable_across_a_fresh_store_instance(pg_pool: object) -> None:
     PostgresPolicyStore(pg_pool).grant("member", "tool:send")  # type: ignore[arg-type]
     reloaded = PostgresPolicyStore(pg_pool, setup=False)  # type: ignore[arg-type]

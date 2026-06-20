@@ -10,6 +10,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
 from atlas.actions import ProposedAction
+from atlas.governance import InMemoryPolicyStore
 from atlas.governance.rbac import Principal
 from atlas.knowledge import seed_demo_graph
 from atlas.knowledge.interfaces import Entity, can_read
@@ -47,6 +48,17 @@ def test_org_entity_hidden_from_guest_visible_to_member() -> None:
     assert "doc-1" in member_ids  # org doc visible to member
     assert "doc-1" not in guest_ids  # IDOR guard: org doc hidden from guest
     assert "note-1" in guest_ids  # personal note still visible to guest
+
+
+def test_wildcard_grant_reveals_org_entity_in_memory() -> None:
+    # A role granted the hierarchical `kg:read:*` wildcard reads org-scoped entities (M3.5) even
+    # though it was never granted the exact `kg:read:org` leaf.
+    graph = seed_demo_graph()
+    graph.bind_policy(InMemoryPolicyStore({"reader": frozenset({"kg:read:*"})}))
+    reader = Principal(user_id="carol", roles=("reader",))
+    ids = {e.id for e in graph.query(reader, "revenue onboarding")}
+    assert "doc-1" in ids  # org doc revealed by the wildcard grant
+    assert "note-1" in ids  # personal note too
 
 
 def test_query_keyword_match_is_scoped_to_terms() -> None:

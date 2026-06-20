@@ -26,8 +26,8 @@ branch → PR into `main` → CI must be green.
 | **M3.2** | FastAPI Interface (`/chat`, `/approve`, `/threads/{id}`) + **resume-time principal/thread binding**; trusted-network header identity shim | ✅ merged (PR #9) |
 | **M3.3** | Real **OIDC/JWT bearer auth** (RS256+JWKS, claims→`Principal`); header shim → dev fallback. See `AUTH.md` | ✅ merged (PR #10) |
 | **M3.4** | Pluggable **`PolicyStore`** (ABC + in-memory + Postgres) replacing hardcoded `ROLE_PERMISSIONS`; `manage_policy.py` CLI. See `AUTH.md` | ✅ merged (PR #16) |
-| **M3.5** | **← NEXT.** Fine-grained RBAC: **hierarchical wildcard permissions** (`kg:read:*` ⇒ `kg:read:org`). Full implementation guide: **[`M3.5_PLAN.md`](./M3.5_PLAN.md)** | ⏭ planned |
-| **M3.6** | Per-principal rate limiting on the HTTP interface | future |
+| **M3.5** | Fine-grained RBAC: **hierarchical wildcard permissions** (`kg:read:*` ⇒ `kg:read:org`) via shared `permission_satisfied`. Guide: **[`M3.5_PLAN.md`](./M3.5_PLAN.md)** | ✅ this PR |
+| **M3.6** | **← NEXT.** Per-principal rate limiting on the HTTP interface | ⏭ planned |
 | **M4+** | Real integrations, pgvector semantic retrieval, sessions/provisioning, SSE streaming | future |
 
 **Net:** atlas is a secure, durable, identity-aware, knowledge-grounded HITL agent with a transparent
@@ -207,9 +207,16 @@ Each is a separate milestone; keep the sub-phase discipline (small PRs, green CI
   `DATABASE_URL` and injects via `build_graph` into planner/executor/KG. **Empty Postgres table =
   deny-all** (no auto-seed; startup warning); seed/list/grant/revoke/export via
   `scripts/manage_policy.py` from `config/default_policies.json`. Tests: `tests/test_policy_store.py`
-  (+ a no-legacy-fallback guard), `tests/test_policy_postgres.py`. **Deferred (M3.5/M4, in AUTH.md):**
-  fine-grained RBAC (`ToolPermission`), per-principal rate limiting, sessions/refresh, provisioning,
-  admin UI, policy versioning/caching, OAuth login flows.
+  (+ a no-legacy-fallback guard), `tests/test_policy_postgres.py`.
+- **M3.5 — Hierarchical wildcard RBAC.** ✅ **DONE (this PR).** A granted `kg:read:*` satisfies a
+  required `kg:read:org`; `tool:*` satisfies any `tool:...`. One matching rule —
+  `governance/rbac.py:permission_satisfied` — shared by `InMemoryPolicyStore`, `PostgresPolicyStore`,
+  the Postgres KG SQL read filter (`persistence/knowledge_store.py`, `LIKE`-prefix expansion of `:*`
+  grants, `_like_escape`-d), and `can_read` (backend parity). Wildcards expand **only on the granted
+  side**; the LLM still can never self-grant. Full guide: `M3.5_PLAN.md`. **Deferred → M3.6/M4 (in
+  AUTH.md):** per-principal rate limiting, resource/argument-aware `ToolPermission`, sessions/refresh,
+  provisioning, admin UI, policy versioning/caching, OAuth login flows.
+- **M3.6 — Per-principal rate limiting** on the HTTP interface (needs a shared counter store).
 - **M4 — Real tool integrations** (Gmail / Slack / Jira / Calendar). Swap mock tools for real adapters
   behind `BaseTool`; per-integration OAuth + secret management; correct per-tool `risk_tier` +
   `required_permission`; **idempotency** for sends (avoid double-send on retry); sandboxing; webhook
@@ -228,7 +235,8 @@ enabling phase arrives:
    `ATLAS_OIDC_*` (see `AUTH.md`).
 3. **Fail-closed default `Entity.acl`** → **M3.3+** (still no *untrusted* `upsert_entity` write path —
    M3.2 added no KG write endpoint; revisit when an API write path lands).
-3. **Richer `ToolPermission`/ACL model** → M3/M4 (the current string permissions are a placeholder).
+3. **Richer `ToolPermission`/ACL model** (resource/argument-aware) → M4 (M3.5 added hierarchical
+   `:*` wildcard matching on plain strings; structured permissions are still a placeholder).
 4. **Merkle / external anchoring** of the hash-chained audit → cross-cutting hardening.
 
 ## 8. Key file index

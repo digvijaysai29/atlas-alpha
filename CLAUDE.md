@@ -30,8 +30,9 @@ sub-phase is its own branch → PR into `main` → CI must be green.
 | **M3.1** | Concrete **Postgres-backed `KnowledgeGraph`** (full-text search, RBAC filter pushed into SQL); `persistence/knowledge_store.py`; `make_knowledge_graph` precedence by `DATABASE_URL` | ✅ **merged (PR #8)** |
 | **M3.2** | **FastAPI Interface layer** (`/chat`, `/approve` resume, `/threads/{id}`) + **resume-time principal/thread binding**; trusted-network header identity shim (`interface/`) | ✅ **merged (PR #9)** |
 | **M3.3** | **Real OIDC/JWT bearer auth** (`interface/auth.py`, RS256+JWKS, claims→`Principal`); header shim demoted to dev fallback; see [`AUTH.md`](./AUTH.md) | ✅ **merged (PR #10)** |
-| **M3.4** | **Pluggable `PolicyStore`** (ABC + in-memory default + Postgres backend) replacing the hardcoded `ROLE_PERMISSIONS`; `make_policy_store` DI; `scripts/manage_policy.py` CLI | 🔄 **this PR** |
-| **M3.5+** | **NEXT FOCUS** → fine-grained RBAC (`ToolPermission`), per-principal rate limiting | planned |
+| **M3.4** | **Pluggable `PolicyStore`** (ABC + in-memory default + Postgres backend) replacing the hardcoded `ROLE_PERMISSIONS`; `make_policy_store` DI; `scripts/manage_policy.py` CLI | ✅ **merged (PR #16)** |
+| **M3.5** | **Hierarchical wildcard RBAC** — granted `kg:read:*` satisfies `kg:read:org`; shared `permission_satisfied` across in-memory/Postgres stores + KG SQL filter | 🔄 **this PR** |
+| **M3.6+** | **NEXT FOCUS** → per-principal rate limiting; resource/argument-aware `ToolPermission` | planned |
 | **M4+** | Real integrations (Gmail/Slack/Jira), pgvector semantic retrieval, sessions/provisioning, SSE streaming | future |
 
 ## 3. Tech Stack
@@ -114,6 +115,11 @@ Planner denies RBAC-unauthorized actions **early**; executor re-checks **late**;
   runtime-editable via `scripts/manage_policy.py`). `make_policy_store` selects by `DATABASE_URL`; the
   store is **injected** through `build_graph` into the planner, executor, and KG backends. Tools
   declare an optional `required_permission` (string; richer `ToolPermission` is a future placeholder).
+  **(M3.5) Hierarchical wildcard grants:** a granted `kg:read:*` satisfies a required `kg:read:org`;
+  `tool:*` satisfies any `tool:...`. Matching lives in one place — `rbac.py:permission_satisfied` —
+  shared by both `PolicyStore` backends, the Postgres KG SQL filter, and `can_read` (backend parity).
+  Wildcards expand **only on the granted side**; the required permission is always concrete (the LLM
+  still can never self-grant), and a bare `kg:read` never silently covers `kg:read:org`.
   Enforcement is **defense-in-depth**: deny-early in the planner **and** re-check-late in the executor.
   Authorization is re-evaluated every call — persisted ACLs are never trusted as authz. **An empty
   Postgres policy table is deny-all (fail-closed); seed explicitly — never auto-seed on connect.**
@@ -166,8 +172,9 @@ A change that weakens any of these is a **blocking defect**.
 **Known future-work security items (tracked):** the **dev header shim** (`interface/security.py`) is
 still TRUSTED-NETWORK only — fine for local/dev, but real deployments **must** set `ATLAS_OIDC_*`.
 Fail-closed default `Entity.acl` once untrusted `upsert_entity` write paths exist (no KG write
-endpoint yet, still deferred). Fine-grained RBAC (`ToolPermission`), per-principal rate limiting,
-org-level thread delegation, policy versioning/admin-UI → M3.5/M4 (enumerated in `AUTH.md`).
+endpoint yet, still deferred). Per-principal rate limiting (M3.6), resource/argument-aware
+`ToolPermission`, org-level thread delegation, policy versioning/admin-UI → M3.6/M4 (enumerated in
+`AUTH.md`). (Hierarchical wildcard RBAC landed in M3.5.)
 
 ## 7. Coding & Architectural Principles
 

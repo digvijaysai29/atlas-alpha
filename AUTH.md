@@ -112,6 +112,29 @@ uv run python scripts/manage_policy.py export      # dump current policy as JSON
 can't drift during the transition). Semantics are unchanged: default-deny, the `"*"` admin wildcard
 grants all, and the LLM can never self-grant.
 
+### Wildcard permissions (M3.5)
+
+Permission strings are colon-segmented (`tool:send`, `kg:read:org`, `kg:read:personal`). A role can be
+granted a **hierarchical wildcard** so it covers a whole prefix instead of every leaf. Matching
+(`governance/rbac.py:permission_satisfied`, the single source of truth shared by the in-memory store,
+the Postgres store, the Postgres KG SQL filter, and `can_read`): a **granted** `g` satisfies a
+**required** `r` iff
+
+1. `g == "*"` — the global admin wildcard (grants everything), **or**
+2. `g == r` — exact match, **or**
+3. `g` ends with `":*"` **and** `r` starts with `g`'s prefix (the part before `*`, including the
+   trailing colon). So `kg:read:*` satisfies `kg:read:org` and `kg:read:personal`; `tool:*` satisfies
+   `tool:send`; `kg:*` satisfies `kg:read:org`.
+
+Wildcards are interpreted **only on the granted side** — a tool's `required_permission` is always a
+concrete string, never a pattern. A bare `kg:read` (no trailing `:*`) does **not** cover `kg:read:org`
+(no silent hierarchy; only the explicit `:*` suffix expands). Default-deny is unchanged. Grant one via
+the CLI:
+
+```bash
+uv run python scripts/manage_policy.py grant member kg:read:*   # one grant covers org + personal
+```
+
 ## Deferred / future work
 
 Scoped out to keep M3.3 a single, green, security-focused milestone. Tracked here so they are not
@@ -119,8 +142,9 @@ forgotten:
 
 | Item | Why deferred | Suggested milestone |
 |---|---|---|
-| **Fine-grained RBAC** (richer `ToolPermission`, resource scoping) | current string permissions are a deliberate placeholder; needs design | M3.5 / M4 |
-| **Per-principal rate limiting** | needs a shared counter store (Redis/DB) + policy; orthogonal to identity | M3.5 |
+| **Hierarchical wildcard permissions** (`kg:read:*` ⇒ `kg:read:org`) | usability of the string policy without a new data model | ✅ **done (M3.5)** — see *Wildcard permissions* above |
+| **Resource/argument-aware RBAC** (richer `ToolPermission`, "only send to internal domains") | current string permissions are a deliberate placeholder; needs design | M4 |
+| **Per-principal rate limiting** | needs a shared counter store (Redis/DB) + policy; orthogonal to identity | M3.6 |
 | **Policy versioning / history / admin UI / caching layer** | a runtime-editable store exists (M3.4); these are larger follow-ons | M4+ |
 | **Sessions / refresh tokens** | bearer JWTs are stateless; refresh/rotation belongs with a login flow | M4 |
 | **User / org provisioning** | JIT/SCIM provisioning + an org model is a backend feature, not edge auth | M4 |
