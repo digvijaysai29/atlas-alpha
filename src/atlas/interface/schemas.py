@@ -32,8 +32,8 @@ class ChatRequest(BaseModel):
 class ApproveRequest(BaseModel):
     """A human's decision for a thread paused at the approval gate.
 
-    Provide either ``approve`` (apply to all pending actions) or the granular ``approved_ids`` /
-    ``rejected_ids`` lists. At least one decision must be present.
+    Provide **either** ``approve`` (apply to all pending actions) **or** the granular
+    ``approved_ids`` / ``rejected_ids`` lists — not both. At least one decision must be present.
     """
 
     thread_id: str = Field(min_length=1)
@@ -42,9 +42,13 @@ class ApproveRequest(BaseModel):
     rejected_ids: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def _require_a_decision(self) -> ApproveRequest:
+    def _validate_decisions(self) -> ApproveRequest:
         if self.approve is None and not self.approved_ids and not self.rejected_ids:
             raise ValueError("provide `approve` or `approved_ids`/`rejected_ids`")
+        if self.approve is not None and (self.approved_ids or self.rejected_ids):
+            raise ValueError("use either `approve` or `approved_ids`/`rejected_ids`, not both")
+        if set(self.approved_ids) & set(self.rejected_ids):
+            raise ValueError("an action_id cannot appear in both `approved_ids` and `rejected_ids`")
         return self
 
 

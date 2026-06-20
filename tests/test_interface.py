@@ -183,6 +183,52 @@ def test_validation_error_uses_envelope() -> None:
     assert resp.json()["error"]["code"] == "validation_error"
 
 
+def test_granular_conflicting_action_id_returns_422() -> None:
+    client, atlas = _build(_send_plan)
+    chat = client.post("/chat", json={"message": "email"}, headers=_headers("alice")).json()
+    action_id = chat["pending_actions"][0]["action_id"]
+    resp = client.post(
+        "/approve",
+        json={
+            "thread_id": chat["thread_id"],
+            "approved_ids": [action_id],
+            "rejected_ids": [action_id],
+        },
+        headers=_headers("alice"),
+    )
+    assert resp.status_code == 422
+    assert resp.json()["ok"] is False
+    assert not [e for e in atlas.audit.events() if e.event_type.value == "executed"]
+
+
+def test_mixed_bulk_and_granular_returns_422() -> None:
+    client, _ = _build(_send_plan)
+    tid = client.post("/chat", json={"message": "email"}, headers=_headers("alice")).json()[
+        "thread_id"
+    ]
+    resp = client.post(
+        "/approve",
+        json={"thread_id": tid, "approve": True, "rejected_ids": ["act_bogus"]},
+        headers=_headers("alice"),
+    )
+    assert resp.status_code == 422
+    assert resp.json()["ok"] is False
+
+
+def test_spoofed_anonymous_user_id_cannot_access_anonymous_thread() -> None:
+    client, _ = _build(_search_plan)
+    tid = client.post("/chat", json={"message": "find"}).json()["thread_id"]
+    assert client.get(f"/threads/{tid}", headers=_headers("anonymous")).status_code == 403
+
+
+def test_spoofed_anonymous_user_id_cannot_elevate_rbac() -> None:
+    client, _ = _build(_send_plan)
+    body = client.post("/chat", json={"message": "email"}, headers=_headers("anonymous")).json()
+    assert body["status"] == "completed"
+    assert body["pending_actions"] == []
+    assert body["action_results"] == []
+
+
 # --- RBAC + anti-replay still hold through HTTP -------------------------------
 def test_anonymous_caller_is_denied_before_approval() -> None:
     client, _ = _build(_send_plan)

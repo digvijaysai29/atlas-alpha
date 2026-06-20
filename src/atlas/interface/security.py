@@ -37,14 +37,15 @@ def _settings_for(request: Request) -> Settings:
 def get_request_principal(request: Request) -> Principal:
     """Build the caller's :class:`Principal` from the configured identity headers.
 
-    Fail-closed: a missing/blank user header yields :meth:`Principal.anonymous` (no roles). Roles are
-    a comma-separated list; an empty/blank value contributes nothing. (Named distinctly from
-    :func:`atlas.governance.rbac.get_current_principal`, which extracts the principal from *graph
-    state* — this one reads the *HTTP request*.)
+    Fail-closed: a missing/blank user header yields :meth:`Principal.anonymous` (no roles). The
+    sentinel user id ``"anonymous"`` is reserved and always maps to unauthenticated — roles on that
+    id are ignored. Roles are a comma-separated list; an empty/blank value contributes nothing.
+    (Named distinctly from :func:`atlas.governance.rbac.get_current_principal`, which extracts the
+    principal from *graph state* — this one reads the *HTTP request*.)
     """
     settings = _settings_for(request)
     user_id = (request.headers.get(settings.api_user_header) or "").strip()
-    if not user_id:
+    if not user_id or user_id == Principal.anonymous().user_id:
         return Principal.anonymous()
     roles_raw = request.headers.get(settings.api_roles_header) or ""
     roles = tuple(role.strip() for role in roles_raw.split(",") if role.strip())
@@ -74,6 +75,11 @@ def verify_thread_owner(owner: Principal | None, caller: Principal) -> None:
     # Fail-closed: the anonymous principal is "no verified identity" — it must never own-bind to a
     # thread for cross-request access just because two unauthenticated callers share the sentinel id.
     if caller == Principal.anonymous():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Authentication required for thread access.",
+        )
+    if owner == Principal.anonymous():
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Authentication required for thread access.",
