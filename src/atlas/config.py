@@ -7,8 +7,9 @@ Settings. Nothing here is ever hardcoded, and these objects are immutable (``fro
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Self
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # LangSmith reads these names directly from the process environment to enable tracing. We surface
@@ -68,6 +69,25 @@ class Settings(BaseSettings):
     # Clock-skew tolerance (seconds) for exp/nbf. 60s is the common default: large enough to absorb
     # normal client/IdP NTP drift, small enough not to meaningfully extend an expired token.
     oidc_leeway: int = Field(default=60, alias="ATLAS_OIDC_LEEWAY")
+
+    @model_validator(mode="after")
+    def validate_oidc_config(self) -> Self:
+        """OIDC vars must be all set or all unset — partial config must not fall back to the header shim."""
+        oidc_fields = {
+            "ATLAS_OIDC_ISSUER": self.oidc_issuer,
+            "ATLAS_OIDC_AUDIENCE": self.oidc_audience,
+            "ATLAS_OIDC_JWKS_URI": self.oidc_jwks_uri,
+        }
+        is_set = {name: bool(val and str(val).strip()) for name, val in oidc_fields.items()}
+        set_names = [name for name, present in is_set.items() if present]
+        unset_names = [name for name, present in is_set.items() if not present]
+        if set_names and unset_names:
+            msg = (
+                f"Partial OIDC configuration: {', '.join(set_names)} set but "
+                f"{', '.join(unset_names)} missing. Set all three or leave all blank."
+            )
+            raise ValueError(msg)
+        return self
 
     @property
     def oidc_enabled(self) -> bool:
