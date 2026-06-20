@@ -23,9 +23,10 @@ branch → PR into `main` → CI must be green.
 | **M2.2c** | Structured `Source` attribution + grounding-aware confidence (`governance/confidence.py`) | ✅ PR #5 (CI green; merge it) |
 | **M2.3** | Real `agent-eval` gate (deterministic blocking + optional LangSmith) | ✅ merged (PR #7) |
 | **M3.1** | Durable **`PostgresKnowledgeGraph`** (full-text search; RBAC filter in SQL) behind the `KnowledgeGraph` ABC | ✅ merged (PR #8) |
-| **M3.2** | **← YOU ARE HERE.** FastAPI Interface (`/chat`, `/approve`, `/threads/{id}`) + **resume-time principal/thread binding**; trusted-network header identity shim | 🔄 this PR |
-| **M3.3** | Real Auth/SSO (OIDC) replacing the header shim; sessions; org/role provisioning | ⏭ next |
-| **M4+** | Real integrations, pgvector semantic retrieval, richer ACLs, SSE streaming | future |
+| **M3.2** | FastAPI Interface (`/chat`, `/approve`, `/threads/{id}`) + **resume-time principal/thread binding**; trusted-network header identity shim | ✅ merged (PR #9) |
+| **M3.3** | **← YOU ARE HERE.** Real **OIDC/JWT bearer auth** (RS256+JWKS, claims→`Principal`); header shim → dev fallback. See `AUTH.md` | 🔄 this PR |
+| **M3.4** | Policy store (replace `ROLE_PERMISSIONS`); fine-grained RBAC; per-principal rate limiting | ⏭ next |
+| **M4+** | Real integrations, pgvector semantic retrieval, sessions/provisioning, SSE streaming | future |
 
 **Net:** atlas is a secure, durable, identity-aware, knowledge-grounded HITL agent with a transparent
 sources+confidence layer, a real blocking eval gate, and now a **network interface** with resume-time
@@ -193,9 +194,13 @@ Each is a separate milestone; keep the sub-phase discipline (small PRs, green CI
   fail-closed anonymous; request validation + consistent `ErrorResponse` envelope; no internal leaks.
   **Carried to M3.3:** the header shim must be replaced by *verified* SSO/OIDC (today it trusts
   headers and must sit behind a header-validating proxy). SSE streaming deferred.
-- **M3.3 — AuthN/AuthZ (SSO/OIDC).** Real identity → `Principal`; session management; org/role
-  provisioning; replace the demo `ROLE_PERMISSIONS` (`governance/rbac.py`) with a policy store;
-  per-principal rate limiting.
+- **M3.3 — AuthN (OIDC).** ✅ **DONE (this PR).** `src/atlas/interface/auth.py` (`OidcAuthenticator`,
+  `PyJWT[crypto]`) validates bearer JWTs (RS256 + JWKS; `iss`/`aud`/`exp` required; alg-pinned),
+  maps claims→`Principal`, and returns 401 on missing/invalid; the header shim is now the dev-only
+  fallback (`settings.oidc_enabled` selects). Hermetic tests in `tests/test_interface_auth.py`.
+  **Full config + deferred-work guide: [`AUTH.md`](./AUTH.md).** Deferred to **M3.4/M4** (documented
+  in AUTH.md): policy store replacing `ROLE_PERMISSIONS`, fine-grained RBAC, per-principal rate
+  limiting, sessions/refresh, user/org provisioning, admin UI, OAuth login flows.
 - **M4 — Real tool integrations** (Gmail / Slack / Jira / Calendar). Swap mock tools for real adapters
   behind `BaseTool`; per-integration OAuth + secret management; correct per-tool `risk_tier` +
   `required_permission`; **idempotency** for sends (avoid double-send on retry); sandboxing; webhook
@@ -209,8 +214,9 @@ Each is a separate milestone; keep the sub-phase discipline (small PRs, green CI
 These came out of the `/security-review` passes as *out-of-scope-for-now*; they become real when their
 enabling phase arrives:
 1. **Resume-time principal/thread binding** → ✅ **DONE in M3.2** (`verify_thread_owner`).
-2. **Verified identity (replace the trusted-network header shim)** → **M3.3** — `get_request_principal`
-   trusts request headers, so until SSO/OIDC lands the API must run behind a header-validating proxy.
+2. **Verified identity (replace the trusted-network header shim)** → ✅ **DONE in M3.3** (OIDC bearer
+   auth; `interface/auth.py`). The header shim remains a dev-only fallback — real deployments set
+   `ATLAS_OIDC_*` (see `AUTH.md`).
 3. **Fail-closed default `Entity.acl`** → **M3.3+** (still no *untrusted* `upsert_entity` write path —
    M3.2 added no KG write endpoint; revisit when an API write path lands).
 3. **Richer `ToolPermission`/ACL model** → M3/M4 (the current string permissions are a placeholder).

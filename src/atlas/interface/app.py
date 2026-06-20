@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from atlas.config import Settings, get_settings
+from atlas.interface.auth import OidcAuthenticator, build_authenticator
 from atlas.interface.routes import router
 from atlas.interface.schemas import ErrorDetail, ErrorResponse
 from atlas.orchestration.graph import Atlas, build_graph
@@ -24,16 +25,25 @@ from atlas.orchestration.graph import Atlas, build_graph
 logger = logging.getLogger("atlas.interface")
 
 
-def _error(status_code: int, code: str, message: str) -> JSONResponse:
+def _error(
+    status_code: int, code: str, message: str, headers: dict[str, str] | None = None
+) -> JSONResponse:
     body = ErrorResponse(error=ErrorDetail(code=code, message=message))
-    return JSONResponse(status_code=status_code, content=body.model_dump())
+    return JSONResponse(status_code=status_code, content=body.model_dump(), headers=headers)
 
 
-def create_app(*, atlas: Atlas | None = None, settings: Settings | None = None) -> FastAPI:
+def create_app(
+    *,
+    atlas: Atlas | None = None,
+    settings: Settings | None = None,
+    authenticator: OidcAuthenticator | None = None,
+) -> FastAPI:
     settings = settings or get_settings()
-    app = FastAPI(title="atlas", version="0.3.2")
+    app = FastAPI(title="atlas", version="0.3.3")
     app.state.settings = settings
     app.state.atlas = atlas or build_graph(settings=settings)
+    # OIDC bearer-token verification when configured; otherwise None => dev header-shim identity.
+    app.state.authenticator = authenticator or build_authenticator(settings)
     app.include_router(router)
 
     @app.exception_handler(StarletteHTTPException)
@@ -42,7 +52,9 @@ def create_app(*, atlas: Atlas | None = None, settings: Settings | None = None) 
             code = HTTPStatus(exc.status_code).name.lower()
         except ValueError:
             code = "error"
-        return _error(exc.status_code, code, str(exc.detail))
+        # Preserve auth challenge headers (e.g. WWW-Authenticate: Bearer on 401).
+        headers = getattr(exc, "headers", None)
+        return _error(exc.status_code, code, str(exc.detail), headers=headers)
 
     @app.exception_handler(RequestValidationError)
     def _on_validation_error(_request: Request, exc: RequestValidationError) -> JSONResponse:

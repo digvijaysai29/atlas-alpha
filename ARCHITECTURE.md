@@ -22,7 +22,7 @@ Because the agent takes **real, irreversible actions**, the architecture is buil
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  INTERFACE LAYER            FastAPI · /chat /approve /threads (M3.2)           │
+│  INTERFACE LAYER            FastAPI · /chat /approve /threads + OIDC (M3.2/3.3) │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  AGENT ORCHESTRATION LAYER  LangGraph state machine  ◄── THE CORE             │
 │      planner → (approval/interrupt) → executor → responder                    │
@@ -198,5 +198,8 @@ executor refuses to run a gated action without a matching, in-scope `ApprovalDec
 - **M3.2 (done):** FastAPI Interface (`src/atlas/interface/`) — `/chat`, `/approve`, `/threads/{id}`
   over the compiled graph; **resume-time principal/thread binding** (caller must match the thread's
   checkpointed owner → 403); interim trusted-network header identity shim; consistent error envelope.
-- **Later:** real auth/SSO (M3.3, replaces the header shim); pgvector semantic retrieval; real
-  integrations (Gmail/Slack/Jira); SSE streaming; Merkle/external audit anchoring.
+- **M3.3 (done):** real OIDC/JWT bearer auth (`src/atlas/interface/auth.py`, `PyJWT[crypto]`) —
+  RS256 signature via JWKS, `iss`/`aud`/`exp` verified, claims→`Principal`, 401 on invalid/missing;
+  the header shim is now a dev-only fallback. Config + deferred-work guide in `AUTH.md`.
+- **Later:** policy store (replace `ROLE_PERMISSIONS`) + fine-grained RBAC + rate limiting (M3.4);
+  pgvector semantic retrieval; real integrations (Gmail/Slack/Jira); SSE streaming; Merkle anchoring.

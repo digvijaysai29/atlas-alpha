@@ -55,6 +55,25 @@ class Settings(BaseSettings):
     api_roles_header: str = Field(default="X-Atlas-Roles", alias="ATLAS_API_ROLES_HEADER")
     api_org_header: str = Field(default="X-Atlas-Org", alias="ATLAS_API_ORG_HEADER")
 
+    # --- Authentication (M3.3 OIDC) ----------------------------------------
+    # When issuer + audience + jwks_uri are ALL set (see ``oidc_enabled``), bearer-token validation
+    # replaces the dev header shim. Leave them blank for dev/test (header shim). Use HTTPS in prod.
+    oidc_issuer: str | None = Field(default=None, alias="ATLAS_OIDC_ISSUER")
+    oidc_audience: str | None = Field(default=None, alias="ATLAS_OIDC_AUDIENCE")
+    oidc_jwks_uri: str | None = Field(default=None, alias="ATLAS_OIDC_JWKS_URI")
+    # Token claim names mapped onto the Principal.
+    oidc_user_claim: str = Field(default="sub", alias="ATLAS_OIDC_USER_CLAIM")
+    oidc_roles_claim: str = Field(default="roles", alias="ATLAS_OIDC_ROLES_CLAIM")
+    oidc_org_claim: str = Field(default="org_id", alias="ATLAS_OIDC_ORG_CLAIM")
+    # Clock-skew tolerance (seconds) for exp/nbf. 60s is the common default: large enough to absorb
+    # normal client/IdP NTP drift, small enough not to meaningfully extend an expired token.
+    oidc_leeway: int = Field(default=60, alias="ATLAS_OIDC_LEEWAY")
+
+    @property
+    def oidc_enabled(self) -> bool:
+        """True when OIDC is fully configured; otherwise the dev header shim is used."""
+        return bool(self.oidc_issuer and self.oidc_audience and self.oidc_jwks_uri)
+
     @property
     def has_anthropic_key(self) -> bool:
         """True when a real Claude API key is available."""
