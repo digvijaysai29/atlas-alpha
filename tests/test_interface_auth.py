@@ -251,9 +251,7 @@ def test_whitespace_org_claim_matches_missing_org_in_owner_binding(
     tid = client.post(
         "/chat", json={"message": "email"}, headers=_bearer(_token(priv, sub="alice"))
     ).json()["thread_id"]
-    resp = client.get(
-        f"/threads/{tid}", headers=_bearer(_token(priv, sub="alice", org="   "))
-    )
+    resp = client.get(f"/threads/{tid}", headers=_bearer(_token(priv, sub="alice", org="   ")))
     assert resp.status_code == 200
 
 
