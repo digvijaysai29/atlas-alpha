@@ -14,12 +14,16 @@ hierarchies) is a deliberate M3/M4 placeholder.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
     from atlas.orchestration.state import AgentState
+
+# The admin wildcard: a role granting "*" is authorized for every permission.
+WILDCARD = "*"
 
 
 class Principal(BaseModel):
@@ -46,25 +50,35 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
 }
 
 
-def get_effective_permissions(principal: Principal | None) -> frozenset[str]:
-    """Expand a principal's roles into their concrete permission set (the single source of truth
-    for role expansion; reused by :func:`can` and the RBAC-scoped knowledge store).
+def expand_roles(roles: tuple[str, ...], mapping: Mapping[str, frozenset[str]]) -> frozenset[str]:
+    """Expand role names into a concrete permission set against ``mapping`` (pure; fail-closed).
 
-    - A ``None`` principal has no permissions (fail-closed) → empty set.
+    The single source of truth for role expansion — reused by every :class:`PolicyStore` backend
+    (:mod:`atlas.governance.policy`) so in-memory and Postgres agree exactly.
+
     - Unknown roles contribute nothing.
     - If any role grants the wildcard ``"*"`` the result is ``frozenset({"*"})`` (admin: grants all).
     """
-    if principal is None:
-        return frozenset()
     permissions: set[str] = set()
-    for role in principal.roles:
-        granted = ROLE_PERMISSIONS.get(role)
+    for role in roles:
+        granted = mapping.get(role)
         if granted is None:
             continue  # unknown role grants nothing (fail-closed)
-        if "*" in granted:
-            return frozenset({"*"})
+        if WILDCARD in granted:
+            return frozenset({WILDCARD})
         permissions.update(granted)
     return frozenset(permissions)
+
+
+def get_effective_permissions(principal: Principal | None) -> frozenset[str]:
+    """Expand a principal's roles via the built-in :data:`ROLE_PERMISSIONS` default.
+
+    Back-compat default used by the free :func:`can` and :func:`can_read` when no explicit
+    :class:`PolicyStore` is supplied. A ``None`` principal has no permissions (fail-closed).
+    """
+    if principal is None:
+        return frozenset()
+    return expand_roles(principal.roles, ROLE_PERMISSIONS)
 
 
 def can(principal: Principal | None, permission: str | None) -> bool:
@@ -77,7 +91,7 @@ def can(principal: Principal | None, permission: str | None) -> bool:
     if permission is None:
         return True
     granted = get_effective_permissions(principal)
-    return "*" in granted or permission in granted
+    return WILDCARD in granted or permission in granted
 
 
 def get_current_principal(state: AgentState) -> Principal:

@@ -49,7 +49,7 @@ In `src/atlas/interface/auth.py` (`OidcAuthenticator`):
   (== `ATLAS_OIDC_AUDIENCE`).
 - **Claim → `Principal` mapping:** `sub`→`user_id`, roles claim→`roles` (accepts a JSON array *or* a
   comma/space-delimited string), org claim→`org_id`. The reserved `anonymous` subject is rejected.
-- Roles are still only meaningful via `ROLE_PERMISSIONS` — a token cannot grant a permission the
+- Roles are only meaningful via the **policy store** (below) — a token cannot grant a permission the
   policy doesn't map to its role.
 
 **`ATLAS_OIDC_LEEWAY` (default 60s):** clock-skew tolerance for `exp`/`nbf`. 60s is the common
@@ -81,19 +81,47 @@ Use **HTTPS** issuer/JWKS URLs in production. Provider examples:
 - **Clerk:** issuer `https://<subdomain>.clerk.accounts.dev`, JWKS at the issuer's
   `/.well-known/jwks.json`; map roles from a custom JWT template claim.
 
-Roles emitted by the IdP must match atlas role names in `ROLE_PERMISSIONS` (`admin` / `member` /
-`guest`) until the policy store lands (see below).
+Roles emitted by the IdP must match atlas role names known to the **policy store** (`admin` /
+`member` / `guest` by default; see below) — the IdP authenticates *who you are*; the policy store
+decides *what a role may do*.
 
-## Deferred / future work (NOT in M3.3)
+## Authorization / Policy store (M3.4)
+
+Role→permission mappings live behind `governance/policy.py:PolicyStore` (ABC), injected via
+`build_graph` into the planner, executor, and KG backends — so authorization can change without a
+code deploy. Two backends, selected by `make_policy_store` like the audit/KG factories:
+
+| Backend | When | Notes |
+|---|---|---|
+| `InMemoryPolicyStore` | `DATABASE_URL` unset (dev/tests) | seeded from the built-in `ROLE_PERMISSIONS` defaults |
+| `PostgresPolicyStore` | `DATABASE_URL` set | durable `atlas_role_permissions` table; runtime-editable |
+
+**A fresh Postgres policy table is empty = deny-all (fail-closed).** The factory never auto-seeds on
+connect (consistent with the KG); seeding is explicit and idempotent. A startup warning is logged
+when the table is empty. Manage it with the CLI (requires `DATABASE_URL`):
+
+```bash
+uv run python scripts/manage_policy.py seed       # idempotently load config/default_policies.json
+uv run python scripts/manage_policy.py list        # show role -> permissions
+uv run python scripts/manage_policy.py grant member tool:send
+uv run python scripts/manage_policy.py revoke guest kg:read:personal
+uv run python scripts/manage_policy.py export      # dump current policy as JSON
+```
+
+`config/default_policies.json` mirrors `ROLE_PERMISSIONS` (a unit test asserts they match, so they
+can't drift during the transition). Semantics are unchanged: default-deny, the `"*"` admin wildcard
+grants all, and the LLM can never self-grant.
+
+## Deferred / future work
 
 Scoped out to keep M3.3 a single, green, security-focused milestone. Tracked here so they are not
 forgotten:
 
 | Item | Why deferred | Suggested milestone |
 |---|---|---|
-| **Policy store (replace `ROLE_PERMISSIONS`)** | M3.3 maps IdP roles onto the existing static dict; a DB/external policy store is a separate concern with its own data model + tests | M3.4 |
-| **Fine-grained RBAC** (richer `ToolPermission`, resource scoping) | current string permissions are a deliberate placeholder; needs design | M3.4 / M4 |
-| **Per-principal rate limiting** | needs a shared counter store (Redis/DB) + policy; orthogonal to identity | M3.4 |
+| **Fine-grained RBAC** (richer `ToolPermission`, resource scoping) | current string permissions are a deliberate placeholder; needs design | M3.5 / M4 |
+| **Per-principal rate limiting** | needs a shared counter store (Redis/DB) + policy; orthogonal to identity | M3.5 |
+| **Policy versioning / history / admin UI / caching layer** | a runtime-editable store exists (M3.4); these are larger follow-ons | M4+ |
 | **Sessions / refresh tokens** | bearer JWTs are stateless; refresh/rotation belongs with a login flow | M4 |
 | **User / org provisioning** | JIT/SCIM provisioning + an org model is a backend feature, not edge auth | M4 |
 | **Admin UI for roles** | front-end + provisioning dependency | M4+ |

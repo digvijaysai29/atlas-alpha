@@ -24,8 +24,9 @@ branch → PR into `main` → CI must be green.
 | **M2.3** | Real `agent-eval` gate (deterministic blocking + optional LangSmith) | ✅ merged (PR #7) |
 | **M3.1** | Durable **`PostgresKnowledgeGraph`** (full-text search; RBAC filter in SQL) behind the `KnowledgeGraph` ABC | ✅ merged (PR #8) |
 | **M3.2** | FastAPI Interface (`/chat`, `/approve`, `/threads/{id}`) + **resume-time principal/thread binding**; trusted-network header identity shim | ✅ merged (PR #9) |
-| **M3.3** | **← YOU ARE HERE.** Real **OIDC/JWT bearer auth** (RS256+JWKS, claims→`Principal`); header shim → dev fallback. See `AUTH.md` | 🔄 this PR |
-| **M3.4** | Policy store (replace `ROLE_PERMISSIONS`); fine-grained RBAC; per-principal rate limiting | ⏭ next |
+| **M3.3** | Real **OIDC/JWT bearer auth** (RS256+JWKS, claims→`Principal`); header shim → dev fallback. See `AUTH.md` | ✅ merged (PR #10) |
+| **M3.4** | **← YOU ARE HERE.** Pluggable **`PolicyStore`** (ABC + in-memory + Postgres) replacing hardcoded `ROLE_PERMISSIONS`; `manage_policy.py` CLI. See `AUTH.md` | 🔄 this PR |
+| **M3.5** | Fine-grained RBAC (`ToolPermission`); per-principal rate limiting | ⏭ next |
 | **M4+** | Real integrations, pgvector semantic retrieval, sessions/provisioning, SSE streaming | future |
 
 **Net:** atlas is a secure, durable, identity-aware, knowledge-grounded HITL agent with a transparent
@@ -198,9 +199,16 @@ Each is a separate milestone; keep the sub-phase discipline (small PRs, green CI
   `PyJWT[crypto]`) validates bearer JWTs (RS256 + JWKS; `iss`/`aud`/`exp` required; alg-pinned),
   maps claims→`Principal`, and returns 401 on missing/invalid; the header shim is now the dev-only
   fallback (`settings.oidc_enabled` selects). Hermetic tests in `tests/test_interface_auth.py`.
-  **Full config + deferred-work guide: [`AUTH.md`](./AUTH.md).** Deferred to **M3.4/M4** (documented
-  in AUTH.md): policy store replacing `ROLE_PERMISSIONS`, fine-grained RBAC, per-principal rate
-  limiting, sessions/refresh, user/org provisioning, admin UI, OAuth login flows.
+  **Full config + deferred-work guide: [`AUTH.md`](./AUTH.md).**
+- **M3.4 — Pluggable PolicyStore.** ✅ **DONE (this PR).** `governance/policy.py` (`PolicyStore` ABC +
+  `InMemoryPolicyStore`, seeded from `ROLE_PERMISSIONS`) + `persistence/policy_store.py`
+  (`PostgresPolicyStore`, `atlas_role_permissions` table). `make_policy_store` selects by
+  `DATABASE_URL` and injects via `build_graph` into planner/executor/KG. **Empty Postgres table =
+  deny-all** (no auto-seed; startup warning); seed/list/grant/revoke/export via
+  `scripts/manage_policy.py` from `config/default_policies.json`. Tests: `tests/test_policy_store.py`
+  (+ a no-legacy-fallback guard), `tests/test_policy_postgres.py`. **Deferred (M3.5/M4, in AUTH.md):**
+  fine-grained RBAC (`ToolPermission`), per-principal rate limiting, sessions/refresh, provisioning,
+  admin UI, policy versioning/caching, OAuth login flows.
 - **M4 — Real tool integrations** (Gmail / Slack / Jira / Calendar). Swap mock tools for real adapters
   behind `BaseTool`; per-integration OAuth + secret management; correct per-tool `risk_tier` +
   `required_permission`; **idempotency** for sends (avoid double-send on retry); sandboxing; webhook

@@ -23,7 +23,8 @@ from typing import Any
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
-from atlas.governance.rbac import Principal, get_effective_permissions
+from atlas.governance.policy import DEFAULT_POLICY, PolicyStore
+from atlas.governance.rbac import Principal
 from atlas.knowledge.interfaces import Entity, KnowledgeGraph, Relation, can_read
 
 _ADMIN_WILDCARD = "*"
@@ -112,8 +113,11 @@ def _row_to_entity(row: dict[str, Any]) -> Entity:
 class PostgresKnowledgeGraph(KnowledgeGraph):
     """Durable, RBAC-scoped knowledge graph stored in Postgres."""
 
-    def __init__(self, pool: ConnectionPool, *, setup: bool = True) -> None:
+    def __init__(
+        self, pool: ConnectionPool, policy: PolicyStore | None = None, *, setup: bool = True
+    ) -> None:
         self._pool = pool
+        self._policy = policy or DEFAULT_POLICY  # governs the RBAC read filter
         if setup:
             self.setup()
 
@@ -149,8 +153,11 @@ class PostgresKnowledgeGraph(KnowledgeGraph):
                 for row in cur.fetchall()
             )
 
+    def bind_policy(self, policy: PolicyStore) -> None:
+        self._policy = policy
+
     def query(self, principal: Principal | None, text: str, *, limit: int = 5) -> list[Entity]:
-        permissions = get_effective_permissions(principal)
+        permissions = self._policy.effective_permissions(principal)
         is_admin = _ADMIN_WILDCARD in permissions
         terms = [term for term in text.lower().split() if term]
         params = {
@@ -165,4 +172,4 @@ class PostgresKnowledgeGraph(KnowledgeGraph):
             cur.execute(_QUERY, params)
             entities = [_row_to_entity(row) for row in cur.fetchall()]
         # Defense-in-depth: never trust the query alone — re-apply can_read before returning.
-        return [entity for entity in entities if can_read(principal, entity)]
+        return [entity for entity in entities if can_read(principal, entity, self._policy)]
