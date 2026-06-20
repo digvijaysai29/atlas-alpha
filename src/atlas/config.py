@@ -27,6 +27,16 @@ def _is_secure_oidc_url(url: str) -> bool:
     return parsed.scheme == "http" and parsed.hostname in _LOCAL_HTTP_HOSTS
 
 
+def _nonempty_str(value: str | None) -> bool:
+    """True when ``value`` contains non-whitespace content."""
+    return bool(value and value.strip())
+
+
+def _nonempty_secret(value: SecretStr | None) -> bool:
+    """True when ``value`` is present and contains non-whitespace content."""
+    return value is not None and bool(value.get_secret_value().strip())
+
+
 class Settings(BaseSettings):
     """Typed, immutable view of the runtime environment.
 
@@ -128,11 +138,25 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_rate_limit_config(self) -> Self:
-        """Rate-limit budget must be positive (fail fast on misconfig)."""
+        """Rate-limit budget must be positive; Upstash creds must be all set or all unset."""
         if self.rate_limit_requests <= 0:
             raise ValueError("ATLAS_RATE_LIMIT_REQUESTS must be a positive integer.")
         if self.rate_limit_window_seconds <= 0:
             raise ValueError("ATLAS_RATE_LIMIT_WINDOW_SECONDS must be a positive integer.")
+        if not self.rate_limit_enabled:
+            return self
+        upstash_fields = {
+            "UPSTASH_REDIS_REST_URL": _nonempty_str(self.upstash_redis_rest_url),
+            "UPSTASH_REDIS_REST_TOKEN": _nonempty_secret(self.upstash_redis_rest_token),
+        }
+        set_names = [name for name, present in upstash_fields.items() if present]
+        unset_names = [name for name, present in upstash_fields.items() if not present]
+        if set_names and unset_names:
+            msg = (
+                f"Partial Upstash rate-limit configuration: {', '.join(set_names)} set but "
+                f"{', '.join(unset_names)} missing. Set both or leave both blank."
+            )
+            raise ValueError(msg)
         return self
 
     @property
@@ -147,10 +171,10 @@ class Settings(BaseSettings):
         When False the limiter factory returns None and the interface is unthrottled (fail-open) —
         the dev/CI default, since the suite runs without Upstash.
         """
-        return bool(
+        return (
             self.rate_limit_enabled
-            and self.upstash_redis_rest_url
-            and self.upstash_redis_rest_token
+            and _nonempty_str(self.upstash_redis_rest_url)
+            and _nonempty_secret(self.upstash_redis_rest_token)
         )
 
     @property
