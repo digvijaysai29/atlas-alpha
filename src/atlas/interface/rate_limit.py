@@ -75,8 +75,8 @@ class UpstashRateLimiter(RateLimiter):
             return RateLimitDecision(allowed=True)
         if response.allowed:
             return RateLimitDecision(allowed=True)
-        # `reset` is a Unix timestamp in MILLISECONDS for when the window clears.
-        retry_after = max(0.0, response.reset / 1000.0 - time.time())
+        # `reset` is a Unix timestamp in seconds for when the window clears.
+        retry_after = max(0.0, response.reset - time.time())
         return RateLimitDecision(allowed=False, retry_after=retry_after)
 
 

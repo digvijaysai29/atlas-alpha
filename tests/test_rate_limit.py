@@ -9,6 +9,7 @@ creds (mirroring the Postgres integration pattern).
 from __future__ import annotations
 
 import os
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -178,7 +179,7 @@ def test_upstash_limiter_maps_denied_response() -> None:
 
     class _Resp:
         allowed = False
-        reset = 10**13  # far-future Unix ms => positive retry_after
+        reset = time.time() + 45.7  # seconds until window clears (SDK uses seconds)
 
     class _RL:
         def limit(self, _key: str) -> object:
@@ -186,7 +187,7 @@ def test_upstash_limiter_maps_denied_response() -> None:
 
     decision = UpstashRateLimiter(_RL()).acquire("k")  # type: ignore[arg-type]
     assert decision.allowed is False
-    assert decision.retry_after > 0
+    assert 45 <= decision.retry_after <= 46
 
 
 # --- build_rate_limiter selection -------------------------------------------
@@ -221,4 +222,4 @@ def test_real_upstash_enforces_limit() -> None:
     assert limiter.acquire(key).allowed is True
     denied = limiter.acquire(key)
     assert denied.allowed is False
-    assert denied.retry_after >= 0
+    assert denied.retry_after > 0
