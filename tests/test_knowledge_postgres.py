@@ -16,7 +16,6 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 
 from atlas.actions import ProposedAction
-from atlas.governance import InMemoryPolicyStore
 from atlas.governance.rbac import Principal
 from atlas.knowledge.interfaces import Entity, Relation
 from atlas.orchestration import build_graph
@@ -142,7 +141,6 @@ def test_planner_context_is_rbac_scoped_with_postgres_backend(pg_pool: object) -
     atlas = build_graph(
         plan_fn=_search_plan,
         knowledge=kg,
-        policy=InMemoryPolicyStore(),
         checkpointer=InMemorySaver(serde=atlas_serde()),
     )
     config: RunnableConfig = {"configurable": {"thread_id": "kg-pg-guest"}}

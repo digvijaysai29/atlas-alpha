@@ -8,7 +8,6 @@ and to reconfigure per environment.
 
 from __future__ import annotations
 
-import logging
 import sqlite3
 from dataclasses import dataclass
 from functools import lru_cache
@@ -18,7 +17,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from atlas.config import Settings, get_settings
-from atlas.governance import AuditLog, InMemoryAuditLog, InMemoryPolicyStore, PolicyStore
+from atlas.governance import AuditLog, InMemoryAuditLog
 from atlas.knowledge.interfaces import KnowledgeGraph
 from atlas.knowledge.memory_store import InMemoryKnowledgeGraph
 from atlas.orchestration.nodes import (
@@ -38,9 +37,6 @@ if TYPE_CHECKING:
     from langgraph.checkpoint.base import BaseCheckpointSaver
     from langgraph.graph.state import CompiledStateGraph
     from psycopg_pool import ConnectionPool
-
-
-logger = logging.getLogger("atlas.orchestration")
 
 
 @lru_cache(maxsize=8)
@@ -99,44 +95,18 @@ def make_audit_log(settings: Settings | None = None) -> AuditLog:
     return InMemoryAuditLog()
 
 
-def make_knowledge_graph(
-    settings: Settings | None = None, policy: PolicyStore | None = None
-) -> KnowledgeGraph:
+def make_knowledge_graph(settings: Settings | None = None) -> KnowledgeGraph:
     """Return the knowledge graph: a durable, RBAC-scoped Postgres backend if ``DATABASE_URL`` is
-    set, else the in-memory stub (demos/tests seed it). The ``policy`` store governs RBAC read
-    filtering. The factory never seeds — seeding is an explicit caller/demo step so CI and production
-    never mutate the KG on connect.
+    set, else the in-memory stub (demos/tests seed it). Shares the connection pool with the
+    checkpointer and audit log. The factory never seeds — seeding is an explicit caller/demo step so
+    CI and production never mutate the KG on connect.
     """
     settings = settings or get_settings()
     if settings.database_url:
         from atlas.persistence import PostgresKnowledgeGraph
 
-        return PostgresKnowledgeGraph(
-            _pg_pool(settings.database_url.get_secret_value()), policy=policy
-        )
-    return InMemoryKnowledgeGraph(policy=policy)
-
-
-def make_policy_store(settings: Settings | None = None) -> PolicyStore:
-    """Return the authorization policy store: durable Postgres if ``DATABASE_URL`` set, else the
-    in-memory default (seeded from ``ROLE_PERMISSIONS``). Mirrors ``make_audit_log``.
-
-    The Postgres backend is **never auto-seeded** (consistent with the KG factory): an empty
-    ``atlas_role_permissions`` table grants nothing (fail-closed). A warning is logged so an operator
-    knows to run ``scripts/manage_policy.py seed``.
-    """
-    settings = settings or get_settings()
-    if settings.database_url:
-        from atlas.persistence import PostgresPolicyStore
-
-        store = PostgresPolicyStore(_pg_pool(settings.database_url.get_secret_value()))
-        if store.is_empty():
-            logger.warning(
-                "atlas_role_permissions is empty — all roles are denied until seeded. "
-                "Run: python scripts/manage_policy.py seed"
-            )
-        return store
-    return InMemoryPolicyStore()
+        return PostgresKnowledgeGraph(_pg_pool(settings.database_url.get_secret_value()))
+    return InMemoryKnowledgeGraph()
 
 
 @dataclass(frozen=True)
@@ -147,7 +117,6 @@ class Atlas:
     audit: AuditLog
     registry: ToolRegistry
     knowledge: KnowledgeGraph
-    policy: PolicyStore
 
 
 def build_graph(
@@ -156,30 +125,25 @@ def build_graph(
     audit: AuditLog | None = None,
     plan_fn: PlanFn | None = None,
     knowledge: KnowledgeGraph | None = None,
-    policy: PolicyStore | None = None,
     checkpointer: "BaseCheckpointSaver | None" = None,
     settings: Settings | None = None,
 ) -> Atlas:
     """Build and compile the orchestration graph.
 
     All collaborators default to sensible production values but can be overridden — tests inject a
-    scripted ``plan_fn``, a seeded ``knowledge`` graph, a custom ``policy``, and an ``InMemorySaver``.
+    scripted ``plan_fn``, a seeded ``knowledge`` graph, and an ``InMemorySaver`` for determinism.
     """
     settings = settings or get_settings()
     registry = registry or default_registry()
     audit = audit or make_audit_log(settings)
     plan_fn = plan_fn or default_plan_fn(settings)
-    policy = policy or make_policy_store(settings)
-    if knowledge is None:
-        knowledge = make_knowledge_graph(settings, policy)
-    else:
-        knowledge.bind_policy(policy)
+    knowledge = knowledge or make_knowledge_graph(settings)
     checkpointer = checkpointer or make_checkpointer(settings)
 
     builder: StateGraph = StateGraph(AgentState)
-    builder.add_node("planner", make_planner_node(plan_fn, registry, audit, knowledge, policy))
+    builder.add_node("planner", make_planner_node(plan_fn, registry, audit, knowledge))
     builder.add_node("approval", make_approval_node(audit))
-    builder.add_node("executor", make_executor_node(registry, audit, policy))
+    builder.add_node("executor", make_executor_node(registry, audit))
     builder.add_node("responder", make_responder_node())
 
     builder.add_edge(START, "planner")
@@ -193,4 +157,4 @@ def build_graph(
     builder.add_edge("responder", END)
 
     graph = builder.compile(checkpointer=checkpointer)
-    return Atlas(graph=graph, audit=audit, registry=registry, knowledge=knowledge, policy=policy)
+    return Atlas(graph=graph, audit=audit, registry=registry, knowledge=knowledge)

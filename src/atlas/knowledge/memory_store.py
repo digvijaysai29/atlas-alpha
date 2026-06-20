@@ -10,16 +10,14 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from atlas.governance.policy import PolicyStore
 from atlas.governance.rbac import Principal
 from atlas.knowledge.interfaces import Entity, KnowledgeGraph, Relation, can_read
 
 
 class InMemoryKnowledgeGraph(KnowledgeGraph):
-    def __init__(self, policy: PolicyStore | None = None) -> None:
+    def __init__(self) -> None:
         self._entities: dict[str, Entity] = {}
         self._relations: list[Relation] = []
-        self._policy = policy  # None => can_read uses the built-in default policy
 
     def upsert_entity(self, entity: Entity) -> None:
         self._entities[entity.id] = entity
@@ -30,15 +28,12 @@ class InMemoryKnowledgeGraph(KnowledgeGraph):
     def relations(self) -> Sequence[Relation]:
         return tuple(self._relations)
 
-    def bind_policy(self, policy: PolicyStore) -> None:
-        self._policy = policy
-
     def query(self, principal: Principal | None, text: str, *, limit: int = 5) -> list[Entity]:
         terms = [term for term in text.lower().split() if term]
         matches: list[Entity] = []
         for entity in self._entities.values():
             # RBAC filter first: an unreadable entity is never considered, never returned.
-            if not can_read(principal, entity, self._policy):
+            if not can_read(principal, entity):
                 continue
             haystack = f"{entity.name}\n{entity.content}".lower()
             if not terms or any(term in haystack for term in terms):

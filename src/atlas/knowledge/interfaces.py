@@ -15,8 +15,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from atlas.governance.policy import DEFAULT_POLICY, PolicyStore
-from atlas.governance.rbac import Principal
+from atlas.governance.rbac import Principal, can
 
 
 class Entity(BaseModel):
@@ -44,19 +43,15 @@ class Relation(BaseModel):
     type: str
 
 
-def can_read(
-    principal: Principal | None, entity: Entity, policy: PolicyStore | None = None
-) -> bool:
+def can_read(principal: Principal | None, entity: Entity) -> bool:
     """Return True iff ``principal`` may read ``entity`` (fail-closed).
 
     An entity with no acl is world-readable. Otherwise the principal must hold at least one of the
-    acl's permissions per the ``policy`` store (defaults to the in-memory built-in policy when none
-    is injected); if none are satisfied the entity is treated as unreadable (and omitted).
+    acl's permissions; if none are satisfied the entity is treated as unreadable (and omitted).
     """
     if not entity.acl:
         return True
-    store = policy or DEFAULT_POLICY
-    return any(store.can(principal, permission) for permission in entity.acl)
+    return any(can(principal, permission) for permission in entity.acl)
 
 
 class KnowledgeGraph(abc.ABC):
@@ -82,8 +77,4 @@ class KnowledgeGraph(abc.ABC):
     @abc.abstractmethod
     def relations(self) -> Sequence[Relation]:
         """Return all relations (used by tests/inspection)."""
-        raise NotImplementedError
-
-    def bind_policy(self, policy: PolicyStore) -> None:
-        """Attach the store governing RBAC read filtering (used by ``build_graph`` wiring)."""
         raise NotImplementedError

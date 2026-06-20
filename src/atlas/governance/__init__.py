@@ -24,13 +24,10 @@ from atlas.governance.confidence import (
     collect_sources,
     score_confidence,
 )
-from atlas.governance.policy import DEFAULT_POLICY, InMemoryPolicyStore, PolicyStore
 from atlas.governance.rbac import (
     ROLE_PERMISSIONS,
-    WILDCARD,
     Principal,
     can,
-    expand_roles,
     get_current_principal,
     get_effective_permissions,
 )
@@ -49,16 +46,10 @@ __all__ = [
     "verify_chain",
     # rbac
     "ROLE_PERMISSIONS",
-    "WILDCARD",
     "Principal",
     "can",
-    "expand_roles",
     "get_current_principal",
     "get_effective_permissions",
-    # policy store
-    "DEFAULT_POLICY",
-    "InMemoryPolicyStore",
-    "PolicyStore",
     # confidence + sources
     "GROUNDED_ANSWER",
     "UNGROUNDED_ANSWER",

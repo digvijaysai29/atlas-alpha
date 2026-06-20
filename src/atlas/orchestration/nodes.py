@@ -22,9 +22,9 @@ from langgraph.types import interrupt
 
 from atlas.actions import ApprovalDecision, ProposedAction, requires_approval
 from atlas.config import Settings, get_settings
-from atlas.governance import AuditLog, PolicyStore
+from atlas.governance import AuditLog
 from atlas.governance.confidence import collect_sources, score_confidence
-from atlas.governance.rbac import get_current_principal
+from atlas.governance.rbac import can, get_current_principal
 from atlas.knowledge.interfaces import Entity, KnowledgeGraph
 from atlas.orchestration.state import AgentState
 from atlas.tools import ToolRegistry
@@ -142,11 +142,7 @@ def default_plan_fn(settings: Settings | None = None) -> PlanFn:
 # Nodes
 # ---------------------------------------------------------------------------
 def make_planner_node(
-    plan_fn: PlanFn,
-    registry: ToolRegistry,
-    audit: AuditLog,
-    knowledge: KnowledgeGraph,
-    policy: PolicyStore,
+    plan_fn: PlanFn, registry: ToolRegistry, audit: AuditLog, knowledge: KnowledgeGraph
 ) -> Callable[[AgentState], dict[str, Any]]:
     def planner_node(state: AgentState) -> dict[str, Any]:
         principal = get_current_principal(state)
@@ -160,7 +156,7 @@ def make_planner_node(
         for action in proposed:
             audit.proposed(action)
             required = registry.get(action.tool).required_permission
-            if not policy.can(principal, required):
+            if not can(principal, required):
                 audit.denied(action, principal.user_id, reason=f"missing permission: {required}")
                 continue
             authorized.append(action)
@@ -195,7 +191,7 @@ def make_approval_node(audit: AuditLog) -> Callable[[AgentState], dict[str, Any]
 
 
 def make_executor_node(
-    registry: ToolRegistry, audit: AuditLog, policy: PolicyStore
+    registry: ToolRegistry, audit: AuditLog
 ) -> Callable[[AgentState], dict[str, Any]]:
     def executor_node(state: AgentState) -> dict[str, Any]:
         principal = get_current_principal(state)
@@ -205,7 +201,7 @@ def make_executor_node(
             # RBAC re-check (defense-in-depth): never run a tool the principal isn't permitted to use,
             # even if it somehow reached the executor.
             required = registry.get(action.tool).required_permission
-            if not policy.can(principal, required):
+            if not can(principal, required):
                 audit.denied(action, principal.user_id, reason=f"missing permission: {required}")
                 continue
             # The gate, enforced in code: a gated action runs only with a matching approval.
