@@ -17,6 +17,7 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command, StateSnapshot
 
 from atlas.governance.rbac import Principal
+from atlas.interface.rate_limit import RateLimited
 from atlas.interface.schemas import AgentResponse, ApproveRequest, ChatRequest
 from atlas.interface.security import RequestPrincipal, thread_owner, verify_thread_owner
 from atlas.orchestration.graph import Atlas
@@ -120,7 +121,7 @@ def healthz() -> dict[str, bool]:
     return {"ok": True}
 
 
-@router.post("/chat", response_model=AgentResponse)
+@router.post("/chat", response_model=AgentResponse, dependencies=[RateLimited])
 def chat(body: ChatRequest, principal: RequestPrincipal, atlas: AtlasDep) -> AgentResponse:
     thread_id = f"thr_{uuid.uuid4().hex}"
     result = atlas.graph.invoke(
@@ -129,7 +130,7 @@ def chat(body: ChatRequest, principal: RequestPrincipal, atlas: AtlasDep) -> Age
     return _response_from_invoke(thread_id, result)
 
 
-@router.post("/approve", response_model=AgentResponse)
+@router.post("/approve", response_model=AgentResponse, dependencies=[RateLimited])
 def approve(body: ApproveRequest, principal: RequestPrincipal, atlas: AtlasDep) -> AgentResponse:
     snapshot = atlas.graph.get_state(_config(body.thread_id))
     if not snapshot.values:

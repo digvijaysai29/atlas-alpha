@@ -27,6 +27,16 @@ def _is_secure_oidc_url(url: str) -> bool:
     return parsed.scheme == "http" and parsed.hostname in _LOCAL_HTTP_HOSTS
 
 
+def _nonempty_str(value: str | None) -> bool:
+    """True when ``value`` contains non-whitespace content."""
+    return bool(value and value.strip())
+
+
+def _nonempty_secret(value: SecretStr | None) -> bool:
+    """True when ``value`` is present and contains non-whitespace content."""
+    return value is not None and bool(value.get_secret_value().strip())
+
+
 class Settings(BaseSettings):
     """Typed, immutable view of the runtime environment.
 
@@ -82,6 +92,18 @@ class Settings(BaseSettings):
     # Allow http:// (non-localhost) issuer/JWKS URLs — dev/integration only; default false.
     oidc_allow_insecure_http: bool = Field(default=False, alias="ATLAS_OIDC_ALLOW_INSECURE_HTTP")
 
+    # --- Rate limiting (M3.6 — per-principal, Upstash-backed) ---------------
+    # When enabled AND the Upstash REST creds are set (see ``rate_limit_configured``), /chat and
+    # /approve are throttled per principal. Unset creds => limiting is OFF (fail-open; dev default).
+    rate_limit_enabled: bool = Field(default=True, alias="ATLAS_RATE_LIMIT_ENABLED")
+    rate_limit_requests: int = Field(default=60, alias="ATLAS_RATE_LIMIT_REQUESTS")
+    rate_limit_window_seconds: int = Field(default=60, alias="ATLAS_RATE_LIMIT_WINDOW_SECONDS")
+    # Upstash Redis REST endpoint + token (the token is secret; never logged). Standard Upstash names.
+    upstash_redis_rest_url: str | None = Field(default=None, alias="UPSTASH_REDIS_REST_URL")
+    upstash_redis_rest_token: SecretStr | None = Field(
+        default=None, alias="UPSTASH_REDIS_REST_TOKEN"
+    )
+
     @model_validator(mode="after")
     def validate_oidc_config(self) -> Self:
         """OIDC vars must be all set or all unset — partial config must not fall back to the header shim."""
@@ -114,10 +136,46 @@ class Settings(BaseSettings):
                     raise ValueError(msg)
         return self
 
+    @model_validator(mode="after")
+    def validate_rate_limit_config(self) -> Self:
+        """Rate-limit budget must be positive; Upstash creds must be all set or all unset."""
+        if self.rate_limit_requests <= 0:
+            raise ValueError("ATLAS_RATE_LIMIT_REQUESTS must be a positive integer.")
+        if self.rate_limit_window_seconds <= 0:
+            raise ValueError("ATLAS_RATE_LIMIT_WINDOW_SECONDS must be a positive integer.")
+        if not self.rate_limit_enabled:
+            return self
+        upstash_fields = {
+            "UPSTASH_REDIS_REST_URL": _nonempty_str(self.upstash_redis_rest_url),
+            "UPSTASH_REDIS_REST_TOKEN": _nonempty_secret(self.upstash_redis_rest_token),
+        }
+        set_names = [name for name, present in upstash_fields.items() if present]
+        unset_names = [name for name, present in upstash_fields.items() if not present]
+        if set_names and unset_names:
+            msg = (
+                f"Partial Upstash rate-limit configuration: {', '.join(set_names)} set but "
+                f"{', '.join(unset_names)} missing. Set both or leave both blank."
+            )
+            raise ValueError(msg)
+        return self
+
     @property
     def oidc_enabled(self) -> bool:
         """True when OIDC is fully configured; otherwise the dev header shim is used."""
         return bool(self.oidc_issuer and self.oidc_audience and self.oidc_jwks_uri)
+
+    @property
+    def rate_limit_configured(self) -> bool:
+        """True when rate limiting is enabled AND Upstash REST creds are present.
+
+        When False the limiter factory returns None and the interface is unthrottled (fail-open) —
+        the dev/CI default, since the suite runs without Upstash.
+        """
+        return (
+            self.rate_limit_enabled
+            and _nonempty_str(self.upstash_redis_rest_url)
+            and _nonempty_secret(self.upstash_redis_rest_token)
+        )
 
     @property
     def has_anthropic_key(self) -> bool:

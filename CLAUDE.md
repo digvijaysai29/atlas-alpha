@@ -31,9 +31,9 @@ sub-phase is its own branch → PR into `main` → CI must be green.
 | **M3.2** | **FastAPI Interface layer** (`/chat`, `/approve` resume, `/threads/{id}`) + **resume-time principal/thread binding**; trusted-network header identity shim (`interface/`) | ✅ **merged (PR #9)** |
 | **M3.3** | **Real OIDC/JWT bearer auth** (`interface/auth.py`, RS256+JWKS, claims→`Principal`); header shim demoted to dev fallback; see [`AUTH.md`](./AUTH.md) | ✅ **merged (PR #10)** |
 | **M3.4** | **Pluggable `PolicyStore`** (ABC + in-memory default + Postgres backend) replacing the hardcoded `ROLE_PERMISSIONS`; `make_policy_store` DI; `scripts/manage_policy.py` CLI | ✅ **merged (PR #16)** |
-| **M3.5** | **Hierarchical wildcard RBAC** — granted `kg:read:*` satisfies `kg:read:org`; shared `permission_satisfied` across in-memory/Postgres stores + KG SQL filter | 🔄 **this PR** |
-| **M3.6+** | **NEXT FOCUS** → per-principal rate limiting; resource/argument-aware `ToolPermission` | planned |
-| **M4+** | Real integrations (Gmail/Slack/Jira), pgvector semantic retrieval, sessions/provisioning, SSE streaming | future |
+| **M3.5** | **Hierarchical wildcard RBAC** — granted `kg:read:*` satisfies `kg:read:org`; shared `permission_satisfied` across in-memory/Postgres stores + KG SQL filter | ✅ **merged (PR #19)** |
+| **M3.6** | **Per-principal rate limiting** on `/chat` + `/approve` (Upstash-backed; `interface/rate_limit.py`); 429 + `Retry-After`; fail-open; per-IP for anonymous | 🔄 **this PR** |
+| **M4+** | **NEXT FOCUS** → real integrations (Gmail/Slack/Jira), resource/argument-aware `ToolPermission`, pgvector semantic retrieval, sessions/provisioning, SSE streaming | future |
 
 ## 3. Tech Stack
 
@@ -45,6 +45,7 @@ sub-phase is its own branch → PR into `main` → CI must be green.
 | Typing | **Pydantic v2** | `frozen=True` for all records; full type hints; `mypy --strict` |
 | Interface | **FastAPI** + uvicorn | M3.2: `/chat`, `/approve`, `/threads/{id}`; sync handlers; `create_app` factory |
 | Auth | **OIDC / JWT** via `PyJWT[crypto]` | M3.3: RS256 bearer validation (JWKS); dev header shim fallback; see `AUTH.md` |
+| Rate limiting | **Upstash** via `upstash-ratelimit` | M3.6: per-principal throttle on `/chat`+`/approve`; fail-open; off unless creds set; see `AUTH.md` |
 | Observability | **LangSmith** | Env-driven (`LANGSMITH_*`); zero code |
 | Runtime / tooling | **Python 3.13**, **uv**, ruff, mypy, pytest, bandit, semgrep | 3.14 deferred until wheels stabilize |
 
@@ -87,6 +88,8 @@ interface/           ← M3.2 FastAPI HTTP layer over the compiled graph
                      build_authenticator(settings); _parse_roles (M3.3)
   security.py        get_request_principal (OIDC bearer if configured, else dev header shim);
                      verify_thread_owner (resume-time principal/thread binding → 403)
+  rate_limit.py      RateLimiter (ABC) + UpstashRateLimiter; build_rate_limiter; rate_limit_key;
+                     enforce_rate_limit dep (per-principal 429 on /chat+/approve, fail-open) (M3.6)
   schemas.py         transport-only Pydantic (ChatRequest/ApproveRequest/AgentResponse/ErrorResponse)
 ```
 `scripts/` = runnable demos (`demo_approval`, `demo_persistence`, `demo_rbac`, `demo_knowledge`,
@@ -168,13 +171,17 @@ A change that weakens any of these is a **blocking defect**.
     unconfigured. See [`AUTH.md`](./AUTH.md).
 11. **Pluggable policy (M3.4).** Role→permission lives in an injected `PolicyStore`; an empty Postgres
     policy table is **deny-all** (seed explicitly via `scripts/manage_policy.py`, never auto-seed).
+12. **Rate limiting (M3.6).** Per-principal throttle on `/chat`+`/approve` is an **availability**
+    control, layered *after* authn/authz (never grants access) and **fail-open** — a limiter outage or
+    unset Upstash creds must not break the API. It is the one deliberate fail-*open* in an otherwise
+    fail-closed spine, because throttling is not an authorization gate.
 
 **Known future-work security items (tracked):** the **dev header shim** (`interface/security.py`) is
 still TRUSTED-NETWORK only — fine for local/dev, but real deployments **must** set `ATLAS_OIDC_*`.
 Fail-closed default `Entity.acl` once untrusted `upsert_entity` write paths exist (no KG write
-endpoint yet, still deferred). Per-principal rate limiting (M3.6), resource/argument-aware
-`ToolPermission`, org-level thread delegation, policy versioning/admin-UI → M3.6/M4 (enumerated in
-`AUTH.md`). (Hierarchical wildcard RBAC landed in M3.5.)
+endpoint yet, still deferred). Resource/argument-aware `ToolPermission`, org-level thread delegation,
+policy versioning/admin-UI → M4 (enumerated in `AUTH.md`). (Hierarchical wildcard RBAC landed in M3.5;
+per-principal rate limiting in M3.6.)
 
 ## 7. Coding & Architectural Principles
 

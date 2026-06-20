@@ -6,5 +6,6 @@ Exposes ``/chat`` (start a turn), ``/approve`` (resume a paused approval) and ``
 """
 
 from atlas.interface.app import create_app
+from atlas.interface.rate_limit import RateLimiter, build_rate_limiter
 
-__all__ = ["create_app"]
+__all__ = ["create_app", "RateLimiter", "build_rate_limiter"]

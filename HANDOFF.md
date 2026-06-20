@@ -26,9 +26,9 @@ branch → PR into `main` → CI must be green.
 | **M3.2** | FastAPI Interface (`/chat`, `/approve`, `/threads/{id}`) + **resume-time principal/thread binding**; trusted-network header identity shim | ✅ merged (PR #9) |
 | **M3.3** | Real **OIDC/JWT bearer auth** (RS256+JWKS, claims→`Principal`); header shim → dev fallback. See `AUTH.md` | ✅ merged (PR #10) |
 | **M3.4** | Pluggable **`PolicyStore`** (ABC + in-memory + Postgres) replacing hardcoded `ROLE_PERMISSIONS`; `manage_policy.py` CLI. See `AUTH.md` | ✅ merged (PR #16) |
-| **M3.5** | Fine-grained RBAC: **hierarchical wildcard permissions** (`kg:read:*` ⇒ `kg:read:org`) via shared `permission_satisfied`. Guide: **[`M3.5_PLAN.md`](./M3.5_PLAN.md)** | ✅ this PR |
-| **M3.6** | **← NEXT.** Per-principal rate limiting on the HTTP interface | ⏭ planned |
-| **M4+** | Real integrations, pgvector semantic retrieval, sessions/provisioning, SSE streaming | future |
+| **M3.5** | Fine-grained RBAC: **hierarchical wildcard permissions** (`kg:read:*` ⇒ `kg:read:org`) via shared `permission_satisfied`. Guide: **[`M3.5_PLAN.md`](./M3.5_PLAN.md)** | ✅ merged (PR #19) |
+| **M3.6** | **Per-principal rate limiting** on `/chat` + `/approve` (Upstash + `upstash-ratelimit`); 429 + `Retry-After`; fail-open; per-IP for anonymous | ✅ this PR |
+| **M4+** | **← NEXT.** Real integrations, pgvector semantic retrieval, sessions/provisioning, SSE streaming | future |
 
 **Net:** atlas is a secure, durable, identity-aware, knowledge-grounded HITL agent with a transparent
 sources+confidence layer, a real blocking eval gate, and now a **network interface** with resume-time
@@ -216,7 +216,15 @@ Each is a separate milestone; keep the sub-phase discipline (small PRs, green CI
   side**; the LLM still can never self-grant. Full guide: `M3.5_PLAN.md`. **Deferred → M3.6/M4 (in
   AUTH.md):** per-principal rate limiting, resource/argument-aware `ToolPermission`, sessions/refresh,
   provisioning, admin UI, policy versioning/caching, OAuth login flows.
-- **M3.6 — Per-principal rate limiting** on the HTTP interface (needs a shared counter store).
+- **M3.6 — Per-principal rate limiting.** ✅ **DONE (this PR).** `/chat` + `/approve` are throttled
+  per principal (per client IP for the anonymous dev shim) by **Upstash** via `upstash-ratelimit`
+  (`interface/rate_limit.py`: `RateLimiter` ABC + `UpstashRateLimiter`, `build_rate_limiter`,
+  `rate_limit_key`, `enforce_rate_limit` dep wired on the two routes). Over budget → **429** +
+  `Retry-After` through the `ErrorResponse` envelope. **Fail-open** (limiter outage / unset creds ⇒
+  allow); **off** in dev/CI (no creds). Config: `ATLAS_RATE_LIMIT_*` + `UPSTASH_REDIS_REST_*`. Tests:
+  `tests/test_rate_limit.py` (hermetic via an injected stub limiter; real Upstash gated on
+  `-m integration` + env creds). See `AUTH.md`. **Deferred → M4:** per-route tiers, anti-brute-force
+  IP limiting on 401s.
 - **M4 — Real tool integrations** (Gmail / Slack / Jira / Calendar). Swap mock tools for real adapters
   behind `BaseTool`; per-integration OAuth + secret management; correct per-tool `risk_tier` +
   `required_permission`; **idempotency** for sends (avoid double-send on retry); sandboxing; webhook

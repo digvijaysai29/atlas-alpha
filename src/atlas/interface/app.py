@@ -18,6 +18,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from atlas.config import Settings, get_settings
 from atlas.interface.auth import OidcAuthenticator, build_authenticator
+from atlas.interface.rate_limit import RateLimiter, build_rate_limiter
 from atlas.interface.routes import router
 from atlas.interface.schemas import ErrorDetail, ErrorResponse
 from atlas.orchestration.graph import Atlas, build_graph
@@ -37,6 +38,7 @@ def create_app(
     atlas: Atlas | None = None,
     settings: Settings | None = None,
     authenticator: OidcAuthenticator | None = None,
+    rate_limiter: RateLimiter | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
     app = FastAPI(title="atlas", version="0.3.3")
@@ -44,6 +46,8 @@ def create_app(
     app.state.atlas = atlas or build_graph(settings=settings)
     # OIDC bearer-token verification when configured; otherwise None => dev header-shim identity.
     app.state.authenticator = authenticator or build_authenticator(settings)
+    # Per-principal rate limiting on /chat + /approve when Upstash is configured; else None => off.
+    app.state.rate_limiter = rate_limiter or build_rate_limiter(settings)
     app.include_router(router)
 
     @app.exception_handler(StarletteHTTPException)
