@@ -2,7 +2,7 @@
 
 > The living context file for **atlas**. Read by every contributor — human, Claude, and Cursor.
 > When in doubt, choose the option that is **safer, clearer, and more auditable** — never the cleverer one.
-> Companion docs: [`ARCHITECTURE.md`](./ARCHITECTURE.md) (system design + roadmap), [`README.md`](./README.md) (quickstart), [`HANDOFF.md`](./HANDOFF.md) (onboarding + next-milestone plan).
+> Companion docs: [`ARCHITECTURE.md`](./ARCHITECTURE.md) (system design + roadmap), [`README.md`](./README.md) (quickstart), [`HANDOFF.md`](./HANDOFF.md) (onboarding + next-milestone plan), [`AUTH.md`](./AUTH.md) (auth model + OIDC setup + deferred work).
 
 ---
 
@@ -28,9 +28,10 @@ sub-phase is its own branch → PR into `main` → CI must be green.
 | **M2.2c** | Structured `Source` attribution + grounding-aware confidence in `governance/confidence.py` | ✅ **merged (PR #5)** |
 | **M2.3** | LangSmith golden-trace **eval gate** (deterministic blocking oracles + optional LangSmith) — real blocking `agent-eval` CI gate | ✅ **merged (PR #7)** |
 | **M3.1** | Concrete **Postgres-backed `KnowledgeGraph`** (full-text search, RBAC filter pushed into SQL); `persistence/knowledge_store.py`; `make_knowledge_graph` precedence by `DATABASE_URL` | ✅ **merged (PR #8)** |
-| **M3.2** | **FastAPI Interface layer** (`/chat`, `/approve` resume, `/threads/{id}`) + **resume-time principal/thread binding**; trusted-network header identity shim (`interface/`) | 🔄 **this PR** |
-| **M3.3** | **NEXT FOCUS** → real Auth/SSO (OIDC) replacing the header shim; session mgmt; org/role provisioning | planned |
-| **M4+** | Real integrations (Gmail/Slack/Jira), pgvector semantic retrieval, richer ACLs, SSE streaming | future |
+| **M3.2** | **FastAPI Interface layer** (`/chat`, `/approve` resume, `/threads/{id}`) + **resume-time principal/thread binding**; trusted-network header identity shim (`interface/`) | ✅ **merged (PR #9)** |
+| **M3.3** | **Real OIDC/JWT bearer auth** (`interface/auth.py`, RS256+JWKS, claims→`Principal`); header shim demoted to dev fallback; see [`AUTH.md`](./AUTH.md) | 🔄 **this PR** |
+| **M3.4+** | **NEXT FOCUS** → policy store (replace `ROLE_PERMISSIONS`), fine-grained RBAC, per-principal rate limiting | planned |
+| **M4+** | Real integrations (Gmail/Slack/Jira), pgvector semantic retrieval, sessions/provisioning, SSE streaming | future |
 
 ## 3. Tech Stack
 
@@ -41,6 +42,7 @@ sub-phase is its own branch → PR into `main` → CI must be green.
 | Persistence | **Postgres** › **SQLite** › **in-memory** | `make_checkpointer` precedence by `DATABASE_URL` / `ATLAS_SQLITE_PATH` |
 | Typing | **Pydantic v2** | `frozen=True` for all records; full type hints; `mypy --strict` |
 | Interface | **FastAPI** + uvicorn | M3.2: `/chat`, `/approve`, `/threads/{id}`; sync handlers; `create_app` factory |
+| Auth | **OIDC / JWT** via `PyJWT[crypto]` | M3.3: RS256 bearer validation (JWKS); dev header shim fallback; see `AUTH.md` |
 | Observability | **LangSmith** | Env-driven (`LANGSMITH_*`); zero code |
 | Runtime / tooling | **Python 3.13**, **uv**, ruff, mypy, pytest, bandit, semgrep | 3.14 deferred until wheels stabilize |
 
@@ -74,7 +76,9 @@ orchestration/       ← THE CORE
 interface/           ← M3.2 FastAPI HTTP layer over the compiled graph
   app.py             create_app(atlas?, settings?) factory (DI mirrors build_graph); ErrorResponse handlers
   routes.py          /healthz, /chat, /approve, /threads/{id} (sync handlers → threadpool); get_atlas dep
-  security.py        get_request_principal (TRUSTED-NETWORK header identity shim; M3.3 swaps it);
+  auth.py            OidcAuthenticator — RS256 bearer-JWT validation (JWKS), claims→Principal;
+                     build_authenticator(settings); _parse_roles (M3.3)
+  security.py        get_request_principal (OIDC bearer if configured, else dev header shim);
                      verify_thread_owner (resume-time principal/thread binding → 403)
   schemas.py         transport-only Pydantic (ChatRequest/ApproveRequest/AgentResponse/ErrorResponse)
 ```
@@ -140,11 +144,16 @@ A change that weakens any of these is a **blocking defect**.
    caller whose identity doesn't match the thread's checkpointed owner (`user_id`+`org_id`) → 403.
    Closes the resume IDOR (the executor trusts the checkpointed principal). Strict creator-only.
 
-**Known future-work security items (tracked):** **header-based identity is TRUSTED-NETWORK / DEV-ONLY**
-(`interface/security.py`) — it trusts request headers and must sit behind a header-validating reverse
-proxy; verified SSO/OIDC replaces it in **M3.3**. Fail-closed default `Entity.acl` once untrusted
-`upsert_entity` write paths exist (M3.2 added **no** KG write endpoint, so still deferred). Org-level
-thread delegation / role-based thread access (M3.3+).
+10. **Verified identity (M3.3).** In production, configure OIDC (`ATLAS_OIDC_*`): bearer JWTs are
+    verified (RS256 + JWKS, `iss`/`aud`/`exp` required, alg-pinned), claims map to `Principal`,
+    missing/invalid → 401. The header shim is now a **dev-only fallback** used only when OIDC is
+    unconfigured. See [`AUTH.md`](./AUTH.md).
+
+**Known future-work security items (tracked):** the **dev header shim** (`interface/security.py`) is
+still TRUSTED-NETWORK only — fine for local/dev, but real deployments **must** set `ATLAS_OIDC_*`.
+Fail-closed default `Entity.acl` once untrusted `upsert_entity` write paths exist (no KG write
+endpoint yet, still deferred). Policy store (replace `ROLE_PERMISSIONS`), fine-grained RBAC,
+per-principal rate limiting, org-level thread delegation → M3.4/M4 (enumerated in `AUTH.md`).
 
 ## 7. Coding & Architectural Principles
 

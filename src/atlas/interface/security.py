@@ -1,18 +1,19 @@
 """Request identity + thread-owner binding for the HTTP interface.
 
 ================================  SECURITY: READ ME  ================================
-This module is an **interim, TRUSTED-NETWORK / DEVELOPMENT-ONLY** identity shim. It derives the
-request :class:`~atlas.governance.rbac.Principal` from plain HTTP **headers** and trusts them
-blindly. That is safe *only* when the API is reached exclusively through a reverse proxy / ingress
-that authenticates the caller and sets these headers itself (stripping any client-supplied copies).
+:func:`get_request_principal` resolves the request :class:`~atlas.governance.rbac.Principal` in one
+of two modes, decided at app startup by whether OIDC is configured (``settings.oidc_enabled``):
 
-**Never expose this directly to the public internet** — without a header-validating proxy a client
-can spoof any identity simply by setting the header. Real, verified identity (SSO / OIDC token
-validation) arrives in **M3.3**; :func:`get_request_principal` is the single seam it will replace.
+- **OIDC mode (production):** a verified **bearer JWT** is required. The token is validated by the
+  :class:`~atlas.interface.auth.OidcAuthenticator` on ``app.state``; a missing/invalid/expired token
+  yields **401** (`WWW-Authenticate: Bearer`). This is the real-identity path (M3.3).
 
-The header *names* are configurable via :class:`~atlas.config.Settings` so a deployment can align
-them with its proxy. Changing them in production therefore requires a **coordinated** change at the
-reverse proxy / ingress that sets them, or every request will fall back to the anonymous principal.
+- **Dev / header-shim mode (OIDC not configured):** identity comes from plain HTTP **headers** which
+  are trusted blindly. That is safe *only* behind a reverse proxy / ingress that authenticates the
+  caller and sets these headers itself (stripping client-supplied copies). **Never expose the header
+  shim directly to the public internet** — without a header-validating proxy a client can spoof any
+  identity. The header *names* are configurable via :class:`~atlas.config.Settings`; changing them in
+  production requires a coordinated change at the proxy that sets them.
 ====================================================================================
 """
 
@@ -24,9 +25,12 @@ from fastapi import Depends, HTTPException, Request, status
 
 from atlas.config import Settings, get_settings
 from atlas.governance.rbac import Principal
+from atlas.interface.auth import AuthDependencyError, AuthError, OidcAuthenticator
 
 if TYPE_CHECKING:
     from langgraph.types import StateSnapshot
+
+_UNAUTHENTICATED = {"WWW-Authenticate": "Bearer"}
 
 
 def _settings_for(request: Request) -> Settings:
@@ -34,16 +38,16 @@ def _settings_for(request: Request) -> Settings:
     return getattr(request.app.state, "settings", None) or get_settings()
 
 
-def get_request_principal(request: Request) -> Principal:
-    """Build the caller's :class:`Principal` from the configured identity headers.
+def _bearer_token(request: Request) -> str | None:
+    """Extract the token from an ``Authorization: Bearer <token>`` header, or None."""
+    scheme, _, token = (request.headers.get("Authorization") or "").partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        return None
+    return token.strip()
 
-    Fail-closed: a missing/blank user header yields :meth:`Principal.anonymous` (no roles). The
-    sentinel user id ``"anonymous"`` is reserved and always maps to unauthenticated — roles on that
-    id are ignored. Roles are a comma-separated list; an empty/blank value contributes nothing.
-    (Named distinctly from :func:`atlas.governance.rbac.get_current_principal`, which extracts the
-    principal from *graph state* — this one reads the *HTTP request*.)
-    """
-    settings = _settings_for(request)
+
+def _principal_from_headers(request: Request, settings: Settings) -> Principal:
+    """Dev header-shim resolution (fail-closed). See the module SECURITY note."""
     user_id = (request.headers.get(settings.api_user_header) or "").strip()
     if not user_id or user_id == Principal.anonymous().user_id:
         return Principal.anonymous()
@@ -51,6 +55,33 @@ def get_request_principal(request: Request) -> Principal:
     roles = tuple(role.strip() for role in roles_raw.split(",") if role.strip())
     org_id = (request.headers.get(settings.api_org_header) or "").strip() or None
     return Principal(user_id=user_id, roles=roles, org_id=org_id)
+
+
+def get_request_principal(request: Request) -> Principal:
+    """Resolve the caller's :class:`Principal` — verified OIDC token if configured, else header shim.
+
+    (Named distinctly from :func:`atlas.governance.rbac.get_current_principal`, which extracts the
+    principal from *graph state* — this one reads the *HTTP request*.)
+    """
+    authenticator: OidcAuthenticator | None = getattr(request.app.state, "authenticator", None)
+    if authenticator is not None:
+        token = _bearer_token(request)
+        if token is None:
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED, "Missing bearer token.", headers=_UNAUTHENTICATED
+            )
+        try:
+            return authenticator.principal_from_token(token)
+        except AuthDependencyError as exc:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "Authentication service temporarily unavailable.",
+            ) from exc
+        except AuthError as exc:
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED, "Invalid or expired token.", headers=_UNAUTHENTICATED
+            ) from exc
+    return _principal_from_headers(request, _settings_for(request))
 
 
 # A handler parameter type: `principal: RequestPrincipal`.
