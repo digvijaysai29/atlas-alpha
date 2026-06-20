@@ -15,9 +15,5 @@ Non-negotiable principles (full detail in CLAUDE.md §6):
 - Prefer small, focused files; use Pydantic frozen models for data that should not mutate.
 - Always think about privilege-escalation and IDOR risk when touching Principal or Knowledge Graph code.
 
-Current focus (M2.3): the real `agent-eval` gate in `evals/` — a blocking, hermetic deterministic
-suite of security-behavior golden traces plus an optional, non-blocking LangSmith quality layer. Do
-not start M3 (concrete KG backend, FastAPI interface, auth/SSO, real integrations) yet.
-
 When editing orchestration code, always consider how changes affect checkpoint resume and the
 approval interrupt flow.
