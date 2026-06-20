@@ -4,6 +4,7 @@ on:
   push:
     branches: ["**"]
   pull_request:
+  workflow_dispatch:
 
 # Least privilege by default; individual jobs/steps escalate only if/when they need to.
 permissions:
