@@ -25,8 +25,9 @@ branch → PR into `main` → CI must be green.
 | **M3.1** | Durable **`PostgresKnowledgeGraph`** (full-text search; RBAC filter in SQL) behind the `KnowledgeGraph` ABC | ✅ merged (PR #8) |
 | **M3.2** | FastAPI Interface (`/chat`, `/approve`, `/threads/{id}`) + **resume-time principal/thread binding**; trusted-network header identity shim | ✅ merged (PR #9) |
 | **M3.3** | Real **OIDC/JWT bearer auth** (RS256+JWKS, claims→`Principal`); header shim → dev fallback. See `AUTH.md` | ✅ merged (PR #10) |
-| **M3.4** | **← YOU ARE HERE.** Pluggable **`PolicyStore`** (ABC + in-memory + Postgres) replacing hardcoded `ROLE_PERMISSIONS`; `manage_policy.py` CLI. See `AUTH.md` | 🔄 this PR |
-| **M3.5** | Fine-grained RBAC (`ToolPermission`); per-principal rate limiting | ⏭ next |
+| **M3.4** | Pluggable **`PolicyStore`** (ABC + in-memory + Postgres) replacing hardcoded `ROLE_PERMISSIONS`; `manage_policy.py` CLI. See `AUTH.md` | ✅ merged (PR #16) |
+| **M3.5** | **← NEXT.** Fine-grained RBAC: **hierarchical wildcard permissions** (`kg:read:*` ⇒ `kg:read:org`). Full implementation guide: **[`M3.5_PLAN.md`](./M3.5_PLAN.md)** | ⏭ planned |
+| **M3.6** | Per-principal rate limiting on the HTTP interface | future |
 | **M4+** | Real integrations, pgvector semantic retrieval, sessions/provisioning, SSE streaming | future |
 
 **Net:** atlas is a secure, durable, identity-aware, knowledge-grounded HITL agent with a transparent
