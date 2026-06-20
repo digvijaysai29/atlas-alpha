@@ -201,5 +201,9 @@ executor refuses to run a gated action without a matching, in-scope `ApprovalDec
 - **M3.3 (done):** real OIDC/JWT bearer auth (`src/atlas/interface/auth.py`, `PyJWT[crypto]`) —
   RS256 signature via JWKS, `iss`/`aud`/`exp` verified, claims→`Principal`, 401 on invalid/missing;
   the header shim is now a dev-only fallback. Config + deferred-work guide in `AUTH.md`.
-- **Later:** policy store (replace `ROLE_PERMISSIONS`) + fine-grained RBAC + rate limiting (M3.4);
-  pgvector semantic retrieval; real integrations (Gmail/Slack/Jira); SSE streaming; Merkle anchoring.
+- **M3.4 (done):** pluggable `PolicyStore` (`governance/policy.py` ABC + `InMemoryPolicyStore` +
+  `persistence/policy_store.py` `PostgresPolicyStore`) replacing the hardcoded `ROLE_PERMISSIONS`;
+  injected via `build_graph` into planner/executor/KG; empty Postgres table = deny-all; managed by
+  `scripts/manage_policy.py`. See `AUTH.md`.
+- **Later:** fine-grained RBAC (`ToolPermission`) + per-principal rate limiting (M3.5); pgvector
+  semantic retrieval; real integrations (Gmail/Slack/Jira); SSE streaming; Merkle anchoring.

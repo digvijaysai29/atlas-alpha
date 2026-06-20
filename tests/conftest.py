@@ -42,6 +42,7 @@ def pg_pool(database_url: str) -> Iterator[ConnectionPool]:
         conn.execute("DROP TABLE IF EXISTS atlas_audit_log")
         conn.execute("DROP TABLE IF EXISTS atlas_kg_entities")
         conn.execute("DROP TABLE IF EXISTS atlas_kg_relations")
+        conn.execute("DROP TABLE IF EXISTS atlas_role_permissions")
     try:
         yield pool
     finally:

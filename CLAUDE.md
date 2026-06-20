@@ -29,8 +29,9 @@ sub-phase is its own branch → PR into `main` → CI must be green.
 | **M2.3** | LangSmith golden-trace **eval gate** (deterministic blocking oracles + optional LangSmith) — real blocking `agent-eval` CI gate | ✅ **merged (PR #7)** |
 | **M3.1** | Concrete **Postgres-backed `KnowledgeGraph`** (full-text search, RBAC filter pushed into SQL); `persistence/knowledge_store.py`; `make_knowledge_graph` precedence by `DATABASE_URL` | ✅ **merged (PR #8)** |
 | **M3.2** | **FastAPI Interface layer** (`/chat`, `/approve` resume, `/threads/{id}`) + **resume-time principal/thread binding**; trusted-network header identity shim (`interface/`) | ✅ **merged (PR #9)** |
-| **M3.3** | **Real OIDC/JWT bearer auth** (`interface/auth.py`, RS256+JWKS, claims→`Principal`); header shim demoted to dev fallback; see [`AUTH.md`](./AUTH.md) | 🔄 **this PR** |
-| **M3.4+** | **NEXT FOCUS** → policy store (replace `ROLE_PERMISSIONS`), fine-grained RBAC, per-principal rate limiting | planned |
+| **M3.3** | **Real OIDC/JWT bearer auth** (`interface/auth.py`, RS256+JWKS, claims→`Principal`); header shim demoted to dev fallback; see [`AUTH.md`](./AUTH.md) | ✅ **merged (PR #10)** |
+| **M3.4** | **Pluggable `PolicyStore`** (ABC + in-memory default + Postgres backend) replacing the hardcoded `ROLE_PERMISSIONS`; `make_policy_store` DI; `scripts/manage_policy.py` CLI | 🔄 **this PR** |
+| **M3.5+** | **NEXT FOCUS** → fine-grained RBAC (`ToolPermission`), per-principal rate limiting | planned |
 | **M4+** | Real integrations (Gmail/Slack/Jira), pgvector semantic retrieval, sessions/provisioning, SSE streaming | future |
 
 ## 3. Tech Stack
@@ -56,9 +57,11 @@ tools.py             BaseTool(risk_tier, required_permission, ArgsSchema); ToolR
 governance/
   audit.py           AuditEvent + AuditEventType(PROPOSED/APPROVED/REJECTED/EXECUTED/SKIPPED/DENIED);
                      hash-chained AuditLog (canonical_event_bytes→sha256, verify_chain); InMemoryAuditLog
-  rbac.py            Principal(frozen); ROLE_PERMISSIONS; can(); get_current_principal();
-                     get_effective_permissions() (role→permission expansion, reused by the KG store)
-  __init__.py        re-exports audit + rbac (keep `from atlas.governance import ...` stable)
+  rbac.py            Principal(frozen); ROLE_PERMISSIONS (default mapping); expand_roles() (pure,
+                     wildcard-aware, the single source of truth); can()/get_effective_permissions()
+                     (back-compat defaults); get_current_principal()
+  policy.py          PolicyStore (ABC, effective_permissions + can); InMemoryPolicyStore; DEFAULT_POLICY (M3.4)
+  __init__.py        re-exports audit + rbac + policy (keep `from atlas.governance import ...` stable)
 knowledge/
   interfaces.py      Entity / Relation (frozen); can_read(); KnowledgeGraph (ABC, RBAC-scoped query)
   memory_store.py    InMemoryKnowledgeGraph (keyword match, can_read-filtered); seed_demo_graph()
@@ -66,13 +69,16 @@ persistence/
   audit_store.py     PostgresAuditLog — parameterized SQL, advisory-lock-serialized appends, UTC timestamps
   knowledge_store.py PostgresKnowledgeGraph — full-text (tsvector + ILIKE) search; RBAC filter pushed
                      into the SQL WHERE + re-checked via can_read; parameterized SQL, static DDL
+  policy_store.py    PostgresPolicyStore — durable role→permission (atlas_role_permissions); empty =
+                     deny-all; grant/revoke/list_policies/is_empty; parameterized SQL (M3.4)
 orchestration/       ← THE CORE
   state.py           AgentState (TypedDict): messages, principal, kg_context, proposed/approved/rejected,
                      action_results, sources, confidence; initial_state(msg, principal=None)
   serde.py           atlas_serde() — explicit msgpack ALLOWLIST (_ATLAS_TYPES); no arbitrary deserialization
   nodes.py           planner/approval/executor/responder factories; heuristic_plan / llm_plan /
                      _format_kg_context; PlanFn = (str, ToolRegistry, Sequence[Entity]) -> list[ProposedAction]
-  graph.py           build_graph(); make_checkpointer / make_audit_log / make_knowledge_graph; Atlas; _pg_pool
+  graph.py           build_graph(); make_checkpointer / make_audit_log / make_knowledge_graph /
+                     make_policy_store; Atlas(graph,audit,registry,knowledge,policy); _pg_pool
 interface/           ← M3.2 FastAPI HTTP layer over the compiled graph
   app.py             create_app(atlas?, settings?) factory (DI mirrors build_graph); ErrorResponse handlers
   routes.py          /healthz, /chat, /approve, /threads/{id} (sync handlers → threadpool); get_atlas dep
@@ -83,7 +89,8 @@ interface/           ← M3.2 FastAPI HTTP layer over the compiled graph
   schemas.py         transport-only Pydantic (ChatRequest/ApproveRequest/AgentResponse/ErrorResponse)
 ```
 `scripts/` = runnable demos (`demo_approval`, `demo_persistence`, `demo_rbac`, `demo_knowledge`,
-`demo_knowledge_postgres`) + `run_api.py` (dev HTTP server). `evals/run_gate.py` = blocking
+`demo_knowledge_postgres`) + `run_api.py` (dev HTTP server) + `manage_policy.py` (seed/list/grant/
+revoke/export the Postgres policy). `evals/run_gate.py` = blocking
 deterministic security oracles + optional LangSmith quality evals. `tests/` unit + `-m integration`
 (Postgres).
 
@@ -100,11 +107,16 @@ Planner denies RBAC-unauthorized actions **early**; executor re-checks **late**;
   over a **deterministic** canonical serialization (sorted-keys JSON, UTC timestamps). `verify_chain`
   detects mutate/insert/delete/reorder. Postgres appends are **advisory-lock-serialized** (no chain
   fork). Hashing lives in ONE place so a future Merkle/anchoring upgrade won't touch storage.
-- **RBAC = simple role→permission, default-deny / fail-closed.** `Principal(user_id, roles, org_id)`
-  is frozen, threaded through `AgentState`, and in the serde allowlist. Tools declare an optional
-  `required_permission` (string; richer `ToolPermission` model is an M3/M4 placeholder). Enforcement
-  is **defense-in-depth**: deny-early in the planner (before the approval gate) **and** re-check-late
-  in the executor. `can()` is re-evaluated every call — persisted ACLs are never trusted as authz.
+- **RBAC = role→permission, default-deny / fail-closed, via a pluggable `PolicyStore` (M3.4).**
+  `Principal(user_id, roles, org_id)` is frozen, threaded through `AgentState`, and in the serde
+  allowlist. The role→permission mapping lives behind `governance/policy.py:PolicyStore` (ABC):
+  `InMemoryPolicyStore` (default, seeded from `ROLE_PERMISSIONS`) or `PostgresPolicyStore` (durable,
+  runtime-editable via `scripts/manage_policy.py`). `make_policy_store` selects by `DATABASE_URL`; the
+  store is **injected** through `build_graph` into the planner, executor, and KG backends. Tools
+  declare an optional `required_permission` (string; richer `ToolPermission` is a future placeholder).
+  Enforcement is **defense-in-depth**: deny-early in the planner **and** re-check-late in the executor.
+  Authorization is re-evaluated every call — persisted ACLs are never trusted as authz. **An empty
+  Postgres policy table is deny-all (fail-closed); seed explicitly — never auto-seed on connect.**
 - **Knowledge Graph = interface + two backends.** `KnowledgeGraph.query(principal, text, limit)`
   applies `can_read` **before** returning, so unreadable entities never reach the planner/LLM/sources.
   M3.1 adds a durable **`PostgresKnowledgeGraph`** (full-text search) that pushes the RBAC filter
@@ -148,12 +160,14 @@ A change that weakens any of these is a **blocking defect**.
     verified (RS256 + JWKS, `iss`/`aud`/`exp` required, alg-pinned), claims map to `Principal`,
     missing/invalid → 401. The header shim is now a **dev-only fallback** used only when OIDC is
     unconfigured. See [`AUTH.md`](./AUTH.md).
+11. **Pluggable policy (M3.4).** Role→permission lives in an injected `PolicyStore`; an empty Postgres
+    policy table is **deny-all** (seed explicitly via `scripts/manage_policy.py`, never auto-seed).
 
 **Known future-work security items (tracked):** the **dev header shim** (`interface/security.py`) is
 still TRUSTED-NETWORK only — fine for local/dev, but real deployments **must** set `ATLAS_OIDC_*`.
 Fail-closed default `Entity.acl` once untrusted `upsert_entity` write paths exist (no KG write
-endpoint yet, still deferred). Policy store (replace `ROLE_PERMISSIONS`), fine-grained RBAC,
-per-principal rate limiting, org-level thread delegation → M3.4/M4 (enumerated in `AUTH.md`).
+endpoint yet, still deferred). Fine-grained RBAC (`ToolPermission`), per-principal rate limiting,
+org-level thread delegation, policy versioning/admin-UI → M3.5/M4 (enumerated in `AUTH.md`).
 
 ## 7. Coding & Architectural Principles
 

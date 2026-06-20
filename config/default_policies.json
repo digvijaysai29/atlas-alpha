@@ -1,0 +1,5 @@
+{
+  "admin": ["*"],
+  "member": ["tool:send", "kg:read:org", "kg:read:personal"],
+  "guest": ["kg:read:personal"]
+}
