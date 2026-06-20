@@ -123,6 +123,19 @@ def test_anonymous_caller_cannot_read_a_thread() -> None:
     assert client.get(f"/threads/{tid}").status_code == 403
 
 
+def test_approve_authorizes_before_revealing_thread_state() -> None:
+    # A non-owner must get 403 even for a COMPLETED (not-awaiting) thread — never a 409 — so thread
+    # state can't be enumerated via the status code.
+    client, _ = _build(_search_plan)  # auto-completes (never pauses)
+    tid = client.post("/chat", json={"message": "find"}, headers=_headers("alice")).json()[
+        "thread_id"
+    ]
+    resp = client.post(
+        "/approve", json={"thread_id": tid, "approve": True}, headers=_headers("bob")
+    )
+    assert resp.status_code == 403  # not 409
+
+
 def test_caller_cannot_read_another_users_thread() -> None:
     client, _ = _build(_send_plan)
     tid = client.post("/chat", json={"message": "email"}, headers=_headers("alice")).json()[

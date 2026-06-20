@@ -134,9 +134,11 @@ def approve(body: ApproveRequest, principal: RequestPrincipal, atlas: AtlasDep) 
     snapshot = atlas.graph.get_state(_config(body.thread_id))
     if not snapshot.values:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Thread not found.")
+    # Authorize BEFORE any state-dependent check so a non-owner can't distinguish thread state
+    # (awaiting vs not) by 409-vs-403 — resume-time binding (403 on mismatch).
+    verify_thread_owner(thread_owner(snapshot), principal)
     if not _is_awaiting_approval(snapshot):
         raise HTTPException(status.HTTP_409_CONFLICT, "Thread is not awaiting approval.")
-    verify_thread_owner(thread_owner(snapshot), principal)  # resume-time binding (403 on mismatch)
     decisions = _decision_payload(body, snapshot, principal)
     result = atlas.graph.invoke(Command(resume=decisions), _config(body.thread_id))
     return _response_from_invoke(body.thread_id, result)
