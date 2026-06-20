@@ -84,7 +84,23 @@ class _FakeRequest:
 
 def test_key_for_identified_principal() -> None:
     p = Principal(user_id="alice", roles=("member",), org_id="acme")
-    assert rate_limit_key(p, _FakeRequest("1.2.3.4")) == "u|acme|alice"  # type: ignore[arg-type]
+    key = rate_limit_key(p, _FakeRequest("1.2.3.4"))  # type: ignore[arg-type]
+    assert key.startswith("u|")
+    assert len(key) == 66  # "u|" + 64-char SHA-256 hex
+
+
+def test_none_org_id_differs_from_literal_none_string() -> None:
+    none_org = Principal(user_id="alice", roles=(), org_id=None)
+    literal_none = Principal(user_id="alice", roles=(), org_id="None")
+    assert rate_limit_key(none_org, _FakeRequest("x")) != rate_limit_key(  # type: ignore[arg-type]
+        literal_none, _FakeRequest("x")  # type: ignore[arg-type]
+    )
+
+
+def test_delimiter_in_ids_does_not_collide() -> None:
+    a = Principal(user_id="b|c", roles=(), org_id="a")
+    b = Principal(user_id="c", roles=(), org_id="a|b")
+    assert rate_limit_key(a, _FakeRequest("x")) != rate_limit_key(b, _FakeRequest("x"))  # type: ignore[arg-type]
 
 
 def test_key_for_anonymous_uses_client_ip() -> None:

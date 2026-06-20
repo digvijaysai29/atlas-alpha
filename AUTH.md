@@ -144,7 +144,8 @@ to cap cost and resist DoS. `/threads/{id}` reads and `/healthz` are not limited
   (`interface/rate_limit.py`). A fixed window of `ATLAS_RATE_LIMIT_REQUESTS` per
   `ATLAS_RATE_LIMIT_WINDOW_SECONDS` (default 60/60). Keys carry a Redis TTL, so there is no in-process
   state to grow.
-- **Keying:** identified callers by `u|{org_id}|{user_id}`; the dev header-shim **anonymous** caller
+- **Keying:** identified callers by `u|{sha256(canonical_json(org_id,user_id))}` (injective — no
+  delimiter collisions); the dev header-shim **anonymous** caller
   by `ip|{client_ip}` (so one anon source can't starve all anon callers).
 - **Over budget → 429** with a `Retry-After` header, through the standard `ErrorResponse` envelope
   (`error.code == "too_many_requests"`).

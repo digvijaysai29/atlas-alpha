@@ -22,6 +22,8 @@ Design notes (consistent with the rest of the interface layer):
 from __future__ import annotations
 
 import abc
+import hashlib
+import json
 import logging
 import time
 from math import ceil
@@ -110,6 +112,21 @@ def build_rate_limiter(settings: Settings) -> RateLimiter | None:
     return UpstashRateLimiter(ratelimit)
 
 
+def _identified_principal_key(principal: Principal) -> str:
+    """Injective bucket key for an identified principal (org_id + user_id).
+
+    Raw delimiter concatenation collides when ``org_id`` is ``None`` vs the literal ``"None"``, or when
+    IDs contain ``|``. Canonical JSON + SHA-256 avoids ambiguous splits.
+    """
+    payload = json.dumps(
+        {"org_id": principal.org_id, "user_id": principal.user_id},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(payload.encode()).hexdigest()
+    return f"u|{digest}"
+
+
 def rate_limit_key(principal: Principal, request: Request) -> str:
     """The bucket key for a request: per identified principal, or per client IP for anonymous.
 
@@ -119,7 +136,7 @@ def rate_limit_key(principal: Principal, request: Request) -> str:
     if principal == Principal.anonymous():
         client = request.client
         return f"ip|{client.host if client else 'unknown'}"
-    return f"u|{principal.org_id}|{principal.user_id}"
+    return _identified_principal_key(principal)
 
 
 def enforce_rate_limit(request: Request, principal: RequestPrincipal) -> None:
