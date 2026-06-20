@@ -96,7 +96,8 @@ class OidcAuthenticator:
         if user_id == Principal.anonymous().user_id:
             raise AuthError("reserved subject")
         org_raw = claims.get(self._org_claim)
-        org_id = str(org_raw).strip() if org_raw not in (None, "") else None
+        # Match header-shim semantics: missing, empty, and whitespace-only → None (not "").
+        org_id = (str(org_raw) if org_raw is not None else "").strip() or None
         return Principal(
             user_id=user_id, roles=_parse_roles(claims.get(self._roles_claim)), org_id=org_id
         )

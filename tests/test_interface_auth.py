@@ -242,6 +242,21 @@ def test_org_claim_participates_in_owner_binding(keypair: tuple[RSAPrivateKey, A
     assert same_org.status_code == 200
 
 
+def test_whitespace_org_claim_matches_missing_org_in_owner_binding(
+    keypair: tuple[RSAPrivateKey, Any],
+) -> None:
+    """Whitespace-only org_id claims normalize to None — must not 403 vs a no-org thread owner."""
+    priv, pub = keypair
+    client, _ = _client(pub)
+    tid = client.post(
+        "/chat", json={"message": "email"}, headers=_bearer(_token(priv, sub="alice"))
+    ).json()["thread_id"]
+    resp = client.get(
+        f"/threads/{tid}", headers=_bearer(_token(priv, sub="alice", org="   "))
+    )
+    assert resp.status_code == 200
+
+
 # --- unit: claim parsing -----------------------------------------------------
 def test_parse_roles_is_defensive() -> None:
     assert _parse_roles(None) == ()
@@ -258,6 +273,19 @@ def test_principal_from_token_maps_claims(keypair: tuple[RSAPrivateKey, Any]) ->
     auth = _authenticator(pub)
     principal = auth.principal_from_token(_token(priv, sub="alice", roles=["member"], org="acme"))
     assert principal == Principal(user_id="alice", roles=("member",), org_id="acme")
+
+
+@pytest.mark.parametrize("org", [None, "", "   "])
+def test_principal_from_token_normalizes_blank_org_claim(
+    keypair: tuple[RSAPrivateKey, Any], org: str | None
+) -> None:
+    priv, pub = keypair
+    auth = _authenticator(pub)
+    token_kwargs: dict[str, Any] = {"sub": "alice"}
+    if org is not None:
+        token_kwargs["org"] = org
+    principal = auth.principal_from_token(_token(priv, **token_kwargs))
+    assert principal.org_id is None
 
 
 def test_build_authenticator_returns_none_in_dev_mode() -> None:
