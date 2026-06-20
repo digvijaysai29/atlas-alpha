@@ -93,7 +93,8 @@ def test_none_org_id_differs_from_literal_none_string() -> None:
     none_org = Principal(user_id="alice", roles=(), org_id=None)
     literal_none = Principal(user_id="alice", roles=(), org_id="None")
     assert rate_limit_key(none_org, _FakeRequest("x")) != rate_limit_key(  # type: ignore[arg-type]
-        literal_none, _FakeRequest("x")  # type: ignore[arg-type]
+        literal_none,
+        _FakeRequest("x"),  # type: ignore[arg-type]
     )
 
 
