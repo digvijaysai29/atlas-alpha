@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from typing import Self
+from urllib.parse import urlparse
 
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -15,6 +16,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # LangSmith reads these names directly from the process environment to enable tracing. We surface
 # them in Settings for visibility/validation; setting LANGSMITH_TRACING=true is all that is needed.
 _DEFAULT_MODEL = "claude-opus-4-8"
+_LOCAL_HTTP_HOSTS = frozenset({"127.0.0.1", "localhost"})
+
+
+def _is_secure_oidc_url(url: str) -> bool:
+    """True for https URLs or http://127.0.0.1 / http://localhost (local mock IdPs)."""
+    parsed = urlparse(url.strip())
+    if parsed.scheme == "https":
+        return True
+    return parsed.scheme == "http" and parsed.hostname in _LOCAL_HTTP_HOSTS
 
 
 class Settings(BaseSettings):
@@ -69,6 +79,8 @@ class Settings(BaseSettings):
     # Clock-skew tolerance (seconds) for exp/nbf. 60s is the common default: large enough to absorb
     # normal client/IdP NTP drift, small enough not to meaningfully extend an expired token.
     oidc_leeway: int = Field(default=60, alias="ATLAS_OIDC_LEEWAY")
+    # Allow http:// (non-localhost) issuer/JWKS URLs — dev/integration only; default false.
+    oidc_allow_insecure_http: bool = Field(default=False, alias="ATLAS_OIDC_ALLOW_INSECURE_HTTP")
 
     @model_validator(mode="after")
     def validate_oidc_config(self) -> Self:
@@ -87,6 +99,18 @@ class Settings(BaseSettings):
                 f"{', '.join(unset_names)} missing. Set all three or leave all blank."
             )
             raise ValueError(msg)
+        if self.oidc_enabled and not self.oidc_allow_insecure_http:
+            for env_name, url in (
+                ("ATLAS_OIDC_ISSUER", self.oidc_issuer),
+                ("ATLAS_OIDC_JWKS_URI", self.oidc_jwks_uri),
+            ):
+                assert url is not None  # oidc_enabled guarantees all three are set
+                if not _is_secure_oidc_url(url):
+                    msg = (
+                        f"{env_name} must use https:// (or http://127.0.0.1 / http://localhost). "
+                        "Set ATLAS_OIDC_ALLOW_INSECURE_HTTP=true only for dev/integration."
+                    )
+                    raise ValueError(msg)
         return self
 
     @property
