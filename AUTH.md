@@ -29,7 +29,7 @@ deployment.
 | Scenario | Response |
 |---|---|
 | Valid token + sufficient permission | `200` |
-| Valid token + insufficient permission | `403` (RBAC) |
+| Valid token + insufficient permission on `/chat` | `200` — planner drops unauthorized actions; response shows `completed` with no gated `pending_actions` (RBAC is enforced in-graph, not as HTTP 403) |
 | Valid token, but not the thread owner (`/approve`, `/threads/{id}`) | `403` (owner-binding) |
 | Missing / malformed `Authorization` header | `401` (`WWW-Authenticate: Bearer`) |
 | Invalid / expired / wrong-`iss` / wrong-`aud` / bad-signature token | `401` |
