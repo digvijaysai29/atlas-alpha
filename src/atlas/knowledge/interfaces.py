@@ -83,3 +83,7 @@ class KnowledgeGraph(abc.ABC):
     def relations(self) -> Sequence[Relation]:
         """Return all relations (used by tests/inspection)."""
         raise NotImplementedError
+
+    def bind_policy(self, policy: PolicyStore) -> None:
+        """Attach the store governing RBAC read filtering (used by ``build_graph`` wiring)."""
+        raise NotImplementedError

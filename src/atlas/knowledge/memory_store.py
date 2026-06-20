@@ -30,6 +30,9 @@ class InMemoryKnowledgeGraph(KnowledgeGraph):
     def relations(self) -> Sequence[Relation]:
         return tuple(self._relations)
 
+    def bind_policy(self, policy: PolicyStore) -> None:
+        self._policy = policy
+
     def query(self, principal: Principal | None, text: str, *, limit: int = 5) -> list[Entity]:
         terms = [term for term in text.lower().split() if term]
         matches: list[Entity] = []

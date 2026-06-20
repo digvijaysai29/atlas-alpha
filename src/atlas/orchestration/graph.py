@@ -170,7 +170,10 @@ def build_graph(
     audit = audit or make_audit_log(settings)
     plan_fn = plan_fn or default_plan_fn(settings)
     policy = policy or make_policy_store(settings)
-    knowledge = knowledge or make_knowledge_graph(settings, policy)
+    if knowledge is None:
+        knowledge = make_knowledge_graph(settings, policy)
+    else:
+        knowledge.bind_policy(policy)
     checkpointer = checkpointer or make_checkpointer(settings)
 
     builder: StateGraph = StateGraph(AgentState)

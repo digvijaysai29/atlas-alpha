@@ -153,6 +153,9 @@ class PostgresKnowledgeGraph(KnowledgeGraph):
                 for row in cur.fetchall()
             )
 
+    def bind_policy(self, policy: PolicyStore) -> None:
+        self._policy = policy
+
     def query(self, principal: Principal | None, text: str, *, limit: int = 5) -> list[Entity]:
         permissions = self._policy.effective_permissions(principal)
         is_admin = _ADMIN_WILDCARD in permissions

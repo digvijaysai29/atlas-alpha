@@ -95,10 +95,10 @@ def _build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     url = os.environ.get("DATABASE_URL")
     if not url:
-        print("DATABASE_URL is not set. Start Postgres and export it, e.g.:")
-        print("  docker compose up -d")
-        print("  export DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas")
-        sys.exit(0)
+        print("DATABASE_URL is not set. Start Postgres and export it, e.g.:", file=sys.stderr)
+        print("  docker compose up -d", file=sys.stderr)
+        print("  export DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas", file=sys.stderr)
+        sys.exit(1)
 
     args = _build_parser().parse_args()
     pool = _pg_pool(url)

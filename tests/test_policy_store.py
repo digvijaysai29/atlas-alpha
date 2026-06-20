@@ -16,6 +16,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from atlas.actions import ProposedAction
 from atlas.governance import ROLE_PERMISSIONS, InMemoryPolicyStore, Principal, expand_roles
+from atlas.knowledge import seed_demo_graph
 from atlas.orchestration import build_graph, initial_state
 from atlas.orchestration.serde import atlas_serde
 from atlas.tools import ToolRegistry
@@ -97,3 +98,26 @@ def test_injected_policy_can_allow_a_custom_role() -> None:
         "allow",
     )
     assert "__interrupt__" in result  # authorized → paused at the approval gate
+
+
+def _search_plan(_request: str, registry: ToolRegistry, _context: object) -> list[ProposedAction]:
+    return [registry.propose("search", {"query": "x"})]
+
+
+def test_injected_policy_scopes_kg_context_on_prebuilt_graph() -> None:
+    # member has tool:send but NOT kg:read:org — without bind_policy, KG would use DEFAULT_POLICY
+    # and incorrectly include doc-1 in kg_context.
+    custom = InMemoryPolicyStore({"member": frozenset({"tool:send"})})
+    atlas = build_graph(
+        plan_fn=_search_plan,
+        knowledge=seed_demo_graph(),
+        policy=custom,
+        checkpointer=InMemorySaver(serde=atlas_serde()),
+    )
+    config: RunnableConfig = {"configurable": {"thread_id": "kg-policy-bind"}}
+    result = atlas.graph.invoke(
+        initial_state("find the revenue and onboarding", principal=MEMBER), config=config
+    )
+    kg_ids = {e.id for e in result["kg_context"]}
+    assert "doc-1" not in kg_ids
+    assert "note-1" not in kg_ids
