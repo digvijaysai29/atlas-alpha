@@ -96,6 +96,35 @@ def test_anonymous_sees_only_world_readable(pg_pool: object) -> None:
     assert {e.id for e in kg.query(ANON, "")} == {"public-1"}
 
 
+def test_wildcard_grant_reveals_org_entity_via_sql_filter(pg_pool: object) -> None:
+    # M3.5 (the critical one): a `kg:read:*` grant must reveal the org-scoped doc-1 over Postgres.
+    # The acl `("kg:read:org",)` does NOT exactly overlap `kg:read:*`, so this passes only if the
+    # SQL WHERE clause itself honors the wildcard (LIKE prefix) — the Python re-filter alone cannot
+    # add back a row the query never fetched.
+    kg = _seed(pg_pool)
+    kg.bind_policy(InMemoryPolicyStore({"reader": frozenset({"kg:read:*"})}))
+    reader = Principal(user_id="carol", roles=("reader",))
+    ids = {e.id for e in kg.query(reader, "revenue onboarding holiday")}
+    assert ids == {"note-1", "doc-1", "public-1"}  # wildcard reveals both personal + org leaves
+
+
+def test_wildcard_grant_stays_within_its_prefix(pg_pool: object) -> None:
+    # A `kg:read:*` grant must NOT reveal an entity gated on a different prefix (no over-include).
+    kg = _seed(pg_pool)
+    secret = Entity(
+        id="secret-1",
+        type="doc",
+        name="Quarterly revenue secret",
+        content="kg:write protected revenue plan",
+        acl=("kg:write:org",),
+        scope="org",
+    )
+    kg.upsert_entity(secret)
+    kg.bind_policy(InMemoryPolicyStore({"reader": frozenset({"kg:read:*"})}))
+    reader = Principal(user_id="carol", roles=("reader",))
+    assert "secret-1" not in {e.id for e in kg.query(reader, "revenue")}
+
+
 # --- retrieval semantics ----------------------------------------------------
 def test_full_text_match_on_a_single_term(pg_pool: object) -> None:
     kg = _seed(pg_pool)

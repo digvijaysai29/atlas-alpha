@@ -70,6 +70,27 @@ def expand_roles(roles: tuple[str, ...], mapping: Mapping[str, frozenset[str]]) 
     return frozenset(permissions)
 
 
+def permission_satisfied(granted: frozenset[str], required: str) -> bool:
+    """True iff any ``granted`` permission satisfies ``required`` (the single matching rule).
+
+    Wildcards are interpreted **only on the granted side**; ``required`` is always a concrete
+    permission. A granted ``g`` satisfies ``required`` iff:
+
+    1. ``g == "*"`` — the global admin wildcard (grants everything), OR
+    2. ``g == required`` — exact match, OR
+    3. ``g`` ends with ``":*"`` and ``required.startswith(g[:-1])`` — a hierarchical prefix grant,
+       where ``g[:-1]`` is the prefix **including the trailing colon**. So ``"kg:read:*"`` (prefix
+       ``"kg:read:"``) satisfies ``"kg:read:org"``; ``"tool:*"`` satisfies ``"tool:send"``;
+       ``"kg:*"`` satisfies ``"kg:read:org"``.
+
+    A bare ``"kg:read"`` (no trailing ``":*"``) does **not** cover ``"kg:read:org"`` — there is no
+    silent hierarchy, only the explicit ``":*"`` suffix expands.
+    """
+    if WILDCARD in granted or required in granted:
+        return True
+    return any(g.endswith(":*") and required.startswith(g[:-1]) for g in granted)
+
+
 def get_effective_permissions(principal: Principal | None) -> frozenset[str]:
     """Expand a principal's roles via the built-in :data:`ROLE_PERMISSIONS` default.
 
@@ -86,12 +107,12 @@ def can(principal: Principal | None, permission: str | None) -> bool:
 
     - ``permission is None`` means "no special permission required" → always allowed.
     - A ``None`` principal, an unknown role, or a role that doesn't grant the permission → denied.
-    - The ``admin`` wildcard ``"*"`` grants everything.
+    - The ``admin`` wildcard ``"*"`` and hierarchical ``":*"`` grants are honored via
+      :func:`permission_satisfied`.
     """
     if permission is None:
         return True
-    granted = get_effective_permissions(principal)
-    return WILDCARD in granted or permission in granted
+    return permission_satisfied(get_effective_permissions(principal), permission)
 
 
 def get_current_principal(state: AgentState) -> Principal:

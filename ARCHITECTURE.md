@@ -205,5 +205,9 @@ executor refuses to run a gated action without a matching, in-scope `ApprovalDec
   `persistence/policy_store.py` `PostgresPolicyStore`) replacing the hardcoded `ROLE_PERMISSIONS`;
   injected via `build_graph` into planner/executor/KG; empty Postgres table = deny-all; managed by
   `scripts/manage_policy.py`. See `AUTH.md`.
-- **Later:** fine-grained RBAC (`ToolPermission`) + per-principal rate limiting (M3.5); pgvector
+- **M3.5 (done):** hierarchical wildcard RBAC — a granted `kg:read:*` satisfies a required
+  `kg:read:org`. One matching rule (`governance/rbac.py:permission_satisfied`) shared by both
+  `PolicyStore` backends, the Postgres KG SQL read filter, and `can_read` (backend parity); wildcards
+  expand on the granted side only. See `AUTH.md`.
+- **Later:** per-principal rate limiting (M3.6); resource/argument-aware `ToolPermission`; pgvector
   semantic retrieval; real integrations (Gmail/Slack/Jira); SSE streaming; Merkle anchoring.

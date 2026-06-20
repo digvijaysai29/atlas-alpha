@@ -15,7 +15,13 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 
 from atlas.actions import ProposedAction
-from atlas.governance import ROLE_PERMISSIONS, InMemoryPolicyStore, Principal, expand_roles
+from atlas.governance import (
+    ROLE_PERMISSIONS,
+    InMemoryPolicyStore,
+    Principal,
+    expand_roles,
+    permission_satisfied,
+)
 from atlas.knowledge import seed_demo_graph
 from atlas.orchestration import build_graph, initial_state
 from atlas.orchestration.serde import atlas_serde
@@ -37,6 +43,40 @@ def test_expand_roles_wildcard_short_circuits() -> None:
 
 def test_expand_roles_unknown_role_grants_nothing() -> None:
     assert expand_roles(("wizard",), ROLE_PERMISSIONS) == frozenset()
+
+
+# --- permission_satisfied (the shared wildcard matching rule, M3.5) ----------
+def test_permission_satisfied_exact_match() -> None:
+    assert permission_satisfied(frozenset({"kg:read:org"}), "kg:read:org") is True
+
+
+def test_permission_satisfied_global_admin_wildcard() -> None:
+    assert permission_satisfied(frozenset({"*"}), "anything:at:all") is True
+
+
+def test_permission_satisfied_hierarchical_prefix_wildcard() -> None:
+    assert permission_satisfied(frozenset({"kg:read:*"}), "kg:read:org") is True
+    assert permission_satisfied(frozenset({"kg:read:*"}), "kg:read:personal") is True
+    assert permission_satisfied(frozenset({"tool:*"}), "tool:send") is True
+    assert permission_satisfied(frozenset({"kg:*"}), "kg:read:org") is True
+
+
+def test_permission_satisfied_non_matches() -> None:
+    # A bare segment (no trailing ":*") does NOT cover a deeper leaf — no silent hierarchy.
+    assert permission_satisfied(frozenset({"kg:read"}), "kg:read:org") is False
+    # A wildcard only expands within its own prefix.
+    assert permission_satisfied(frozenset({"kg:read:*"}), "kg:write:secret") is False
+    assert permission_satisfied(frozenset({"tool:*"}), "kg:read:org") is False
+    # Empty grant set denies everything (fail-closed).
+    assert permission_satisfied(frozenset(), "kg:read:org") is False
+
+
+def test_in_memory_store_honors_wildcard_grant() -> None:
+    store = InMemoryPolicyStore({"member": frozenset({"kg:read:*"})})
+    assert store.can(MEMBER, "kg:read:org") is True
+    assert store.can(MEMBER, "kg:read:personal") is True
+    assert store.can(MEMBER, "kg:write:org") is False  # wildcard does not leak across prefixes
+    assert store.can(MEMBER, "tool:send") is False
 
 
 # --- InMemoryPolicyStore parity with the legacy behavior ---------------------
