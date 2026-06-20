@@ -209,5 +209,9 @@ executor refuses to run a gated action without a matching, in-scope `ApprovalDec
   `kg:read:org`. One matching rule (`governance/rbac.py:permission_satisfied`) shared by both
   `PolicyStore` backends, the Postgres KG SQL read filter, and `can_read` (backend parity); wildcards
   expand on the granted side only. See `AUTH.md`.
-- **Later:** per-principal rate limiting (M3.6); resource/argument-aware `ToolPermission`; pgvector
-  semantic retrieval; real integrations (Gmail/Slack/Jira); SSE streaming; Merkle anchoring.
+- **M3.6 (done):** per-principal rate limiting on `/chat` + `/approve` — **Upstash** (managed Redis)
+  via `upstash-ratelimit` behind a `RateLimiter` ABC (`interface/rate_limit.py`), injected through
+  `create_app`; over budget → 429 + `Retry-After`; layered after authn/authz and **fail-open**
+  (availability control, not an authz gate); per client IP for anonymous. See `AUTH.md`.
+- **Later:** resource/argument-aware `ToolPermission`; pgvector semantic retrieval; real integrations
+  (Gmail/Slack/Jira); SSE streaming; Merkle anchoring.

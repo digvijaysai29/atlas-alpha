@@ -135,6 +135,29 @@ the CLI:
 uv run python scripts/manage_policy.py grant member kg:read:*   # one grant covers org + personal
 ```
 
+## Rate limiting (M3.6)
+
+The two graph-invoking endpoints — **`/chat`** and **`/approve`** — are rate limited **per principal**
+to cap cost and resist DoS. `/threads/{id}` reads and `/healthz` are not limited.
+
+- **Backend: Upstash** (managed serverless Redis) via the `upstash-ratelimit` SDK
+  (`interface/rate_limit.py`). A fixed window of `ATLAS_RATE_LIMIT_REQUESTS` per
+  `ATLAS_RATE_LIMIT_WINDOW_SECONDS` (default 60/60). Keys carry a Redis TTL, so there is no in-process
+  state to grow.
+- **Keying:** identified callers by `u|{org_id}|{user_id}`; the dev header-shim **anonymous** caller
+  by `ip|{client_ip}` (so one anon source can't starve all anon callers).
+- **Over budget → 429** with a `Retry-After` header, through the standard `ErrorResponse` envelope
+  (`error.code == "too_many_requests"`).
+- **Layered after authn/authz:** `enforce_rate_limit` depends on the resolved `Principal`, so an
+  invalid token still 401s first; limiting never grants access.
+- **Fail-open:** if Upstash is unreachable, the request is **allowed** (logged server-side) — a
+  rate-limiter outage must not take down the API. Likewise, when the Upstash creds are unset the
+  limiter is **disabled** (the dev/CI default; the suite runs unthrottled).
+
+Config (env): `ATLAS_RATE_LIMIT_ENABLED` (default `true`), `ATLAS_RATE_LIMIT_REQUESTS`,
+`ATLAS_RATE_LIMIT_WINDOW_SECONDS`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` (secret —
+never logged). Limiting activates only when enabled **and** both Upstash creds are present.
+
 ## Deferred / future work
 
 Scoped out to keep M3.3 a single, green, security-focused milestone. Tracked here so they are not
@@ -144,7 +167,8 @@ forgotten:
 |---|---|---|
 | **Hierarchical wildcard permissions** (`kg:read:*` ⇒ `kg:read:org`) | usability of the string policy without a new data model | ✅ **done (M3.5)** — see *Wildcard permissions* above |
 | **Resource/argument-aware RBAC** (richer `ToolPermission`, "only send to internal domains") | current string permissions are a deliberate placeholder; needs design | M4 |
-| **Per-principal rate limiting** | needs a shared counter store (Redis/DB) + policy; orthogonal to identity | M3.6 |
+| **Per-principal rate limiting** | Upstash-backed throttle on `/chat` + `/approve` | ✅ **done (M3.6)** — see *Rate limiting* above |
+| **Per-route rate-limit tiers / anti-brute-force IP limiting on 401s** | finer-grained policy beyond a single per-principal budget | M4+ |
 | **Policy versioning / history / admin UI / caching layer** | a runtime-editable store exists (M3.4); these are larger follow-ons | M4+ |
 | **Sessions / refresh tokens** | bearer JWTs are stateless; refresh/rotation belongs with a login flow | M4 |
 | **User / org provisioning** | JIT/SCIM provisioning + an org model is a backend feature, not edge auth | M4 |
