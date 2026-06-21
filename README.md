@@ -6,9 +6,9 @@ An **agent-first enterprise workspace**. One unified agent sits at the center an
 tools, powered by a Personal + Organizational Knowledge Graph. Security, human-in-the-loop approval,
 and auditability are first-class.
 
-- 📜 Project constitution: [`CLAUDE.md`](./CLAUDE.md)
-- 🏛️ System design: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
-- 🧭 Onboarding + next-milestone plan: [`HANDOFF.md`](./HANDOFF.md)
+- 📜 Project constitution: [`CLAUDE.md`](./docs/constitution/CLAUDE.md)
+- 🏛️ System design: [`ARCHITECTURE.md`](./docs/architecture/ARCHITECTURE.md)
+- 🧭 Onboarding + next-milestone plan: [`HANDOFF.md`](./docs/guides/HANDOFF.md)
 
 ## Status — Milestone 1 (runnable HITL core)
 
@@ -71,5 +71,5 @@ scripts/demo_approval.py # end-to-end approve/reject demo
 tests/                   # policy, approval paths, tools
 ```
 
-See [`ARCHITECTURE.md`](./ARCHITECTURE.md) §Roadmap for Milestone 2 (Postgres, RBAC, Knowledge
+See [`ARCHITECTURE.md`](./docs/architecture/ARCHITECTURE.md) §Roadmap for Milestone 2 (Postgres, RBAC, Knowledge
 Graph, evaluation).

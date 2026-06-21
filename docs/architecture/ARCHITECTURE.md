@@ -2,7 +2,7 @@
 
 System design for **atlas**, an agent-first enterprise workspace. This document describes the
 layered architecture, the agent orchestration graph, how state / memory / approvals work, and the
-key design trade-offs. For project rules and constraints see [`CLAUDE.md`](./CLAUDE.md).
+key design trade-offs. For project rules and constraints see [`CLAUDE.md`](../constitution/CLAUDE.md).
 
 ---
 
@@ -201,19 +201,19 @@ executor refuses to run a gated action without a matching, in-scope `ApprovalDec
   checkpointed owner → 403); interim trusted-network header identity shim; consistent error envelope.
 - **M3.3 (done):** real OIDC/JWT bearer auth (`src/atlas/interface/auth.py`, `PyJWT[crypto]`) —
   RS256 signature via JWKS, `iss`/`aud`/`exp` verified, claims→`Principal`, 401 on invalid/missing;
-  the header shim is now a dev-only fallback. Config + deferred-work guide in `AUTH.md`.
+  the header shim is now a dev-only fallback. Config + deferred-work guide in [`AUTH.md`](../guides/AUTH.md).
 - **M3.4 (done):** pluggable `PolicyStore` (`governance/policy.py` ABC + `InMemoryPolicyStore` +
   `persistence/policy_store.py` `PostgresPolicyStore`) replacing the hardcoded `ROLE_PERMISSIONS`;
   injected via `build_graph` into planner/executor/KG; empty Postgres table = deny-all; managed by
-  `scripts/manage_policy.py`. See `AUTH.md`.
+  `scripts/manage_policy.py`. See [`AUTH.md`](../guides/AUTH.md).
 - **M3.5 (done):** hierarchical wildcard RBAC — a granted `kg:read:*` satisfies a required
   `kg:read:org`. One matching rule (`governance/rbac.py:permission_satisfied`) shared by both
   `PolicyStore` backends, the Postgres KG SQL read filter, and `can_read` (backend parity); wildcards
-  expand on the granted side only. See `AUTH.md`.
+  expand on the granted side only. See [`AUTH.md`](../guides/AUTH.md).
 - **M3.6 (done):** per-principal rate limiting on `/chat` + `/approve` — **Upstash** (managed Redis)
   via `upstash-ratelimit` behind a `RateLimiter` ABC (`interface/rate_limit.py`), injected through
   `create_app`; over budget → 429 + `Retry-After`; layered after authn/authz and **fail-open**
-  (availability control, not an authz gate); per client IP for anonymous. See `AUTH.md`.
+  (availability control, not an authz gate); per client IP for anonymous. See [`AUTH.md`](../guides/AUTH.md).
 - **M4.1 (done):** first real tool integration — **email send** via **Resend** behind a pluggable
   `EmailSender` ABC (`integrations/email.py`), provider-agnostic at `tool:send`, human-gated from
   `ATLAS_EMAIL_FROM`. **Idempotent execution** via `GuardedExecutor` (`execution.py`) — audit ledger
@@ -225,7 +225,7 @@ executor refuses to run a gated action without a matching, in-scope `ApprovalDec
   `required_permission="tool:slack:post"`) behind a pluggable `SlackSender` (managed `slack_sdk` bot
   token; `integrations/slack.py`), mirroring the M4.1 `EmailSender` shape. **Idempotency is inherited**
   from `GuardedExecutor` for any `RiskTier.SEND` action — no new execution code. Guide:
-  [`M4.2_PLAN.md`](./M4.2_PLAN.md).
+  [`M4.2_PLAN.md`](../plans/M4.2_PLAN.md).
 - **Later (M4.3+):** per-principal "send as the user" OAuth; Gmail/Jira/Calendar adapters;
   resource/argument-aware `ToolPermission`; pgvector semantic retrieval; SSE streaming; Merkle
   anchoring.

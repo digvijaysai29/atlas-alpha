@@ -3,9 +3,9 @@
 > Onboarding + forward plan for the **next implementer** (human or agent). Read this to pick up
 > **M2.3** and the **future phases (M3+)** without re-deriving context.
 >
-> **Read `CLAUDE.md` first** — it is the binding constitution (rules, guardrails, the hard "never" list).
-> This doc is the *map and the plan*; `CLAUDE.md` is the *law*; [`ARCHITECTURE.md`](./ARCHITECTURE.md)
-> is the *design*; [`README.md`](./README.md) is the *quickstart*.
+> **Read [`CLAUDE.md`](../constitution/CLAUDE.md) first** — it is the binding constitution (rules, guardrails, the hard "never" list).
+> This doc is the *map and the plan*; [`CLAUDE.md`](../constitution/CLAUDE.md) is the *law*; [`ARCHITECTURE.md`](../architecture/ARCHITECTURE.md)
+> is the *design*; [`README.md`](../../README.md) is the *quickstart*.
 
 ---
 
@@ -24,12 +24,12 @@ branch → PR into `main` → CI must be green.
 | **M2.3** | Real `agent-eval` gate (deterministic blocking + optional LangSmith) | ✅ merged (PR #7) |
 | **M3.1** | Durable **`PostgresKnowledgeGraph`** (full-text search; RBAC filter in SQL) behind the `KnowledgeGraph` ABC | ✅ merged (PR #8) |
 | **M3.2** | FastAPI Interface (`/chat`, `/approve`, `/threads/{id}`) + **resume-time principal/thread binding**; trusted-network header identity shim | ✅ merged (PR #9) |
-| **M3.3** | Real **OIDC/JWT bearer auth** (RS256+JWKS, claims→`Principal`); header shim → dev fallback. See `AUTH.md` | ✅ merged (PR #10) |
-| **M3.4** | Pluggable **`PolicyStore`** (ABC + in-memory + Postgres) replacing hardcoded `ROLE_PERMISSIONS`; `manage_policy.py` CLI. See `AUTH.md` | ✅ merged (PR #16) |
+| **M3.3** | Real **OIDC/JWT bearer auth** (RS256+JWKS, claims→`Principal`); header shim → dev fallback. See [`AUTH.md`](./AUTH.md) | ✅ merged (PR #10) |
+| **M3.4** | Pluggable **`PolicyStore`** (ABC + in-memory + Postgres) replacing hardcoded `ROLE_PERMISSIONS`; `manage_policy.py` CLI. See [`AUTH.md`](./AUTH.md) | ✅ merged (PR #16) |
 | **M3.5** | Fine-grained RBAC: **hierarchical wildcard permissions** (`kg:read:*` ⇒ `kg:read:org`) via shared `permission_satisfied` | ✅ merged (PR #19) |
 | **M3.6** | **Per-principal rate limiting** on `/chat` + `/approve` (Upstash + `upstash-ratelimit`); 429 + `Retry-After`; fail-open; per-IP for anonymous | ✅ merged (PR #20) |
 | **M4.1** | First real integration: **email send (Resend)** behind a pluggable `EmailSender` + **idempotent execution** (`GuardedExecutor`, audit `REPLAY_SKIPPED`/`FAILED`) | ✅ merged (PR #22) |
-| **M4.2** | **← NEXT.** Second integration: **Slack post** (`slack_post`, managed `slack_sdk` bot token) reusing the `EmailSender`/`GuardedExecutor` pattern — idempotency inherited. Guide: **[`M4.2_PLAN.md`](./M4.2_PLAN.md)** | ⏭ planned |
+| **M4.2** | **← NEXT.** Second integration: **Slack post** (`slack_post`, managed `slack_sdk` bot token) reusing the `EmailSender`/`GuardedExecutor` pattern — idempotency inherited. Guide: **[`M4.2_PLAN.md`](../plans/M4.2_PLAN.md)** | ⏭ planned |
 | **M4.3+** | Per-principal "send as the user" OAuth; Jira/Calendar; pgvector semantic retrieval; sessions/provisioning; SSE streaming | future |
 
 **Net:** atlas is a secure, durable, identity-aware, knowledge-grounded HITL agent with a transparent
@@ -43,11 +43,11 @@ in M4.2+.
 
 ## 2. System recap (pointers, not prose)
 
-Five layers + cross-cutting governance (`ARCHITECTURE.md`): `Interface → Agent Orchestration →
+Five layers + cross-cutting governance ([`ARCHITECTURE.md`](../architecture/ARCHITECTURE.md)): `Interface → Agent Orchestration →
 Integration(tools) → Knowledge(PKG/OKG) → Data(persistence)`. The core is the LangGraph state machine
 `START → planner → [route] → approval(interrupt) → executor → responder → END`.
 
-Hard invariants (full list in `CLAUDE.md` §6 — do not weaken any):
+Hard invariants (full list in [`CLAUDE.md`](../constitution/CLAUDE.md) §6 — do not weaken any):
 - **Fail-closed everywhere** (approval policy, RBAC `can`/`can_read`, KG retrieval).
 - **Gate enforced in code** — the executor re-checks policy + a matching, `action_id`-bound approval
   before every run; deleting the approval node must make a test fail.
@@ -57,7 +57,7 @@ Hard invariants (full list in `CLAUDE.md` §6 — do not weaken any):
 - **KG reads are RBAC-filtered before content reaches the planner/LLM/sources** (IDOR defense).
 - **Append-only hash-chained audit**; parameterized SQL only; secrets via env/Settings.
 
-Codebase map: `CLAUDE.md` §4. Locked M2 decisions: `CLAUDE.md` §5.
+Codebase map: [`CLAUDE.md`](../constitution/CLAUDE.md) §4. Locked M2 decisions: [`CLAUDE.md`](../constitution/CLAUDE.md) §5.
 
 ## 3. Dev loop & conventions
 
@@ -93,7 +93,7 @@ uv run python scripts/demo_rbac.py                   # demos: approval / persist
   git branch -f main origin/main; git push origin <feature>`. (`origin/main` is never pushed by the
   mistake, so the remote stays safe.)
 - **Stale `.cursorrules`** (untracked, root) — written during M2.2b ("don't start M2.2c yet"). Refresh
-  it (it can mostly point at `CLAUDE.md` + this doc) or `.gitignore` it.
+  it (it can mostly point at [`CLAUDE.md`](../constitution/CLAUDE.md) + this doc) or `.gitignore` it.
 - **Local Postgres** stays up after integration runs: `docker compose down` (add `-v` to wipe volume).
 - **`LANGSMITH_API_KEY` repo secret is already configured** — M2.3's LangSmith part can use it.
 - **Scoped mypy overrides** exist only for LangGraph's overloaded generics (`atlas.orchestration.graph`,
@@ -218,7 +218,7 @@ Each is a separate milestone; keep the sub-phase discipline (small PRs, green CI
   `governance/rbac.py:permission_satisfied` — shared by `InMemoryPolicyStore`, `PostgresPolicyStore`,
   the Postgres KG SQL read filter (`persistence/knowledge_store.py`, `LIKE`-prefix expansion of `:*`
   grants, `_like_escape`-d), and `can_read` (backend parity). Wildcards expand **only on the granted
-  side**; the LLM still can never self-grant. **Deferred → M3.6/M4 (in AUTH.md):** per-principal rate
+  side**; the LLM still can never self-grant. **Deferred → M3.6/M4 (in [`AUTH.md`](./AUTH.md)):** per-principal rate
   limiting, resource/argument-aware `ToolPermission`, sessions/refresh, provisioning, admin UI, policy
   versioning/caching, OAuth login flows.
 - **M3.6 — Per-principal rate limiting.** ✅ **DONE (PR #20).** `/chat` + `/approve` are throttled
@@ -228,7 +228,7 @@ Each is a separate milestone; keep the sub-phase discipline (small PRs, green CI
   `Retry-After` through the `ErrorResponse` envelope. **Fail-open** (limiter outage / unset creds ⇒
   allow); **off** in dev/CI (no creds). Config: `ATLAS_RATE_LIMIT_*` + `UPSTASH_REDIS_REST_*`. Tests:
   `tests/test_rate_limit.py` (hermetic via an injected stub limiter; real Upstash gated on
-  `-m integration` + env creds). See `AUTH.md`. **Deferred → M4:** per-route tiers, anti-brute-force
+  `-m integration` + env creds). See [`AUTH.md`](./AUTH.md). **Deferred → M4:** per-route tiers, anti-brute-force
   IP limiting on 401s.
 - **M4.1 — First real integration: email send + idempotent execution.** ✅ **DONE (PR #22).** Real
   `send_email` via **pluggable `EmailSender`** (Resend; `integrations/email.py`) from verified
@@ -238,7 +238,7 @@ Each is a separate milestone; keep the sub-phase discipline (small PRs, green CI
   `DATABASE_URL` (durable audit) + `RESEND_API_KEY` + `ATLAS_EMAIL_FROM` (live send disabled without
   Postgres audit even if Resend is set). Tests: `tests/test_email_integration.py`,
   `tests/test_idempotency.py`.
-- **M4.2 — Second integration: Slack post.** ⏭ **NEXT — full guide: [`M4.2_PLAN.md`](./M4.2_PLAN.md).**
+- **M4.2 — Second integration: Slack post.** ⏭ **NEXT — full guide: [`M4.2_PLAN.md`](../plans/M4.2_PLAN.md).**
   A real, human-gated `slack_post` (`RiskTier.SEND`, `required_permission="tool:slack:post"`) behind a
   pluggable **`SlackSender`** (managed `slack_sdk` bot token; service identity), mirroring the M4.1
   `EmailSender` shape (`integrations/slack.py`, `_resolve_slack_sender`, both registries). **Idempotency
@@ -258,7 +258,7 @@ enabling phase arrives:
 1. **Resume-time principal/thread binding** → ✅ **DONE in M3.2** (`verify_thread_owner`).
 2. **Verified identity (replace the trusted-network header shim)** → ✅ **DONE in M3.3** (OIDC bearer
    auth; `interface/auth.py`). The header shim remains a dev-only fallback — real deployments set
-   `ATLAS_OIDC_*` (see `AUTH.md`).
+   `ATLAS_OIDC_*` (see [`AUTH.md`](./AUTH.md)).
 3. **Fail-closed default `Entity.acl`** → **M3.3+** (still no *untrusted* `upsert_entity` write path —
    M3.2 added no KG write endpoint; revisit when an API write path lands).
 3. **Richer `ToolPermission`/ACL model** (resource/argument-aware) → M4 (M3.5 added hierarchical
@@ -267,7 +267,7 @@ enabling phase arrives:
 
 ## 8. Key file index
 
-See `CLAUDE.md` §4 for the full codebase map. Fast pointers: orchestration = `src/atlas/orchestration/`
+See [`CLAUDE.md`](../constitution/CLAUDE.md) §4 for the full codebase map. Fast pointers: orchestration = `src/atlas/orchestration/`
 (`graph.py` wiring, `nodes.py` behavior, `state.py`, `serde.py`); governance = `src/atlas/governance/`
 (`audit.py`, `rbac.py`, `confidence.py`); knowledge = `src/atlas/knowledge/`; persistence =
 `src/atlas/persistence/audit_store.py`; eval = `evals/`; CI = `.github/workflows/ci.yml`.

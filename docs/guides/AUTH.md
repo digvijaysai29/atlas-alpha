@@ -1,8 +1,8 @@
 # Authentication & Authorization (atlas)
 
 How atlas authenticates HTTP callers, how to configure a real OIDC provider, and what is
-**deliberately deferred** to later milestones. Companion to [`CLAUDE.md`](./CLAUDE.md) and
-[`ARCHITECTURE.md`](./ARCHITECTURE.md).
+**deliberately deferred** to later milestones. Companion to [`CLAUDE.md`](../constitution/CLAUDE.md) and
+[`ARCHITECTURE.md`](../architecture/ARCHITECTURE.md).
 
 > **Authentication** (who are you?) is resolved at the edge in `src/atlas/interface/security.py`.
 > **Authorization** (what may you do?) is unchanged from M2: RBAC `can()` in `governance/rbac.py`,
@@ -58,7 +58,7 @@ extend an expired token.
 
 ## Configuration
 
-Environment variables (see [`.env.example`](./.env.example)):
+Environment variables (see [`.env.example`](../../.env.example)):
 
 ```bash
 ATLAS_OIDC_ISSUER=https://<tenant>/           # token `iss`

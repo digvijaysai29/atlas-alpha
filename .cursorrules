@@ -2,11 +2,11 @@ You are working on **atlas** — an agent-first enterprise workspace.
 
 The binding rules live in the repo's canonical docs — read and follow them; this file is only a
 thin pointer that stays in sync with the current milestone:
-- `CLAUDE.md` — the project constitution: guardrails, security posture, the hard "never" list (law).
-- `HANDOFF.md` — onboarding + the next-milestone implementation plan (the map and the plan).
-- `ARCHITECTURE.md` — system design and roadmap.
+- `docs/constitution/CLAUDE.md` — the project constitution: guardrails, security posture, the hard "never" list (law).
+- `docs/guides/HANDOFF.md` — onboarding + the next-milestone implementation plan (the map and the plan).
+- `docs/architecture/ARCHITECTURE.md` — system design and roadmap.
 
-Non-negotiable principles (full detail in CLAUDE.md §6):
+Non-negotiable principles (full detail in docs/constitution/CLAUDE.md §6):
 - Security-first and fail-closed by default.
 - Every irreversible action goes through an explicit, action_id-bound approval gate enforced in code.
 - RBAC is default-deny; KG reads are RBAC-filtered before content reaches the planner/LLM/sources.
