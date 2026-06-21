@@ -23,6 +23,7 @@ from atlas.orchestration import build_graph
 from atlas.orchestration.nodes import heuristic_plan
 from atlas.orchestration.serde import atlas_serde
 from atlas.orchestration.state import initial_state
+from atlas.tools import offline_registry
 
 # A logged-in user permitted to send email ("tool:send" via the "member" role).
 ALICE = Principal(user_id="alice", roles=("member",))
@@ -66,7 +67,11 @@ def _new_thread(n: int) -> dict[str, Any]:
 def main() -> None:
     # Scenario 1 — gated action, APPROVED.
     _rule("Scenario 1: send email (gated) → APPROVE")
-    atlas = build_graph(plan_fn=heuristic_plan, checkpointer=InMemorySaver(serde=atlas_serde()))
+    atlas = build_graph(
+        plan_fn=heuristic_plan,
+        registry=offline_registry(),
+        checkpointer=InMemorySaver(serde=atlas_serde()),
+    )
     config = _new_thread(1)
     paused = atlas.graph.invoke(
         initial_state("Please email alice@example.com the status update", principal=ALICE),
@@ -80,7 +85,11 @@ def main() -> None:
 
     # Scenario 2 — gated action, REJECTED.
     _rule("Scenario 2: send email (gated) → REJECT")
-    atlas = build_graph(plan_fn=heuristic_plan, checkpointer=InMemorySaver(serde=atlas_serde()))
+    atlas = build_graph(
+        plan_fn=heuristic_plan,
+        registry=offline_registry(),
+        checkpointer=InMemorySaver(serde=atlas_serde()),
+    )
     config = _new_thread(2)
     paused = atlas.graph.invoke(
         initial_state("Email bob@example.com to cancel the contract", principal=ALICE),
@@ -94,7 +103,11 @@ def main() -> None:
 
     # Scenario 3 — read-only action, no approval needed.
     _rule("Scenario 3: search (read-only) → runs automatically")
-    atlas = build_graph(plan_fn=heuristic_plan, checkpointer=InMemorySaver(serde=atlas_serde()))
+    atlas = build_graph(
+        plan_fn=heuristic_plan,
+        registry=offline_registry(),
+        checkpointer=InMemorySaver(serde=atlas_serde()),
+    )
     config = _new_thread(3)
     final = atlas.graph.invoke(initial_state("Find the latest revenue figures"), config=config)
     _print_interrupt(final)

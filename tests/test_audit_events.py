@@ -3,7 +3,7 @@
 import pytest
 
 from atlas.actions import ActionResult
-from atlas.governance import AuditEventType, InMemoryAuditLog
+from atlas.governance import AuditEvent, AuditEventType, InMemoryAuditLog
 from atlas.tools import default_registry
 
 
@@ -43,3 +43,17 @@ def test_replay_skipped_records_event() -> None:
     action = registry.propose("send_email", {"to": "a@b.com"})
     log.replay_skipped(action, reason="already executed")
     assert log.events()[-1].event_type is AuditEventType.REPLAY_SKIPPED
+
+
+def test_has_executed_ignores_legacy_failed_executed() -> None:
+    """Pre-M4.1 rows may have EXECUTED with ok=False — must not block retries."""
+    log = InMemoryAuditLog()
+    log.record(
+        AuditEvent(
+            event_type=AuditEventType.EXECUTED,
+            action_id="act_legacy",
+            tool="send_email",
+            detail={"ok": False, "error": "provider error"},
+        )
+    )
+    assert log.has_executed("act_legacy") is False

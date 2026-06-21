@@ -9,13 +9,21 @@ model output — the LLM cannot relabel a dangerous action as safe.
 from __future__ import annotations
 
 import abc
+import logging
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from atlas.actions import ActionResult, ProposedAction, RiskTier
 from atlas.config import Settings, get_settings
-from atlas.integrations.email import EmailMessage, EmailSender, build_email_sender
+from atlas.integrations.email import (
+    EmailMessage,
+    EmailSender,
+    FakeEmailSender,
+    build_email_sender,
+)
+
+logger = logging.getLogger("atlas.tools")
 
 
 class BaseTool(abc.ABC):
@@ -151,10 +159,32 @@ class SendEmailTool(BaseTool):
         return self._sender.send(message)
 
 
+def offline_registry(sender: EmailSender | None = None) -> ToolRegistry:
+    """Registry with a fake email sender so offline demos/tests never hit Resend."""
+    registry = ToolRegistry()
+    registry.register(SearchTool())
+    registry.register(SendEmailTool(sender=sender or FakeEmailSender()))
+    return registry
+
+
+def _resolve_email_sender(settings: Settings) -> EmailSender | None:
+    """Return a real sender only when email is configured **and** audit is durable (Postgres)."""
+    if not settings.email_configured:
+        return None
+    if settings.database_url is None:
+        logger.warning(
+            "RESEND_API_KEY/ATLAS_EMAIL_FROM are set but DATABASE_URL is unset — real send_email "
+            "is disabled (in-memory audit cannot enforce idempotency across restarts). "
+            "Set DATABASE_URL for durable audit or pass offline_registry() in demos/tests."
+        )
+        return None
+    return build_email_sender(settings)
+
+
 def default_registry(settings: Settings | None = None) -> ToolRegistry:
     """A registry pre-loaded with the standard tools (email sender from settings when configured)."""
     settings = settings or get_settings()
-    sender = build_email_sender(settings)
+    sender = _resolve_email_sender(settings)
     registry = ToolRegistry()
     registry.register(SearchTool())
     registry.register(SendEmailTool(sender=sender))

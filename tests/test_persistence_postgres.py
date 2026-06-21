@@ -15,7 +15,7 @@ from pydantic import SecretStr
 
 from atlas.actions import ActionResult, ApprovalDecision, ProposedAction
 from atlas.config import Settings
-from atlas.governance import InMemoryPolicyStore
+from atlas.governance import AuditEvent, AuditEventType, InMemoryPolicyStore
 from atlas.governance.rbac import Principal
 from atlas.orchestration import build_graph
 from atlas.orchestration.graph import _pg_pool
@@ -99,3 +99,16 @@ def test_postgres_has_executed_round_trip(pg_pool: object) -> None:
         ActionResult(action_id=action.action_id, tool="send_email", ok=True, output={"id": "x"})
     )
     assert log.has_executed(action.action_id) is True
+
+
+def test_postgres_has_executed_ignores_legacy_failed_executed(pg_pool: object) -> None:
+    log = PostgresAuditLog(pg_pool)  # type: ignore[arg-type]
+    log.record(
+        AuditEvent(
+            event_type=AuditEventType.EXECUTED,
+            action_id="act_legacy",
+            tool="send_email",
+            detail={"ok": False, "error": "provider error"},
+        )
+    )
+    assert log.has_executed("act_legacy") is False

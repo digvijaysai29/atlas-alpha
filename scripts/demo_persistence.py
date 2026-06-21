@@ -24,6 +24,7 @@ from atlas.orchestration.graph import _pg_pool
 from atlas.orchestration.nodes import heuristic_plan
 from atlas.orchestration.state import initial_state
 from atlas.persistence import PostgresAuditLog
+from atlas.tools import offline_registry
 
 
 def main() -> None:
@@ -46,7 +47,7 @@ def main() -> None:
         print("=" * 72)
         print("1) First 'process': run until the approval gate, then crash")
         print("=" * 72)
-        atlas1 = build_graph(plan_fn=heuristic_plan, settings=settings)
+        atlas1 = build_graph(plan_fn=heuristic_plan, settings=settings, registry=offline_registry())
         sender = Principal(user_id="alice", roles=("member",))  # permitted to send email
         paused = atlas1.graph.invoke(
             initial_state("Please email alice@example.com the status update", principal=sender),
@@ -61,7 +62,7 @@ def main() -> None:
         print("\n" + "=" * 72)
         print("2) Second 'process': rebuild from scratch, resume from Postgres, approve")
         print("=" * 72)
-        atlas2 = build_graph(plan_fn=heuristic_plan, settings=settings)
+        atlas2 = build_graph(plan_fn=heuristic_plan, settings=settings, registry=offline_registry())
         final = atlas2.graph.invoke(Command(resume=True), config=thread)
         result = final["action_results"][0]
         print(f"  ✅ resumed from Postgres and executed: {result.tool} -> {result.output}")

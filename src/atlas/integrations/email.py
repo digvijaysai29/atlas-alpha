@@ -35,6 +35,22 @@ class EmailSender(abc.ABC):
         raise NotImplementedError
 
 
+class FakeEmailSender(EmailSender):
+    """Records sent messages for demos/tests; never touches the network."""
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.sent: list[EmailMessage] = []
+        self.fail = fail
+        self.call_count = 0
+
+    def send(self, message: EmailMessage) -> dict[str, Any]:
+        self.call_count += 1
+        if self.fail:
+            raise RuntimeError("simulated send failure")
+        self.sent.append(message)
+        return {"id": f"fake_{self.call_count}", "provider": "fake", "to": message.to}
+
+
 class ResendEmailSender(EmailSender):
     """Resend transactional email backend (sync HTTP — no global ``resend.api_key`` mutation)."""
 
@@ -65,20 +81,29 @@ class ResendEmailSender(EmailSender):
         from resend.http_client import HTTPClient
 
         sync_client = cast(HTTPClient, resend.default_http_client)
-        content, _status, _resp_headers = sync_client.request(
+        content, status, _resp_headers = sync_client.request(
             method="post",
             url=f"{resend.api_url}/emails",
             headers=headers,
             json=params,
         )
-        data = json.loads(content)
-        if isinstance(data, dict) and data.get("statusCode") not in (None, 200):
+        data: dict[str, Any] = json.loads(content) if content else {}
+        if (
+            status < 200
+            or status >= 300
+            or (isinstance(data, dict) and data.get("statusCode") not in (None, 200))
+        ):
             from resend.exceptions import raise_for_code_and_type
 
+            code = status if status >= 400 else (data.get("statusCode") or 500)
             raise_for_code_and_type(
-                code=data.get("statusCode") or 500,
-                message=data.get("message", "Unknown error"),
-                error_type=data.get("name", "InternalServerError"),
+                code=code,
+                message=data.get("message", "Unknown error")
+                if isinstance(data, dict)
+                else "Unknown error",
+                error_type=data.get("name", "InternalServerError")
+                if isinstance(data, dict)
+                else "InternalServerError",
             )
         email_id = data.get("id") if isinstance(data, dict) else None
         return {"id": email_id, "provider": "resend", "to": message.to}

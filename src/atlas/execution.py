@@ -10,7 +10,8 @@ pre-claim ledger row. Concurrent executors on the same ``action_id`` are likewis
 from __future__ import annotations
 
 from atlas.actions import ActionResult, ProposedAction, requires_approval
-from atlas.governance import AuditEventType, AuditLog
+from atlas.governance import AuditLog
+from atlas.governance.audit import _counts_as_executed
 from atlas.tools import ToolRegistry
 
 
@@ -35,7 +36,7 @@ class GuardedExecutor:
         """Synthetic success so the responder labels replay skips correctly (not 'not approved')."""
         prior_output: dict[str, object] | None = None
         for event in reversed(audit.events()):
-            if event.event_type is AuditEventType.EXECUTED and event.action_id == action.action_id:
+            if _counts_as_executed(event) and event.action_id == action.action_id:
                 prior_output = {"replay_skipped": True, "prior": event.detail}
                 break
         output: dict[str, object] = prior_output or {"replay_skipped": True}

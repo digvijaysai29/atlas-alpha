@@ -181,8 +181,7 @@ class AuditLog(abc.ABC):
     def has_executed(self, action_id: str) -> bool:
         """True when a successful ``EXECUTED`` event exists for ``action_id`` (idempotency check)."""
         return any(
-            event.event_type is AuditEventType.EXECUTED and event.action_id == action_id
-            for event in self.events()
+            _counts_as_executed(event) and event.action_id == action_id for event in self.events()
         )
 
     def verify(self) -> ChainVerification:
@@ -264,6 +263,13 @@ class AuditLog(abc.ABC):
                 detail={"reason": reason},
             )
         )
+
+
+def _counts_as_executed(event: AuditEvent) -> bool:
+    """Success-only idempotency marker — ``FAILED`` and legacy ``EXECUTED`` with ``ok=False`` do not count."""
+    if event.event_type is not AuditEventType.EXECUTED:
+        return False
+    return event.detail.get("ok", True) is True
 
 
 class InMemoryAuditLog(AuditLog):

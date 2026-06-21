@@ -45,7 +45,12 @@ _HAS_EXECUTED = """
 SELECT EXISTS (
     SELECT 1 FROM atlas_audit_log
     WHERE event_type = %s AND action_id = %s
+      AND COALESCE((detail->>'ok')::boolean, true) = true
 ) AS exists
+"""
+_CREATE_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_atlas_audit_log_event_action
+ON atlas_audit_log (event_type, action_id)
 """
 _INSERT = """
 INSERT INTO atlas_audit_log
@@ -86,9 +91,10 @@ class PostgresAuditLog(AuditLog):
             self.setup()
 
     def setup(self) -> None:
-        """Create the audit table if it does not exist (idempotent, static DDL)."""
+        """Create the audit table and idempotency index if absent (idempotent, static DDL)."""
         with self._pool.connection() as conn:
             conn.execute(_CREATE_TABLE)
+            conn.execute(_CREATE_INDEX)
 
     def _append_event(self, event: AuditEvent) -> ChainedAuditRecord:
         with self._pool.connection() as conn, conn.transaction():
