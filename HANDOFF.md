@@ -27,14 +27,17 @@ branch → PR into `main` → CI must be green.
 | **M3.3** | Real **OIDC/JWT bearer auth** (RS256+JWKS, claims→`Principal`); header shim → dev fallback. See `AUTH.md` | ✅ merged (PR #10) |
 | **M3.4** | Pluggable **`PolicyStore`** (ABC + in-memory + Postgres) replacing hardcoded `ROLE_PERMISSIONS`; `manage_policy.py` CLI. See `AUTH.md` | ✅ merged (PR #16) |
 | **M3.5** | Fine-grained RBAC: **hierarchical wildcard permissions** (`kg:read:*` ⇒ `kg:read:org`) via shared `permission_satisfied`. Guide: **[`M3.5_PLAN.md`](./M3.5_PLAN.md)** | ✅ merged (PR #19) |
-| **M3.6** | **Per-principal rate limiting** on `/chat` + `/approve` (Upstash + `upstash-ratelimit`); 429 + `Retry-After`; fail-open; per-IP for anonymous | ✅ this PR |
-| **M4+** | **← NEXT.** Real integrations, pgvector semantic retrieval, sessions/provisioning, SSE streaming | future |
+| **M3.6** | **Per-principal rate limiting** on `/chat` + `/approve` (Upstash + `upstash-ratelimit`); 429 + `Retry-After`; fail-open; per-IP for anonymous | ✅ merged (PR #20) |
+| **M4.1** | **← NEXT.** First real integration: **email send (Resend)** behind a pluggable `EmailSender` + **idempotent execution** (audit `REPLAY_SKIPPED` ledger). Guide: **[`M4.1_PLAN.md`](./M4.1_PLAN.md)** | ⏭ planned |
+| **M4.2+** | Per-principal "send as the user" OAuth; Slack/Jira/Calendar; pgvector semantic retrieval; sessions/provisioning; SSE streaming | future |
 
 **Net:** atlas is a secure, durable, identity-aware, knowledge-grounded HITL agent with a transparent
-sources+confidence layer, a real blocking eval gate, and now a **network interface** with resume-time
-owner binding — all behind a fail-closed security model. What's missing is *verified* identity (real
-SSO, M3.3 — the header shim is trusted-network/dev-only), real tool integrations, and semantic
-retrieval.
+sources+confidence layer, a real blocking eval gate, a **network interface** (OIDC auth, resume-time
+owner binding, per-principal rate limiting) — all behind a fail-closed security model. The remaining
+gap is **real tool integrations**: the tools are still mocks. **M4.1 (next) starts here** — a real,
+human-gated, idempotent email send (Resend) behind a pluggable `EmailSender`; per-principal
+"send as the user" OAuth and the other adapters (Slack/Jira/Calendar) plus semantic retrieval follow
+in M4.2+.
 
 ## 2. System recap (pointers, not prose)
 
@@ -216,7 +219,7 @@ Each is a separate milestone; keep the sub-phase discipline (small PRs, green CI
   side**; the LLM still can never self-grant. Full guide: `M3.5_PLAN.md`. **Deferred → M3.6/M4 (in
   AUTH.md):** per-principal rate limiting, resource/argument-aware `ToolPermission`, sessions/refresh,
   provisioning, admin UI, policy versioning/caching, OAuth login flows.
-- **M3.6 — Per-principal rate limiting.** ✅ **DONE (this PR).** `/chat` + `/approve` are throttled
+- **M3.6 — Per-principal rate limiting.** ✅ **DONE (PR #20).** `/chat` + `/approve` are throttled
   per principal (per client IP for the anonymous dev shim) by **Upstash** via `upstash-ratelimit`
   (`interface/rate_limit.py`: `RateLimiter` ABC + `UpstashRateLimiter`, `build_rate_limiter`,
   `rate_limit_key`, `enforce_rate_limit` dep wired on the two routes). Over budget → **429** +
@@ -225,10 +228,19 @@ Each is a separate milestone; keep the sub-phase discipline (small PRs, green CI
   `tests/test_rate_limit.py` (hermetic via an injected stub limiter; real Upstash gated on
   `-m integration` + env creds). See `AUTH.md`. **Deferred → M4:** per-route tiers, anti-brute-force
   IP limiting on 401s.
-- **M4 — Real tool integrations** (Gmail / Slack / Jira / Calendar). Swap mock tools for real adapters
-  behind `BaseTool`; per-integration OAuth + secret management; correct per-tool `risk_tier` +
-  `required_permission`; **idempotency** for sends (avoid double-send on retry); sandboxing; webhook
-  ingestion. Treat all tool output as adversarial.
+- **M4.1 — First real integration: email send + idempotent execution.** ⏭ **NEXT — full guide:
+  [`M4.1_PLAN.md`](./M4.1_PLAN.md).** Replace the mock `send_email` body with a real send via a
+  **pluggable `EmailSender`** (Resend now; Gmail/Postmark later) sending from a verified **service
+  address** (`ATLAS_EMAIL_FROM`); the capability stays provider-agnostic at `tool:send` and
+  human-gated. Make sends **idempotent** so an executor replay never double-sends: the side-effect rule
+  lives in a reusable **execution wrapper** (`GuardedExecutor` / `ToolRegistry.execute_guarded`), not
+  in `make_executor_node`, keyed by the checkpointed `action_id` via the audit log (new
+  `REPLAY_SKIPPED` + `FAILED` events; `EXECUTED` = success-only; `has_executed` query). Dev/CI stays
+  offline (no key ⇒ dry-run mock). **Deferred → M4.2.**
+- **M4.2+ — Real tool integrations** (per-principal "send as the user" OAuth; Gmail / Slack / Jira /
+  Calendar). Per-integration OAuth + secret management; correct per-tool `risk_tier` +
+  `required_permission`; provider-side idempotency keys; sandboxing; webhook ingestion. Treat all tool
+  output as adversarial.
 - **Cross-cutting hardening.** Merkle / external anchoring of the audit chain; a richer
   `ToolPermission`/ACL model (replace the placeholder strings); LangSmith observability dashboards;
   multi-tenancy; PII / data-retention / DSAR; perf + load; secret rotation.
