@@ -219,8 +219,13 @@ executor refuses to run a gated action without a matching, in-scope `ApprovalDec
   `ATLAS_EMAIL_FROM`. **Idempotent execution** via `GuardedExecutor` (`execution.py`) — audit ledger
   `has_executed(action_id)` prevents double-send on replay (`REPLAY_SKIPPED`/`FAILED` events;
   `EXECUTED` = success-only). Live send requires `DATABASE_URL` (Postgres audit) plus Resend creds;
-  SQLite/in-memory audit alone is insufficient. Unconfigured ⇒ fail-closed (no mock-success). Guide:
-  [`M4.1_PLAN.md`](./M4.1_PLAN.md).
-- **Later (M4.2+):** per-principal "send as the user" OAuth; Gmail/Slack/Jira/Calendar adapters;
+  SQLite/in-memory audit alone is insufficient. Unconfigured ⇒ fail-closed (no mock-success).
+  (PR #22.)
+- **M4.2 (planned):** second integration — **Slack post** (`slack_post`, `RiskTier.SEND`,
+  `required_permission="tool:slack:post"`) behind a pluggable `SlackSender` (managed `slack_sdk` bot
+  token; `integrations/slack.py`), mirroring the M4.1 `EmailSender` shape. **Idempotency is inherited**
+  from `GuardedExecutor` for any `RiskTier.SEND` action — no new execution code. Guide:
+  [`M4.2_PLAN.md`](./M4.2_PLAN.md).
+- **Later (M4.3+):** per-principal "send as the user" OAuth; Gmail/Jira/Calendar adapters;
   resource/argument-aware `ToolPermission`; pgvector semantic retrieval; SSE streaming; Merkle
   anchoring.
