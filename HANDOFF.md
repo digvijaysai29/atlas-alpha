@@ -26,17 +26,19 @@ branch → PR into `main` → CI must be green.
 | **M3.2** | FastAPI Interface (`/chat`, `/approve`, `/threads/{id}`) + **resume-time principal/thread binding**; trusted-network header identity shim | ✅ merged (PR #9) |
 | **M3.3** | Real **OIDC/JWT bearer auth** (RS256+JWKS, claims→`Principal`); header shim → dev fallback. See `AUTH.md` | ✅ merged (PR #10) |
 | **M3.4** | Pluggable **`PolicyStore`** (ABC + in-memory + Postgres) replacing hardcoded `ROLE_PERMISSIONS`; `manage_policy.py` CLI. See `AUTH.md` | ✅ merged (PR #16) |
-| **M3.5** | Fine-grained RBAC: **hierarchical wildcard permissions** (`kg:read:*` ⇒ `kg:read:org`) via shared `permission_satisfied`. Guide: **[`M3.5_PLAN.md`](./M3.5_PLAN.md)** | ✅ merged (PR #19) |
+| **M3.5** | Fine-grained RBAC: **hierarchical wildcard permissions** (`kg:read:*` ⇒ `kg:read:org`) via shared `permission_satisfied` | ✅ merged (PR #19) |
 | **M3.6** | **Per-principal rate limiting** on `/chat` + `/approve` (Upstash + `upstash-ratelimit`); 429 + `Retry-After`; fail-open; per-IP for anonymous | ✅ merged (PR #20) |
-| **M4.1** | First real integration: **email send (Resend)** behind a pluggable `EmailSender` + **idempotent execution** (`GuardedExecutor`, audit `REPLAY_SKIPPED`/`FAILED`). Guide: **[`M4.1_PLAN.md`](./M4.1_PLAN.md)** | ✅ **done (branch)** |
-| **M4.2+** | Per-principal "send as the user" OAuth; Slack/Jira/Calendar; pgvector semantic retrieval; sessions/provisioning; SSE streaming | future |
+| **M4.1** | First real integration: **email send (Resend)** behind a pluggable `EmailSender` + **idempotent execution** (`GuardedExecutor`, audit `REPLAY_SKIPPED`/`FAILED`) | ✅ merged (PR #22) |
+| **M4.2** | **← NEXT.** Second integration: **Slack post** (`slack_post`, managed `slack_sdk` bot token) reusing the `EmailSender`/`GuardedExecutor` pattern — idempotency inherited. Guide: **[`M4.2_PLAN.md`](./M4.2_PLAN.md)** | ⏭ planned |
+| **M4.3+** | Per-principal "send as the user" OAuth; Jira/Calendar; pgvector semantic retrieval; sessions/provisioning; SSE streaming | future |
 
 **Net:** atlas is a secure, durable, identity-aware, knowledge-grounded HITL agent with a transparent
 sources+confidence layer, a real blocking eval gate, a **network interface** (OIDC auth, resume-time
 owner binding, per-principal rate limiting) — all behind a fail-closed security model. The remaining
-gap is **more real tool integrations** beyond email. **M4.2 (next)** — per-principal OAuth / Gmail / Slack / Jira. **M4.1 landed** — real,
-human-gated, idempotent email send (Resend) behind a pluggable `EmailSender`; per-principal
-"send as the user" OAuth and the other adapters (Slack/Jira/Calendar) plus semantic retrieval follow
+gap is **more real tool integrations** beyond email. **M4.1 landed** — real, human-gated, idempotent
+email send (Resend) behind a pluggable `EmailSender` + `GuardedExecutor`. **M4.2 (next)** adds a
+**second** integration, **Slack post**, reusing that pattern (idempotency inherited for free); other
+adapters (Jira/Calendar), per-principal "send as the user" OAuth, and semantic retrieval follow
 in M4.2+.
 
 ## 2. System recap (pointers, not prose)
@@ -216,9 +218,9 @@ Each is a separate milestone; keep the sub-phase discipline (small PRs, green CI
   `governance/rbac.py:permission_satisfied` — shared by `InMemoryPolicyStore`, `PostgresPolicyStore`,
   the Postgres KG SQL read filter (`persistence/knowledge_store.py`, `LIKE`-prefix expansion of `:*`
   grants, `_like_escape`-d), and `can_read` (backend parity). Wildcards expand **only on the granted
-  side**; the LLM still can never self-grant. Full guide: `M3.5_PLAN.md`. **Deferred → M3.6/M4 (in
-  AUTH.md):** per-principal rate limiting, resource/argument-aware `ToolPermission`, sessions/refresh,
-  provisioning, admin UI, policy versioning/caching, OAuth login flows.
+  side**; the LLM still can never self-grant. **Deferred → M3.6/M4 (in AUTH.md):** per-principal rate
+  limiting, resource/argument-aware `ToolPermission`, sessions/refresh, provisioning, admin UI, policy
+  versioning/caching, OAuth login flows.
 - **M3.6 — Per-principal rate limiting.** ✅ **DONE (PR #20).** `/chat` + `/approve` are throttled
   per principal (per client IP for the anonymous dev shim) by **Upstash** via `upstash-ratelimit`
   (`interface/rate_limit.py`: `RateLimiter` ABC + `UpstashRateLimiter`, `build_rate_limiter`,
@@ -228,19 +230,23 @@ Each is a separate milestone; keep the sub-phase discipline (small PRs, green CI
   `tests/test_rate_limit.py` (hermetic via an injected stub limiter; real Upstash gated on
   `-m integration` + env creds). See `AUTH.md`. **Deferred → M4:** per-route tiers, anti-brute-force
   IP limiting on 401s.
-- **M4.1 — First real integration: email send + idempotent execution.** ✅ **DONE (branch
-  `feat/m4.1-email-resend`).** Real `send_email` via **pluggable `EmailSender`** (Resend;
-  `integrations/email.py`) from verified **service address** (`ATLAS_EMAIL_FROM`); unconfigured ⇒
-  fail-closed (`ok=False`, not mock-success). **Idempotent execution** via `GuardedExecutor`
-  (`execution.py`): audit-ledger `has_executed` keyed by checkpointed `action_id`;
-  `REPLAY_SKIPPED`/`FAILED` events; `EXECUTED` = success-only. Config: `DATABASE_URL` (durable audit)
-  + `RESEND_API_KEY` + `ATLAS_EMAIL_FROM` (Resend creds all-or-nothing; live send disabled without
+- **M4.1 — First real integration: email send + idempotent execution.** ✅ **DONE (PR #22).** Real
+  `send_email` via **pluggable `EmailSender`** (Resend; `integrations/email.py`) from verified
+  **service address** (`ATLAS_EMAIL_FROM`); unconfigured ⇒ fail-closed (`ok=False`, not mock-success).
+  **Idempotent execution** via `GuardedExecutor` (`execution.py`): audit-ledger `has_executed` keyed by
+  checkpointed `action_id`; `REPLAY_SKIPPED`/`FAILED` events; `EXECUTED` = success-only. Config:
+  `DATABASE_URL` (durable audit) + `RESEND_API_KEY` + `ATLAS_EMAIL_FROM` (live send disabled without
   Postgres audit even if Resend is set). Tests: `tests/test_email_integration.py`,
-  `tests/test_idempotency.py`. **Deferred → M4.2.**
-- **M4.2+ — Real tool integrations** (per-principal "send as the user" OAuth; Gmail / Slack / Jira /
-  Calendar). Per-integration OAuth + secret management; correct per-tool `risk_tier` +
-  `required_permission`; provider-side idempotency keys; sandboxing; webhook ingestion. Treat all tool
-  output as adversarial.
+  `tests/test_idempotency.py`.
+- **M4.2 — Second integration: Slack post.** ⏭ **NEXT — full guide: [`M4.2_PLAN.md`](./M4.2_PLAN.md).**
+  A real, human-gated `slack_post` (`RiskTier.SEND`, `required_permission="tool:slack:post"`) behind a
+  pluggable **`SlackSender`** (managed `slack_sdk` bot token; service identity), mirroring the M4.1
+  `EmailSender` shape (`integrations/slack.py`, `_resolve_slack_sender`, both registries). **Idempotency
+  is inherited for free** from `GuardedExecutor` (any `RiskTier.SEND` action) — no new idempotency code.
+  Live post requires `DATABASE_URL` + `SLACK_BOT_TOKEN`. **Deferred → M4.3+.**
+- **M4.3+ — Real tool integrations** (per-principal "send as the user" OAuth; Gmail / Jira / Calendar).
+  Per-integration OAuth + secret management; correct per-tool `risk_tier` + `required_permission`;
+  provider-side idempotency keys; sandboxing; webhook ingestion. Treat all tool output as adversarial.
 - **Cross-cutting hardening.** Merkle / external anchoring of the audit chain; a richer
   `ToolPermission`/ACL model (replace the placeholder strings); LangSmith observability dashboards;
   multi-tenancy; PII / data-retention / DSAR; perf + load; secret rotation.
