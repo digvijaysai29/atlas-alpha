@@ -171,6 +171,11 @@ def build_graph(
             "DATABASE_URL is set but email is not configured — send_email will fail until "
             "RESEND_API_KEY and ATLAS_EMAIL_FROM are set."
         )
+    elif settings.email_configured and not settings.database_url:
+        logger.warning(
+            "RESEND_API_KEY/ATLAS_EMAIL_FROM are set but DATABASE_URL is unset — live send_email "
+            "is disabled until Postgres audit is configured (idempotency requires durable audit)."
+        )
     registry = registry or default_registry(settings)
     audit = audit or make_audit_log(settings)
     plan_fn = plan_fn or default_plan_fn(settings)

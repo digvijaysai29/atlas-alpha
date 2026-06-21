@@ -218,7 +218,8 @@ executor refuses to run a gated action without a matching, in-scope `ApprovalDec
   `EmailSender` ABC (`integrations/email.py`), provider-agnostic at `tool:send`, human-gated from
   `ATLAS_EMAIL_FROM`. **Idempotent execution** via `GuardedExecutor` (`execution.py`) — audit ledger
   `has_executed(action_id)` prevents double-send on replay (`REPLAY_SKIPPED`/`FAILED` events;
-  `EXECUTED` = success-only). Unconfigured email ⇒ fail-closed (no mock-success). Guide:
+  `EXECUTED` = success-only). Live send requires `DATABASE_URL` (Postgres audit) plus Resend creds;
+  SQLite/in-memory audit alone is insufficient. Unconfigured ⇒ fail-closed (no mock-success). Guide:
   [`M4.1_PLAN.md`](./M4.1_PLAN.md).
 - **Later (M4.2+):** per-principal "send as the user" OAuth; Gmail/Slack/Jira/Calendar adapters;
   resource/argument-aware `ToolPermission`; pgvector semantic retrieval; SSE streaming; Merkle

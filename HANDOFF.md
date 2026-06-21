@@ -233,8 +233,9 @@ Each is a separate milestone; keep the sub-phase discipline (small PRs, green CI
   `integrations/email.py`) from verified **service address** (`ATLAS_EMAIL_FROM`); unconfigured ⇒
   fail-closed (`ok=False`, not mock-success). **Idempotent execution** via `GuardedExecutor`
   (`execution.py`): audit-ledger `has_executed` keyed by checkpointed `action_id`;
-  `REPLAY_SKIPPED`/`FAILED` events; `EXECUTED` = success-only. Config: `RESEND_API_KEY` +
-  `ATLAS_EMAIL_FROM` (all-or-nothing validator). Tests: `tests/test_email_integration.py`,
+  `REPLAY_SKIPPED`/`FAILED` events; `EXECUTED` = success-only. Config: `DATABASE_URL` (durable audit)
+  + `RESEND_API_KEY` + `ATLAS_EMAIL_FROM` (Resend creds all-or-nothing; live send disabled without
+  Postgres audit even if Resend is set). Tests: `tests/test_email_integration.py`,
   `tests/test_idempotency.py`. **Deferred → M4.2.**
 - **M4.2+ — Real tool integrations** (per-principal "send as the user" OAuth; Gmail / Slack / Jira /
   Calendar). Per-integration OAuth + secret management; correct per-tool `risk_tier` +

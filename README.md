@@ -36,14 +36,21 @@ everything runs offline. Set the key (and `LANGSMITH_*`) in `.env` to use real C
 
 ### Email (M4.1)
 
-Real gated email send via Resend when both are set (see `.env.example`):
+Real gated email send via Resend requires **all three** (see `.env.example`):
 
 ```bash
-RESEND_API_KEY=re_...
-ATLAS_EMAIL_FROM=atlas@yourdomain.com
+docker compose up -d
+export DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas
+export RESEND_API_KEY=re_...
+export ATLAS_EMAIL_FROM=atlas@yourdomain.com
 ```
 
-Without both, `send_email` fails closed after approval (`ok=False`). Tests use an injected fake sender.
+`DATABASE_URL` is mandatory for live sends: idempotency is enforced by the **durable Postgres audit
+log** (`has_executed` on `action_id`). With only `RESEND_API_KEY` + `ATLAS_EMAIL_FROM` set — or with
+only `ATLAS_SQLITE_PATH` for checkpoints — `send_email` still fails closed after approval
+(`email not configured`). Offline demos/tests use `offline_registry()` (fake sender).
+
+For an intentional live Resend integration test: also set `ATLAS_EMAIL_LIVE_TEST=1`.
 
 ## Project layout
 

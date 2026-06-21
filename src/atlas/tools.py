@@ -182,7 +182,10 @@ def _resolve_email_sender(settings: Settings) -> EmailSender | None:
 
 
 def default_registry(settings: Settings | None = None) -> ToolRegistry:
-    """A registry pre-loaded with the standard tools (email sender from settings when configured)."""
+    """A registry pre-loaded with the standard tools.
+
+    Live Resend send is enabled only when ``DATABASE_URL`` (durable audit) and Resend creds are set.
+    """
     settings = settings or get_settings()
     sender = _resolve_email_sender(settings)
     registry = ToolRegistry()
