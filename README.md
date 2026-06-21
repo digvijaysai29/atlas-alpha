@@ -34,6 +34,24 @@ uv run python scripts/demo_approval.py    # watch the HITL gate in action
 No `ANTHROPIC_API_KEY` is required for M1 — the planner falls back to a deterministic heuristic so
 everything runs offline. Set the key (and `LANGSMITH_*`) in `.env` to use real Claude + tracing.
 
+### Email (M4.1)
+
+Real gated email send via Resend requires **all three** (see `.env.example`):
+
+```bash
+docker compose up -d
+export DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas
+export RESEND_API_KEY=re_...
+export ATLAS_EMAIL_FROM=atlas@yourdomain.com
+```
+
+`DATABASE_URL` is mandatory for live sends: idempotency is enforced by the **durable Postgres audit
+log** (`has_executed` on `action_id`). With only `RESEND_API_KEY` + `ATLAS_EMAIL_FROM` set — or with
+only `ATLAS_SQLITE_PATH` for checkpoints — `send_email` still fails closed after approval
+(`email not configured`). Offline demos/tests use `offline_registry()` (fake sender).
+
+For an intentional live Resend integration test: also set `ATLAS_EMAIL_LIVE_TEST=1`.
+
 ## Project layout
 
 ```
@@ -41,7 +59,9 @@ src/atlas/
   config.py              # Pydantic Settings (env-only secrets)
   llm.py                 # Claude model factory
   actions.py             # RiskTier, action contracts (frozen), requires_approval policy
-  tools.py               # Tool protocol + registry + mock tools
+  tools.py               # Tool protocol + registry + send_email (Resend when configured)
+  integrations/email.py  # EmailSender ABC + ResendEmailSender
+  execution.py           # GuardedExecutor (idempotent side effects)
   governance.py          # append-only audit log
   orchestration/
     state.py             # AgentState (graph channels)

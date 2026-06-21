@@ -29,6 +29,7 @@ from atlas.orchestration import build_graph
 from atlas.orchestration.nodes import PlanFn
 from atlas.orchestration.serde import atlas_serde
 from atlas.orchestration.state import initial_state
+from tests.helpers import offline_registry
 from evals.deterministic.scenarios import (
     GUEST,
     MEMBER,
@@ -71,6 +72,7 @@ def _run(
     """Drive the real graph once (then optionally resume) and capture its behavior."""
     atlas = build_graph(
         plan_fn=plan_fn,
+        registry=offline_registry(),
         audit=InMemoryAuditLog(),
         knowledge=knowledge,
         checkpointer=InMemorySaver(serde=atlas_serde()),

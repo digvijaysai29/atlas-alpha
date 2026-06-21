@@ -9,11 +9,21 @@ model output — the LLM cannot relabel a dangerous action as safe.
 from __future__ import annotations
 
 import abc
+import logging
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from atlas.actions import ActionResult, ProposedAction, RiskTier
+from atlas.config import Settings, get_settings
+from atlas.integrations.email import (
+    EmailMessage,
+    EmailSender,
+    FakeEmailSender,
+    build_email_sender,
+)
+
+logger = logging.getLogger("atlas.tools")
 
 
 class BaseTool(abc.ABC):
@@ -137,16 +147,48 @@ class SendEmailTool(BaseTool):
     required_permission = "tool:send"  # RBAC: only principals granted "tool:send" may use this
     ArgsSchema = _SendEmailArgs
 
+    def __init__(self, sender: EmailSender | None = None) -> None:
+        self._sender = sender
+
     def run(self, args: BaseModel) -> Any:
         if not isinstance(args, _SendEmailArgs):
             raise TypeError(f"expected _SendEmailArgs, got {type(args).__name__}")
-        # Mock send — a real implementation would call the email provider here.
-        return {"status": "sent", "to": args.to, "subject": args.subject}
+        if self._sender is None:
+            raise RuntimeError("email not configured")
+        message = EmailMessage(to=args.to, subject=args.subject, text=args.body or None)
+        return self._sender.send(message)
 
 
-def default_registry() -> ToolRegistry:
-    """A registry pre-loaded with the M1 mock tools."""
+def offline_registry(sender: EmailSender | None = None) -> ToolRegistry:
+    """Registry with a fake email sender so offline demos/tests never hit Resend."""
     registry = ToolRegistry()
     registry.register(SearchTool())
-    registry.register(SendEmailTool())
+    registry.register(SendEmailTool(sender=sender or FakeEmailSender()))
+    return registry
+
+
+def _resolve_email_sender(settings: Settings) -> EmailSender | None:
+    """Return a real sender only when email is configured **and** audit is durable (Postgres)."""
+    if not settings.email_configured:
+        return None
+    if settings.database_url is None:
+        logger.warning(
+            "RESEND_API_KEY/ATLAS_EMAIL_FROM are set but DATABASE_URL is unset — real send_email "
+            "is disabled (in-memory audit cannot enforce idempotency across restarts). "
+            "Set DATABASE_URL for durable audit or pass offline_registry() in demos/tests."
+        )
+        return None
+    return build_email_sender(settings)
+
+
+def default_registry(settings: Settings | None = None) -> ToolRegistry:
+    """A registry pre-loaded with the standard tools.
+
+    Live Resend send is enabled only when ``DATABASE_URL`` (durable audit) and Resend creds are set.
+    """
+    settings = settings or get_settings()
+    sender = _resolve_email_sender(settings)
+    registry = ToolRegistry()
+    registry.register(SearchTool())
+    registry.register(SendEmailTool(sender=sender))
     return registry

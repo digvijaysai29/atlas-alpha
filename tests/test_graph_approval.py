@@ -16,6 +16,7 @@ from atlas.orchestration.nodes import PlanFn
 from atlas.orchestration.serde import atlas_serde
 from atlas.orchestration.state import initial_state
 from atlas.tools import ToolRegistry
+from tests.helpers import offline_registry
 
 THREAD = {"configurable": {"thread_id": "test"}}
 # A principal permitted to use send_email ("tool:send"), so these tests exercise the APPROVAL gate
@@ -32,7 +33,11 @@ def _search_plan(_request: str, registry: ToolRegistry, _context: object) -> lis
 
 
 def _fresh(plan_fn: PlanFn) -> Atlas:
-    return build_graph(plan_fn=plan_fn, checkpointer=InMemorySaver(serde=atlas_serde()))
+    return build_graph(
+        plan_fn=plan_fn,
+        registry=offline_registry(),
+        checkpointer=InMemorySaver(serde=atlas_serde()),
+    )
 
 
 def test_gated_action_pauses_for_approval() -> None:

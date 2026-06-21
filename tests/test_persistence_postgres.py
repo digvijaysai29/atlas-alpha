@@ -15,13 +15,14 @@ from pydantic import SecretStr
 
 from atlas.actions import ActionResult, ApprovalDecision, ProposedAction
 from atlas.config import Settings
-from atlas.governance import InMemoryPolicyStore
+from atlas.governance import AuditEvent, AuditEventType, InMemoryPolicyStore
 from atlas.governance.rbac import Principal
 from atlas.orchestration import build_graph
 from atlas.orchestration.graph import _pg_pool
 from atlas.orchestration.state import initial_state
 from atlas.persistence import PostgresAuditLog
 from atlas.tools import ToolRegistry, default_registry
+from tests.helpers import offline_registry
 
 pytestmark = pytest.mark.integration
 
@@ -40,7 +41,12 @@ def test_pending_approval_survives_a_simulated_restart(database_url: str) -> Non
 
     # First process: run until the approval interrupt, then "crash".
     _pg_pool.cache_clear()
-    atlas1 = build_graph(plan_fn=_send_plan, policy=InMemoryPolicyStore(), settings=settings)
+    atlas1 = build_graph(
+        plan_fn=_send_plan,
+        registry=offline_registry(),
+        policy=InMemoryPolicyStore(),
+        settings=settings,
+    )
     sender = Principal(user_id="alice", roles=("member",))  # permitted to use send_email
     paused = atlas1.graph.invoke(initial_state("email a@b.com", principal=sender), config=thread)
     assert "__interrupt__" in paused
@@ -48,7 +54,12 @@ def test_pending_approval_survives_a_simulated_restart(database_url: str) -> Non
     _pg_pool.cache_clear()  # drop the cached pool so the next graph opens fresh connections
 
     # Second process: a brand-new graph on the same DB resumes the pending approval.
-    atlas2 = build_graph(plan_fn=_send_plan, policy=InMemoryPolicyStore(), settings=settings)
+    atlas2 = build_graph(
+        plan_fn=_send_plan,
+        registry=offline_registry(),
+        policy=InMemoryPolicyStore(),
+        settings=settings,
+    )
     final = atlas2.graph.invoke(Command(resume=True), config=thread)
 
     results = final["action_results"]
@@ -77,3 +88,27 @@ def test_postgres_audit_is_hash_chained_and_tamper_evident(pg_pool: object) -> N
     with pg_pool.connection() as conn:  # type: ignore[attr-defined]
         conn.execute("UPDATE atlas_audit_log SET actor = 'attacker' WHERE seq = 0")
     assert reloaded.verify().ok is False
+
+
+def test_postgres_has_executed_round_trip(pg_pool: object) -> None:
+    log = PostgresAuditLog(pg_pool)  # type: ignore[arg-type]
+    registry = default_registry()
+    action = registry.propose("send_email", {"to": "a@b.com"})
+    assert log.has_executed(action.action_id) is False
+    log.executed(
+        ActionResult(action_id=action.action_id, tool="send_email", ok=True, output={"id": "x"})
+    )
+    assert log.has_executed(action.action_id) is True
+
+
+def test_postgres_has_executed_ignores_legacy_failed_executed(pg_pool: object) -> None:
+    log = PostgresAuditLog(pg_pool)  # type: ignore[arg-type]
+    log.record(
+        AuditEvent(
+            event_type=AuditEventType.EXECUTED,
+            action_id="act_legacy",
+            tool="send_email",
+            detail={"ok": False, "error": "provider error"},
+        )
+    )
+    assert log.has_executed("act_legacy") is False

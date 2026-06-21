@@ -38,6 +38,8 @@ class AuditEventType(str, Enum):
     APPROVED = "approved"
     REJECTED = "rejected"
     EXECUTED = "executed"
+    REPLAY_SKIPPED = "replay_skipped"  # side effect already committed; executor replay skipped
+    FAILED = "failed"  # tool execution failed (retryable — not counted as executed)
     SKIPPED = "skipped"  # a gated action that was never approved
     DENIED = "denied"  # blocked by RBAC (the principal lacked the required permission)
 
@@ -176,6 +178,12 @@ class AuditLog(abc.ABC):
         """Immutable snapshot of just the events, in order."""
         return tuple(record.event for record in self._load())
 
+    def has_executed(self, action_id: str) -> bool:
+        """True when a successful ``EXECUTED`` event exists for ``action_id`` (idempotency check)."""
+        return any(
+            _counts_as_executed(event) and event.action_id == action_id for event in self.events()
+        )
+
     def verify(self) -> ChainVerification:
         """Verify the persisted chain is intact (tamper-evidence check)."""
         return verify_chain(self._load())
@@ -203,12 +211,34 @@ class AuditLog(abc.ABC):
         )
 
     def executed(self, result: ActionResult) -> AuditEvent:
+        if not result.ok:
+            raise ValueError("executed() is success-only; use failed()")
         return self.record(
             AuditEvent(
                 event_type=AuditEventType.EXECUTED,
                 action_id=result.action_id,
                 tool=result.tool,
                 detail={"ok": result.ok, "error": result.error},
+            )
+        )
+
+    def failed(self, result: ActionResult) -> AuditEvent:
+        return self.record(
+            AuditEvent(
+                event_type=AuditEventType.FAILED,
+                action_id=result.action_id,
+                tool=result.tool,
+                detail={"ok": result.ok, "error": result.error},
+            )
+        )
+
+    def replay_skipped(self, action: ProposedAction, *, reason: str) -> AuditEvent:
+        return self.record(
+            AuditEvent(
+                event_type=AuditEventType.REPLAY_SKIPPED,
+                action_id=action.action_id,
+                tool=action.tool,
+                detail={"reason": reason},
             )
         )
 
@@ -233,6 +263,13 @@ class AuditLog(abc.ABC):
                 detail={"reason": reason},
             )
         )
+
+
+def _counts_as_executed(event: AuditEvent) -> bool:
+    """Success-only idempotency marker — ``FAILED`` and legacy ``EXECUTED`` with ``ok=False`` do not count."""
+    if event.event_type is not AuditEventType.EXECUTED:
+        return False
+    return event.detail.get("ok", True) is True
 
 
 class InMemoryAuditLog(AuditLog):

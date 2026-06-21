@@ -26,6 +26,7 @@ from atlas.knowledge import seed_demo_graph
 from atlas.orchestration import build_graph, initial_state
 from atlas.orchestration.serde import atlas_serde
 from atlas.tools import ToolRegistry
+from tests.helpers import offline_registry
 
 MEMBER = Principal(user_id="alice", roles=("member",))
 GUEST = Principal(user_id="bob", roles=("guest",))
@@ -116,7 +117,10 @@ def _send_plan(_req: str, registry: ToolRegistry, _ctx: object) -> list[Proposed
 
 def _run(policy: InMemoryPolicyStore, principal: Principal, thread_id: str) -> dict[str, object]:
     atlas = build_graph(
-        plan_fn=_send_plan, policy=policy, checkpointer=InMemorySaver(serde=atlas_serde())
+        plan_fn=_send_plan,
+        registry=offline_registry(),
+        policy=policy,
+        checkpointer=InMemorySaver(serde=atlas_serde()),
     )
     config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
     return atlas.graph.invoke(initial_state("email a@b.com", principal=principal), config=config)

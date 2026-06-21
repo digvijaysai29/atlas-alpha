@@ -22,6 +22,7 @@ from atlas.orchestration.nodes import PlanFn
 from atlas.orchestration.serde import atlas_serde
 from atlas.orchestration.state import initial_state
 from atlas.tools import ToolRegistry
+from tests.helpers import offline_registry
 
 THREAD: RunnableConfig = {"configurable": {"thread_id": "rbac-test"}}
 MEMBER = Principal(user_id="alice", roles=("member",))  # has "tool:send"
@@ -33,7 +34,11 @@ def _send_plan(_request: str, registry: ToolRegistry, _context: object) -> list[
 
 
 def _fresh(plan_fn: PlanFn) -> Atlas:
-    return build_graph(plan_fn=plan_fn, checkpointer=InMemorySaver(serde=atlas_serde()))
+    return build_graph(
+        plan_fn=plan_fn,
+        registry=offline_registry(),
+        checkpointer=InMemorySaver(serde=atlas_serde()),
+    )
 
 
 # --- policy unit tests ------------------------------------------------------

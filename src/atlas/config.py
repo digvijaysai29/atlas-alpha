@@ -104,6 +104,10 @@ class Settings(BaseSettings):
         default=None, alias="UPSTASH_REDIS_REST_TOKEN"
     )
 
+    # --- Email (M4.1 — Resend transactional send) ---------------------------
+    resend_api_key: SecretStr | None = Field(default=None, alias="RESEND_API_KEY")
+    email_from: str | None = Field(default=None, alias="ATLAS_EMAIL_FROM")
+
     @model_validator(mode="after")
     def validate_oidc_config(self) -> Self:
         """OIDC vars must be all set or all unset — partial config must not fall back to the header shim."""
@@ -159,6 +163,23 @@ class Settings(BaseSettings):
             raise ValueError(msg)
         return self
 
+    @model_validator(mode="after")
+    def validate_email_config(self) -> Self:
+        """Email creds must be all set or all unset — mirror validate_rate_limit_config."""
+        email_fields = {
+            "RESEND_API_KEY": _nonempty_secret(self.resend_api_key),
+            "ATLAS_EMAIL_FROM": _nonempty_str(self.email_from),
+        }
+        set_names = [name for name, present in email_fields.items() if present]
+        unset_names = [name for name, present in email_fields.items() if not present]
+        if set_names and unset_names:
+            msg = (
+                f"Partial email configuration: {', '.join(set_names)} set but "
+                f"{', '.join(unset_names)} missing. Set both or leave both blank."
+            )
+            raise ValueError(msg)
+        return self
+
     @property
     def oidc_enabled(self) -> bool:
         """True when OIDC is fully configured; otherwise the dev header shim is used."""
@@ -176,6 +197,11 @@ class Settings(BaseSettings):
             and _nonempty_str(self.upstash_redis_rest_url)
             and _nonempty_secret(self.upstash_redis_rest_token)
         )
+
+    @property
+    def email_configured(self) -> bool:
+        """True when Resend API key and from-address are both present."""
+        return _nonempty_secret(self.resend_api_key) and _nonempty_str(self.email_from)
 
     @property
     def has_anthropic_key(self) -> bool:

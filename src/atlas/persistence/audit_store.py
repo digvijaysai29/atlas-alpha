@@ -41,6 +41,17 @@ CREATE TABLE IF NOT EXISTS atlas_audit_log (
 
 _SELECT_TAIL = "SELECT * FROM atlas_audit_log ORDER BY seq DESC LIMIT 1"
 _SELECT_ALL = "SELECT * FROM atlas_audit_log ORDER BY seq ASC"
+_HAS_EXECUTED = """
+SELECT EXISTS (
+    SELECT 1 FROM atlas_audit_log
+    WHERE event_type = %s AND action_id = %s
+      AND COALESCE((detail->>'ok')::boolean, true) = true
+) AS exists
+"""
+_CREATE_INDEX = """
+CREATE INDEX IF NOT EXISTS idx_atlas_audit_log_event_action
+ON atlas_audit_log (event_type, action_id)
+"""
 _INSERT = """
 INSERT INTO atlas_audit_log
     (seq, event_id, ts, event_type, action_id, tool, actor, detail, prev_hash, event_hash)
@@ -80,9 +91,10 @@ class PostgresAuditLog(AuditLog):
             self.setup()
 
     def setup(self) -> None:
-        """Create the audit table if it does not exist (idempotent, static DDL)."""
+        """Create the audit table and idempotency index if absent (idempotent, static DDL)."""
         with self._pool.connection() as conn:
             conn.execute(_CREATE_TABLE)
+            conn.execute(_CREATE_INDEX)
 
     def _append_event(self, event: AuditEvent) -> ChainedAuditRecord:
         with self._pool.connection() as conn, conn.transaction():
@@ -114,3 +126,9 @@ class PostgresAuditLog(AuditLog):
         with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             cur.execute(_SELECT_ALL)
             return [_row_to_record(row) for row in cur.fetchall()]
+
+    def has_executed(self, action_id: str) -> bool:
+        with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(_HAS_EXECUTED, (AuditEventType.EXECUTED.value, action_id))
+            row = cur.fetchone()
+            return bool(row and row["exists"])
