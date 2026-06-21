@@ -34,6 +34,17 @@ uv run python scripts/demo_approval.py    # watch the HITL gate in action
 No `ANTHROPIC_API_KEY` is required for M1 — the planner falls back to a deterministic heuristic so
 everything runs offline. Set the key (and `LANGSMITH_*`) in `.env` to use real Claude + tracing.
 
+### Email (M4.1)
+
+Real gated email send via Resend when both are set (see `.env.example`):
+
+```bash
+RESEND_API_KEY=re_...
+ATLAS_EMAIL_FROM=atlas@yourdomain.com
+```
+
+Without both, `send_email` fails closed after approval (`ok=False`). Tests use an injected fake sender.
+
 ## Project layout
 
 ```
@@ -41,7 +52,9 @@ src/atlas/
   config.py              # Pydantic Settings (env-only secrets)
   llm.py                 # Claude model factory
   actions.py             # RiskTier, action contracts (frozen), requires_approval policy
-  tools.py               # Tool protocol + registry + mock tools
+  tools.py               # Tool protocol + registry + send_email (Resend when configured)
+  integrations/email.py  # EmailSender ABC + ResendEmailSender
+  execution.py           # GuardedExecutor (idempotent side effects)
   governance.py          # append-only audit log
   orchestration/
     state.py             # AgentState (graph channels)

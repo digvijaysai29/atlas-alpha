@@ -26,6 +26,7 @@ from atlas.orchestration.graph import Atlas
 from atlas.orchestration.nodes import PlanFn
 from atlas.orchestration.serde import atlas_serde
 from atlas.tools import ToolRegistry
+from tests.helpers import offline_registry
 
 from fastapi.testclient import TestClient
 
@@ -50,7 +51,11 @@ def _authenticator(public_key: Any) -> OidcAuthenticator:
 
 
 def _client(public_key: Any, plan_fn: PlanFn = _send_plan) -> tuple[TestClient, Atlas]:
-    atlas = build_graph(plan_fn=plan_fn, checkpointer=InMemorySaver(serde=atlas_serde()))
+    atlas = build_graph(
+        plan_fn=plan_fn,
+        registry=offline_registry(),
+        checkpointer=InMemorySaver(serde=atlas_serde()),
+    )
     app = create_app(
         atlas=atlas,
         settings=Settings(ANTHROPIC_API_KEY=None),
@@ -130,7 +135,11 @@ def test_jwks_unavailable_is_503(keypair: tuple[RSAPrivateKey, Any]) -> None:
         raise jwt.PyJWKClientError("Unable to fetch signing key")
 
     auth = OidcAuthenticator(issuer=ISSUER, audience=AUDIENCE, get_signing_key=_fail)
-    atlas = build_graph(plan_fn=_send_plan, checkpointer=InMemorySaver(serde=atlas_serde()))
+    atlas = build_graph(
+        plan_fn=_send_plan,
+        registry=offline_registry(),
+        checkpointer=InMemorySaver(serde=atlas_serde()),
+    )
     app = create_app(
         atlas=atlas,
         settings=Settings(ANTHROPIC_API_KEY=None),

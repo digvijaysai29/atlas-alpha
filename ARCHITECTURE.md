@@ -214,12 +214,11 @@ executor refuses to run a gated action without a matching, in-scope `ApprovalDec
   via `upstash-ratelimit` behind a `RateLimiter` ABC (`interface/rate_limit.py`), injected through
   `create_app`; over budget → 429 + `Retry-After`; layered after authn/authz and **fail-open**
   (availability control, not an authz gate); per client IP for anonymous. See `AUTH.md`.
-- **M4.1 (planned):** first real tool integration — **email send** via **Resend** behind a pluggable
-  `EmailSender` ABC (`integrations/email.py`), provider-agnostic at the `tool:send` capability and
-  human-gated (sends from a verified service address). Adds **idempotent execution**: a reusable
-  execution wrapper (`GuardedExecutor` / `ToolRegistry.execute_guarded`) — not the orchestration node —
-  enforces "no double-send on replay" via the append-only audit log keyed by the checkpointed
-  `action_id` (new `REPLAY_SKIPPED`/`FAILED` events; `EXECUTED` = success-only). Full guide:
+- **M4.1 (done):** first real tool integration — **email send** via **Resend** behind a pluggable
+  `EmailSender` ABC (`integrations/email.py`), provider-agnostic at `tool:send`, human-gated from
+  `ATLAS_EMAIL_FROM`. **Idempotent execution** via `GuardedExecutor` (`execution.py`) — audit ledger
+  `has_executed(action_id)` prevents double-send on replay (`REPLAY_SKIPPED`/`FAILED` events;
+  `EXECUTED` = success-only). Unconfigured email ⇒ fail-closed (no mock-success). Guide:
   [`M4.1_PLAN.md`](./M4.1_PLAN.md).
 - **Later (M4.2+):** per-principal "send as the user" OAuth; Gmail/Slack/Jira/Calendar adapters;
   resource/argument-aware `ToolPermission`; pgvector semantic retrieval; SSE streaming; Merkle

@@ -14,6 +14,8 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from atlas.actions import ActionResult, ProposedAction, RiskTier
+from atlas.config import Settings, get_settings
+from atlas.integrations.email import EmailMessage, EmailSender, build_email_sender
 
 
 class BaseTool(abc.ABC):
@@ -137,16 +139,23 @@ class SendEmailTool(BaseTool):
     required_permission = "tool:send"  # RBAC: only principals granted "tool:send" may use this
     ArgsSchema = _SendEmailArgs
 
+    def __init__(self, sender: EmailSender | None = None) -> None:
+        self._sender = sender
+
     def run(self, args: BaseModel) -> Any:
         if not isinstance(args, _SendEmailArgs):
             raise TypeError(f"expected _SendEmailArgs, got {type(args).__name__}")
-        # Mock send — a real implementation would call the email provider here.
-        return {"status": "sent", "to": args.to, "subject": args.subject}
+        if self._sender is None:
+            raise RuntimeError("email not configured")
+        message = EmailMessage(to=args.to, subject=args.subject, text=args.body or None)
+        return self._sender.send(message)
 
 
-def default_registry() -> ToolRegistry:
-    """A registry pre-loaded with the M1 mock tools."""
+def default_registry(settings: Settings | None = None) -> ToolRegistry:
+    """A registry pre-loaded with the standard tools (email sender from settings when configured)."""
+    settings = settings or get_settings()
+    sender = build_email_sender(settings)
     registry = ToolRegistry()
     registry.register(SearchTool())
-    registry.register(SendEmailTool())
+    registry.register(SendEmailTool(sender=sender))
     return registry

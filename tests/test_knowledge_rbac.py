@@ -19,6 +19,7 @@ from atlas.orchestration.graph import Atlas
 from atlas.orchestration.serde import atlas_serde
 from atlas.orchestration.state import initial_state
 from atlas.tools import ToolRegistry
+from tests.helpers import offline_registry
 
 MEMBER = Principal(user_id="alice", roles=("member",))  # has kg:read:org + kg:read:personal
 GUEST = Principal(user_id="bob", roles=("guest",))  # has only kg:read:personal
@@ -100,6 +101,7 @@ def _send_plan(_request: str, registry: ToolRegistry, _context: object) -> list[
 def test_kg_context_entities_survive_checkpoint_resume() -> None:
     atlas = build_graph(
         plan_fn=_send_plan,
+        registry=offline_registry(),
         knowledge=seed_demo_graph(),
         checkpointer=InMemorySaver(serde=atlas_serde()),
     )

@@ -18,6 +18,7 @@ from atlas.orchestration.graph import Atlas
 from atlas.orchestration.nodes import PlanFn
 from atlas.orchestration.serde import atlas_serde
 from atlas.tools import ToolRegistry
+from tests.helpers import offline_registry
 
 from fastapi.testclient import TestClient
 
@@ -31,7 +32,11 @@ def _search_plan(_req: str, registry: ToolRegistry, _ctx: object) -> list[Propos
 
 
 def _build(plan_fn: PlanFn, settings: Settings | None = None) -> tuple[TestClient, Atlas]:
-    atlas = build_graph(plan_fn=plan_fn, checkpointer=InMemorySaver(serde=atlas_serde()))
+    atlas = build_graph(
+        plan_fn=plan_fn,
+        registry=offline_registry(),
+        checkpointer=InMemorySaver(serde=atlas_serde()),
+    )
     app = create_app(atlas=atlas, settings=settings or Settings(ANTHROPIC_API_KEY=None))
     return TestClient(app), atlas
 

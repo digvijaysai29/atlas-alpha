@@ -27,6 +27,7 @@ from atlas.governance.confidence import collect_sources, score_confidence
 from atlas.governance.rbac import get_current_principal
 from atlas.knowledge.interfaces import Entity, KnowledgeGraph
 from atlas.orchestration.state import AgentState
+from atlas.execution import GuardedExecutor
 from atlas.tools import ToolRegistry
 
 # A planning strategy turns a user request + registry + RBAC-scoped knowledge into proposed actions.
@@ -197,6 +198,8 @@ def make_approval_node(audit: AuditLog) -> Callable[[AgentState], dict[str, Any]
 def make_executor_node(
     registry: ToolRegistry, audit: AuditLog, policy: PolicyStore
 ) -> Callable[[AgentState], dict[str, Any]]:
+    guarded = GuardedExecutor(registry)
+
     def executor_node(state: AgentState) -> dict[str, Any]:
         principal = get_current_principal(state)
         approved = set(state.get("approved_action_ids") or [])
@@ -212,9 +215,7 @@ def make_executor_node(
             if requires_approval(action.risk_tier) and action.action_id not in approved:
                 audit.skipped(action, reason="not approved")
                 continue
-            result = registry.execute(action)
-            audit.executed(result)
-            results.append(result)
+            results.append(guarded.execute_guarded(action, audit))
         return {"action_results": results}
 
     return executor_node
@@ -306,6 +307,8 @@ def _summarize(
         if result is None:
             verb = "Rejected" if action.action_id in rejected else "Skipped (not approved)"
             lines.append(f"- {verb}: {action.tool} ({action.risk_tier.value})")
+        elif isinstance(result.output, dict) and result.output.get("replay_skipped"):
+            lines.append(f"- Replay skipped (already executed): {action.tool}")
         elif result.ok:
             lines.append(f"- Executed: {action.tool} -> {result.output}")
         else:

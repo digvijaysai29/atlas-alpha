@@ -44,3 +44,12 @@ def test_execute_returns_successful_result() -> None:
     result = registry.execute(action)
     assert result.ok is True
     assert isinstance(result.output, dict)
+
+
+def test_execute_send_email_unconfigured_returns_failure() -> None:
+    from atlas.config import Settings
+
+    registry = default_registry(Settings(RESEND_API_KEY=None, ATLAS_EMAIL_FROM=None))
+    action = registry.propose("send_email", {"to": "a@b.com", "subject": "x", "body": "y"})
+    result = registry.execute(action)
+    assert result.ok is False

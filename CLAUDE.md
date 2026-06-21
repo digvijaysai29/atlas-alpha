@@ -14,7 +14,7 @@ Knowledge Graph** (per user) + an **Organizational Knowledge Graph** (company-wi
 compound over time. The agent takes **real, irreversible actions** (email, calendar, Slack, Jira,
 docs). Because the actions are real, **trust and safety are the product, not a feature.**
 
-## 2. Project Status (as of 2026-06-19)
+## 2. Project Status (as of 2026-06-21)
 
 Private repo `digvijaysai29/atlas-alpha`. Work ships in small, independently-green milestones; each
 sub-phase is its own branch → PR into `main` → CI must be green.
@@ -33,8 +33,8 @@ sub-phase is its own branch → PR into `main` → CI must be green.
 | **M3.4** | **Pluggable `PolicyStore`** (ABC + in-memory default + Postgres backend) replacing the hardcoded `ROLE_PERMISSIONS`; `make_policy_store` DI; `scripts/manage_policy.py` CLI | ✅ **merged (PR #16)** |
 | **M3.5** | **Hierarchical wildcard RBAC** — granted `kg:read:*` satisfies `kg:read:org`; shared `permission_satisfied` across in-memory/Postgres stores + KG SQL filter | ✅ **merged (PR #19)** |
 | **M3.6** | **Per-principal rate limiting** on `/chat` + `/approve` (Upstash-backed; `interface/rate_limit.py`); 429 + `Retry-After`; fail-open; per-IP for anonymous | ✅ **merged (PR #20)** |
-| **M4.1** | **NEXT** → first real integration: **email send (Resend)** behind a pluggable `EmailSender` + **idempotent execution** (audit `REPLAY_SKIPPED` ledger by `action_id`). Guide: **[`M4.1_PLAN.md`](./M4.1_PLAN.md)** | 📋 **planned** |
-| **M4.2+** | "Send as the user" OAuth; Gmail/Slack/Jira/Calendar; resource/argument-aware `ToolPermission`; pgvector semantic retrieval; sessions/provisioning; SSE streaming | future |
+| **M4.1** | **Real email send (Resend)** behind a pluggable `EmailSender` + **idempotent execution** (`GuardedExecutor`, audit `REPLAY_SKIPPED`/`FAILED` by `action_id`). Guide: **[`M4.1_PLAN.md`](./M4.1_PLAN.md)** | ✅ **merged (branch)** |
+| **M4.2** | **NEXT** → "Send as the user" OAuth; Gmail/Slack/Jira/Calendar; resource/argument-aware `ToolPermission`; pgvector semantic retrieval; sessions/provisioning; SSE streaming | 📋 **planned** |
 
 ## 3. Tech Stack
 
@@ -56,7 +56,9 @@ sub-phase is its own branch → PR into `main` → CI must be green.
 config.py            Pydantic Settings — secrets/env ONLY (anthropic, langsmith, DATABASE_URL, sqlite)
 llm.py               build_model() — Claude factory (raises if no key; planner falls back offline)
 actions.py           RiskTier; ProposedAction / ApprovalDecision / ActionResult (frozen); requires_approval()
-tools.py             BaseTool(risk_tier, required_permission, ArgsSchema); ToolRegistry; mock search/send_email
+tools.py             BaseTool(risk_tier, required_permission, ArgsSchema); ToolRegistry; search + Resend-backed send_email
+integrations/email.py  EmailMessage, EmailSender ABC, ResendEmailSender, build_email_sender
+execution.py         GuardedExecutor.execute_guarded — idempotency + audit routing
 governance/
   audit.py           AuditEvent + AuditEventType(PROPOSED/APPROVED/REJECTED/EXECUTED/SKIPPED/DENIED);
                      hash-chained AuditLog (canonical_event_bytes→sha256, verify_chain); InMemoryAuditLog
@@ -182,7 +184,7 @@ still TRUSTED-NETWORK only — fine for local/dev, but real deployments **must**
 Fail-closed default `Entity.acl` once untrusted `upsert_entity` write paths exist (no KG write
 endpoint yet, still deferred). Resource/argument-aware `ToolPermission`, org-level thread delegation,
 policy versioning/admin-UI → M4 (enumerated in `AUTH.md`). (Hierarchical wildcard RBAC landed in M3.5;
-per-principal rate limiting in M3.6.) **M4.1 (planned, see [`M4.1_PLAN.md`](./M4.1_PLAN.md))** makes
+per-principal rate limiting in M3.6.) **M4.1 (see [`M4.1_PLAN.md`](./M4.1_PLAN.md))** makes
 `send_email` a **real** human-gated send (Resend, behind a pluggable `EmailSender`) and adds
 **idempotent execution** so an executor replay never double-sends: the side-effect rule lives in a
 reusable execution wrapper (not the node), keyed by the checkpointed `action_id` via the audit log

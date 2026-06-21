@@ -41,6 +41,12 @@ CREATE TABLE IF NOT EXISTS atlas_audit_log (
 
 _SELECT_TAIL = "SELECT * FROM atlas_audit_log ORDER BY seq DESC LIMIT 1"
 _SELECT_ALL = "SELECT * FROM atlas_audit_log ORDER BY seq ASC"
+_HAS_EXECUTED = """
+SELECT EXISTS (
+    SELECT 1 FROM atlas_audit_log
+    WHERE event_type = %s AND action_id = %s
+) AS exists
+"""
 _INSERT = """
 INSERT INTO atlas_audit_log
     (seq, event_id, ts, event_type, action_id, tool, actor, detail, prev_hash, event_hash)
@@ -114,3 +120,9 @@ class PostgresAuditLog(AuditLog):
         with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             cur.execute(_SELECT_ALL)
             return [_row_to_record(row) for row in cur.fetchall()]
+
+    def has_executed(self, action_id: str) -> bool:
+        with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(_HAS_EXECUTED, (AuditEventType.EXECUTED.value, action_id))
+            row = cur.fetchone()
+            return bool(row and row["exists"])

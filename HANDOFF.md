@@ -28,13 +28,13 @@ branch → PR into `main` → CI must be green.
 | **M3.4** | Pluggable **`PolicyStore`** (ABC + in-memory + Postgres) replacing hardcoded `ROLE_PERMISSIONS`; `manage_policy.py` CLI. See `AUTH.md` | ✅ merged (PR #16) |
 | **M3.5** | Fine-grained RBAC: **hierarchical wildcard permissions** (`kg:read:*` ⇒ `kg:read:org`) via shared `permission_satisfied`. Guide: **[`M3.5_PLAN.md`](./M3.5_PLAN.md)** | ✅ merged (PR #19) |
 | **M3.6** | **Per-principal rate limiting** on `/chat` + `/approve` (Upstash + `upstash-ratelimit`); 429 + `Retry-After`; fail-open; per-IP for anonymous | ✅ merged (PR #20) |
-| **M4.1** | **← NEXT.** First real integration: **email send (Resend)** behind a pluggable `EmailSender` + **idempotent execution** (audit `REPLAY_SKIPPED` ledger). Guide: **[`M4.1_PLAN.md`](./M4.1_PLAN.md)** | ⏭ planned |
+| **M4.1** | First real integration: **email send (Resend)** behind a pluggable `EmailSender` + **idempotent execution** (`GuardedExecutor`, audit `REPLAY_SKIPPED`/`FAILED`). Guide: **[`M4.1_PLAN.md`](./M4.1_PLAN.md)** | ✅ **done (branch)** |
 | **M4.2+** | Per-principal "send as the user" OAuth; Slack/Jira/Calendar; pgvector semantic retrieval; sessions/provisioning; SSE streaming | future |
 
 **Net:** atlas is a secure, durable, identity-aware, knowledge-grounded HITL agent with a transparent
 sources+confidence layer, a real blocking eval gate, a **network interface** (OIDC auth, resume-time
 owner binding, per-principal rate limiting) — all behind a fail-closed security model. The remaining
-gap is **real tool integrations**: the tools are still mocks. **M4.1 (next) starts here** — a real,
+gap is **more real tool integrations** beyond email. **M4.2 (next)** — per-principal OAuth / Gmail / Slack / Jira. **M4.1 landed** — real,
 human-gated, idempotent email send (Resend) behind a pluggable `EmailSender`; per-principal
 "send as the user" OAuth and the other adapters (Slack/Jira/Calendar) plus semantic retrieval follow
 in M4.2+.
@@ -228,15 +228,14 @@ Each is a separate milestone; keep the sub-phase discipline (small PRs, green CI
   `tests/test_rate_limit.py` (hermetic via an injected stub limiter; real Upstash gated on
   `-m integration` + env creds). See `AUTH.md`. **Deferred → M4:** per-route tiers, anti-brute-force
   IP limiting on 401s.
-- **M4.1 — First real integration: email send + idempotent execution.** ⏭ **NEXT — full guide:
-  [`M4.1_PLAN.md`](./M4.1_PLAN.md).** Replace the mock `send_email` body with a real send via a
-  **pluggable `EmailSender`** (Resend now; Gmail/Postmark later) sending from a verified **service
-  address** (`ATLAS_EMAIL_FROM`); the capability stays provider-agnostic at `tool:send` and
-  human-gated. Make sends **idempotent** so an executor replay never double-sends: the side-effect rule
-  lives in a reusable **execution wrapper** (`GuardedExecutor` / `ToolRegistry.execute_guarded`), not
-  in `make_executor_node`, keyed by the checkpointed `action_id` via the audit log (new
-  `REPLAY_SKIPPED` + `FAILED` events; `EXECUTED` = success-only; `has_executed` query). Dev/CI stays
-  offline (no key ⇒ dry-run mock). **Deferred → M4.2.**
+- **M4.1 — First real integration: email send + idempotent execution.** ✅ **DONE (branch
+  `feat/m4.1-email-resend`).** Real `send_email` via **pluggable `EmailSender`** (Resend;
+  `integrations/email.py`) from verified **service address** (`ATLAS_EMAIL_FROM`); unconfigured ⇒
+  fail-closed (`ok=False`, not mock-success). **Idempotent execution** via `GuardedExecutor`
+  (`execution.py`): audit-ledger `has_executed` keyed by checkpointed `action_id`;
+  `REPLAY_SKIPPED`/`FAILED` events; `EXECUTED` = success-only. Config: `RESEND_API_KEY` +
+  `ATLAS_EMAIL_FROM` (all-or-nothing validator). Tests: `tests/test_email_integration.py`,
+  `tests/test_idempotency.py`. **Deferred → M4.2.**
 - **M4.2+ — Real tool integrations** (per-principal "send as the user" OAuth; Gmail / Slack / Jira /
   Calendar). Per-integration OAuth + secret management; correct per-tool `risk_tier` +
   `required_permission`; provider-side idempotency keys; sandboxing; webhook ingestion. Treat all tool

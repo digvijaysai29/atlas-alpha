@@ -17,6 +17,7 @@ from atlas.interface import create_app
 from atlas.orchestration import build_graph
 from atlas.orchestration.graph import _pg_pool
 from atlas.tools import ToolRegistry
+from tests.helpers import offline_registry
 
 from fastapi.testclient import TestClient
 
@@ -42,7 +43,12 @@ def test_thread_resume_is_durable_and_owner_bound_across_restart(database_url: s
     _pg_pool.cache_clear()
     client1 = TestClient(
         create_app(
-            atlas=build_graph(plan_fn=_send_plan, policy=InMemoryPolicyStore(), settings=settings)
+            atlas=build_graph(
+                plan_fn=_send_plan,
+                registry=offline_registry(),
+                policy=InMemoryPolicyStore(),
+                settings=settings,
+            )
         )
     )
     started = client1.post("/chat", json={"message": "email a@b.com"}, headers=_headers("alice"))
@@ -54,7 +60,12 @@ def test_thread_resume_is_durable_and_owner_bound_across_restart(database_url: s
     # Second "process": a brand-new app over the same DB.
     client2 = TestClient(
         create_app(
-            atlas=build_graph(plan_fn=_send_plan, policy=InMemoryPolicyStore(), settings=settings)
+            atlas=build_graph(
+                plan_fn=_send_plan,
+                registry=offline_registry(),
+                policy=InMemoryPolicyStore(),
+                settings=settings,
+            )
         )
     )
     # Binding survives the restart: Bob cannot approve Alice's pending action.
