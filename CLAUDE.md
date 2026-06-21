@@ -32,8 +32,9 @@ sub-phase is its own branch → PR into `main` → CI must be green.
 | **M3.3** | **Real OIDC/JWT bearer auth** (`interface/auth.py`, RS256+JWKS, claims→`Principal`); header shim demoted to dev fallback; see [`AUTH.md`](./AUTH.md) | ✅ **merged (PR #10)** |
 | **M3.4** | **Pluggable `PolicyStore`** (ABC + in-memory default + Postgres backend) replacing the hardcoded `ROLE_PERMISSIONS`; `make_policy_store` DI; `scripts/manage_policy.py` CLI | ✅ **merged (PR #16)** |
 | **M3.5** | **Hierarchical wildcard RBAC** — granted `kg:read:*` satisfies `kg:read:org`; shared `permission_satisfied` across in-memory/Postgres stores + KG SQL filter | ✅ **merged (PR #19)** |
-| **M3.6** | **Per-principal rate limiting** on `/chat` + `/approve` (Upstash-backed; `interface/rate_limit.py`); 429 + `Retry-After`; fail-open; per-IP for anonymous | 🔄 **this PR** |
-| **M4+** | **NEXT FOCUS** → real integrations (Gmail/Slack/Jira), resource/argument-aware `ToolPermission`, pgvector semantic retrieval, sessions/provisioning, SSE streaming | future |
+| **M3.6** | **Per-principal rate limiting** on `/chat` + `/approve` (Upstash-backed; `interface/rate_limit.py`); 429 + `Retry-After`; fail-open; per-IP for anonymous | ✅ **merged (PR #20)** |
+| **M4.1** | **NEXT** → first real integration: **email send (Resend)** behind a pluggable `EmailSender` + **idempotent execution** (audit `REPLAY_SKIPPED` ledger by `action_id`). Guide: **[`M4.1_PLAN.md`](./M4.1_PLAN.md)** | 📋 **planned** |
+| **M4.2+** | "Send as the user" OAuth; Gmail/Slack/Jira/Calendar; resource/argument-aware `ToolPermission`; pgvector semantic retrieval; sessions/provisioning; SSE streaming | future |
 
 ## 3. Tech Stack
 
@@ -181,7 +182,11 @@ still TRUSTED-NETWORK only — fine for local/dev, but real deployments **must**
 Fail-closed default `Entity.acl` once untrusted `upsert_entity` write paths exist (no KG write
 endpoint yet, still deferred). Resource/argument-aware `ToolPermission`, org-level thread delegation,
 policy versioning/admin-UI → M4 (enumerated in `AUTH.md`). (Hierarchical wildcard RBAC landed in M3.5;
-per-principal rate limiting in M3.6.)
+per-principal rate limiting in M3.6.) **M4.1 (planned, see [`M4.1_PLAN.md`](./M4.1_PLAN.md))** makes
+`send_email` a **real** human-gated send (Resend, behind a pluggable `EmailSender`) and adds
+**idempotent execution** so an executor replay never double-sends: the side-effect rule lives in a
+reusable execution wrapper (not the node), keyed by the checkpointed `action_id` via the audit log
+(new `REPLAY_SKIPPED`/`FAILED` events; `EXECUTED` = success-only).
 
 ## 7. Coding & Architectural Principles
 

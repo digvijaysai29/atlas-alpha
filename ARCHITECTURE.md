@@ -85,7 +85,8 @@ START ─►│ planner  ├───yes────► │ approval  ├──�
   **bound to `action_id`**; decisions for unknown ids are ignored.
 - **executor** — For each proposed action, **re-checks** the policy and (if gated) a matching
   approval **before** running it. Auto (READ) actions run directly; gated actions run only if
-  approved. Produces `ActionResult`s.
+  approved. Produces `ActionResult`s. *(M4.1 will delegate the actual run + idempotency + audit to a
+  reusable execution wrapper, so the node stays orchestration-only.)*
 - **responder** — Synthesizes the final answer with **sources** and a **confidence** score.
 
 ## 4. State Model
@@ -213,5 +214,13 @@ executor refuses to run a gated action without a matching, in-scope `ApprovalDec
   via `upstash-ratelimit` behind a `RateLimiter` ABC (`interface/rate_limit.py`), injected through
   `create_app`; over budget → 429 + `Retry-After`; layered after authn/authz and **fail-open**
   (availability control, not an authz gate); per client IP for anonymous. See `AUTH.md`.
-- **Later:** resource/argument-aware `ToolPermission`; pgvector semantic retrieval; real integrations
-  (Gmail/Slack/Jira); SSE streaming; Merkle anchoring.
+- **M4.1 (planned):** first real tool integration — **email send** via **Resend** behind a pluggable
+  `EmailSender` ABC (`integrations/email.py`), provider-agnostic at the `tool:send` capability and
+  human-gated (sends from a verified service address). Adds **idempotent execution**: a reusable
+  execution wrapper (`GuardedExecutor` / `ToolRegistry.execute_guarded`) — not the orchestration node —
+  enforces "no double-send on replay" via the append-only audit log keyed by the checkpointed
+  `action_id` (new `REPLAY_SKIPPED`/`FAILED` events; `EXECUTED` = success-only). Full guide:
+  [`M4.1_PLAN.md`](./M4.1_PLAN.md).
+- **Later (M4.2+):** per-principal "send as the user" OAuth; Gmail/Slack/Jira/Calendar adapters;
+  resource/argument-aware `ToolPermission`; pgvector semantic retrieval; SSE streaming; Merkle
+  anchoring.
