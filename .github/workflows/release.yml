@@ -22,6 +22,11 @@ jobs:
     name: build-wheel
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
       - name: Setup atlas
         uses: ./.github/actions/setup-atlas
 
@@ -29,7 +34,7 @@ jobs:
         run: uv build
 
       - name: Upload dist artifacts
-        uses: actions/upload-artifact@v4.6.2 # v4.6.2, pinned to a released tag (ea165f8d65b6e75b540449e92b4886f43607fa02)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dist
           path: dist/*
@@ -44,21 +49,23 @@ jobs:
       packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v7.0.0 # v7.0.0, pinned to a released tag (9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3.11.0 # v3.11.0, pinned to a released tag (18ce135bb5112fa8ce4ed6c17ab05699d7f3a5e0)
+        uses: docker/setup-buildx-action@18ce135bb5112fa8ce4ed6c17ab05699d7f3a5e0 # v3.11.0
 
       - name: Log in to GHCR
         if: github.event.inputs.push_image == 'true'
-        uses: docker/login-action@v3.4.0 # v3.4.0, pinned to a released tag (74a5d142397b4f367a81961eba4e8cd7edddf772)
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push container image
-        uses: docker/build-push-action@v7.2.0 # v7.2.0, pinned to a released tag (f9f3042f7e2789586610d6e8b85c8f03e5195baf)
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: .
           push: ${{ github.event.inputs.push_image == 'true' }}

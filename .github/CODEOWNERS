@@ -6,3 +6,5 @@
 /src/atlas/execution.py @digvijaysai29
 /evals/ @digvijaysai29
 /.github/workflows/ @digvijaysai29
+/.github/actions/ @digvijaysai29
+/.semgrep/ @digvijaysai29
