@@ -35,6 +35,9 @@ jobs:
     name: fast-fail (lint, types, tests)
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0 # v7.0.0, pinned to a released tag (9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0)
+
       - name: Setup atlas
         uses: ./.github/actions/setup-atlas
         with:
@@ -74,11 +77,15 @@ jobs:
       security-events: write
       pull-requests: read
     steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0 # v7.0.0, pinned to a released tag (9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0)
+        with:
+          fetch-depth: 0
+
       - name: Setup atlas
         uses: ./.github/actions/setup-atlas
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          fetch-depth: "0"
 
       - name: Semgrep (community rulesets)
         # SEMGREP_APP_TOKEN is optional: when unset, semgrep still runs the named community
@@ -127,6 +134,9 @@ jobs:
     name: contracts (serde allowlist)
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0 # v7.0.0, pinned to a released tag (9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0)
+
       - name: Setup atlas
         uses: ./.github/actions/setup-atlas
         with:
@@ -155,6 +165,9 @@ jobs:
     env:
       DATABASE_URL: postgresql://atlas:atlas@localhost:5432/atlas
     steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0 # v7.0.0, pinned to a released tag (9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0)
+
       - name: Setup atlas
         uses: ./.github/actions/setup-atlas
         with:
@@ -171,6 +184,9 @@ jobs:
     # run_gate.py self-skip when the key is absent, so this is safe to run everywhere.
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0 # v7.0.0, pinned to a released tag (9c091bb21b7c1c1d1991bb908d89e9dddfe3e0)
+
       - name: Setup atlas
         uses: ./.github/actions/setup-atlas
         with:
