@@ -27,4 +27,7 @@ runs:
 
     - name: Install dependencies
       shell: bash
-      run: uv sync --all-extras --dev
+      # --frozen: never rewrite uv.lock during setup so a later uv lock --check still
+      # sees the committed lockfile and catches uncommitted drift (plain uv sync would
+      # regenerate a stale lock and make --check pass falsely).
+      run: uv sync --all-extras --dev --frozen
