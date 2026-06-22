@@ -64,7 +64,27 @@ LANGSMITH_API_KEY=... uv run python evals/run_gate.py
 
 ## CI + branch protection
 
-The `agent-eval` job runs `run_gate.py` on every push/PR (the deterministic gate is hermetic, so it
-no longer needs to be gated to PRs into `main`). To enforce it, make **`agent-eval`** a required
-status check on `main` via GitHub branch protection / rulesets (a repo-settings action for the
-owner). The job never echoes the value of any secret.
+All jobs below live in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) and run on every
+push/PR (the deterministic `agent-eval` gate is hermetic, so it is safe on forks). Configure these
+as **required status checks** on `main` via GitHub branch protection or rulesets (a repo-settings
+action for the owner). Use the exact job `name` strings GitHub reports in the checks UI.
+
+### Required checks (`ci.yml`)
+
+| Status check | Job | What it gates |
+|---|---|---|
+| `fast-fail (lint, types, tests)` | `fast-fail` | ruff, mypy, pytest + coverage |
+| `security (semgrep, bandit, pip-audit, gitleaks)` | `security` | SAST, locked dependency CVE scan |
+| `integration (postgres persistence)` | `integration` | Postgres-backed persistence tests |
+| `contracts (serde allowlist)` | `contracts` | checkpoint serde allowlist contract |
+| `agent-eval (security-behavior gate)` | `agent-eval` | deterministic security oracles (`run_gate.py`) |
+| `workflow-lint (actionlint)` | `workflow-lint` | actionlint on workflow YAML |
+
+### Not required (orthogonal workflows)
+
+| Workflow | Reason |
+|---|---|
+| `release.yml` | Post-merge / manual packaging; not a merge gate |
+| `security-scheduled.yml` | Weekly cron on `main` only |
+
+The `agent-eval` job never echoes the value of any secret.

@@ -1,0 +1,20 @@
+# Atlas custom security rules (Wave 5).
+# Advisory in CI: findings are logged but do not fail the build.
+rules:
+  - id: atlas-raw-sql-interpolation-outside-persistence
+    message: >-
+      Raw SQL built with f-string or str.format() outside persistence/.
+      Use parameterized queries (%s placeholders + bound values) in atlas.persistence
+      stores instead of string interpolation.
+    languages: [python]
+    severity: WARNING
+    paths:
+      exclude:
+        - "**/persistence/**"
+    patterns:
+      - pattern-either:
+          - pattern: $OBJ.execute(f"...")
+          - pattern: $OBJ.execute(f'...')
+          - pattern: $OBJ.execute(f"""...""")
+          - pattern: $OBJ.execute(f'''...''')
+          - pattern: $OBJ.execute($SQL.format(...))

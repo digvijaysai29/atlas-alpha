@@ -1,0 +1,49 @@
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# Python / uv
+.venv
+__pycache__
+*.py[cod]
+*.egg-info
+.mypy_cache
+.ruff_cache
+.pytest_cache
+.coverage
+htmlcov
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+
+# Editor / IDE
+.cursor
+.cursorrules
+.vscode
+.idea
+*.swp
+*.swo
+
+# CI and docs (not needed in the image)
+.github
+docs
+
+# Tests, evals, and demo entrypoints
+tests
+evals
+main.py
+
+# Scripts except the API runner
+scripts/*
+!scripts/run_api.py
+
+# Local infra (use external Postgres in production)
+docker-compose.yml
+
+# Misc
+*.md
+!README.md
+.DS_Store

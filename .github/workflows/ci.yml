@@ -19,21 +19,32 @@ env:
   PYTHON_VERSION: "3.13"
 
 jobs:
-  fast-fail:
-    name: fast-fail (lint, types, tests)
+  workflow-lint:
+    name: workflow-lint (actionlint)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.0 # v7.0.0, pinned to a released tag (9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0)
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v8.2.0 # v8.2.0, pinned to a released tag (fac544c07dec837d0ccb6301d7b5580bf5edae39)
+      - name: Lint workflow YAML (actionlint)
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color
+
+  fast-fail:
+    name: fast-fail (lint, types, tests)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup atlas
+        uses: ./.github/actions/setup-atlas
         with:
-          enable-cache: true
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install dependencies
-        run: uv sync --all-extras --dev
+      - name: Lockfile drift (uv lock --check)
+        run: uv lock --check
+
+      - name: Package smoke (uv build)
+        run: uv build
 
       - name: Lint (ruff check)
         run: uv run ruff check src tests scripts evals
@@ -45,30 +56,31 @@ jobs:
         run: uv run mypy src tests
 
       - name: Test + coverage (pytest)
-        run: uv run pytest --cov=atlas --cov-report=term-missing --cov-fail-under=80
+        run: uv run pytest --cov=atlas --cov-report=term-missing --cov-report=xml --cov-fail-under=80
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4.6.2 # v4.6.2, pinned to a released tag (ea165f8d65b6e75b540449e92b4886f43607fa02)
+        with:
+          name: coverage-xml
+          path: coverage.xml
+          if-no-files-found: ignore
 
   security:
     name: security (semgrep, bandit, pip-audit, gitleaks)
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read # gitleaks-action lists PR commits via the API on pull_request events
+      security-events: write
+      pull-requests: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7.0.0 # v7.0.0, pinned to a released tag (9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0)
+      - name: Setup atlas
+        uses: ./.github/actions/setup-atlas
         with:
-          fetch-depth: 0 # full history so gitleaks can scan all commits in the push/PR range
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v8.2.0 # v8.2.0, pinned to a released tag (fac544c07dec837d0ccb6301d7b5580bf5edae39)
-        with:
-          enable-cache: true
           python-version: ${{ env.PYTHON_VERSION }}
+          fetch-depth: "0"
 
-      - name: Install dependencies
-        run: uv sync --all-extras --dev
-
-      - name: Semgrep (p/python, p/security-audit, p/secrets)
+      - name: Semgrep (community rulesets)
         # SEMGREP_APP_TOKEN is optional: when unset, semgrep still runs the named community
         # rulesets locally without reporting to Semgrep AppSec Platform.
         env:
@@ -78,22 +90,50 @@ jobs:
             --config p/python \
             --config p/security-audit \
             --config p/secrets \
+            --config p/owasp-top-ten \
+            --sarif-output semgrep.sarif \
             --error \
+            src tests scripts evals main.py
+
+      - name: Upload Semgrep SARIF
+        if: >-
+          github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name == github.repository
+        uses: github/codeql-action/upload-sarif@v3.28.0 # v3.28.0, pinned to a released tag (8c78abb9b62512e3c45dea6559ffd924ed8549c8)
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+      - name: Semgrep (atlas custom rules, advisory)
+        # Log-only: no --error; findings are advisory until the codebase is clean.
+        run: |
+          uv run --with semgrep semgrep scan \
+            --config .semgrep/atlas-security.yml \
             src tests scripts evals main.py
 
       - name: Bandit (static security analysis)
         run: uv run bandit -r src -q
 
       - name: pip-audit (dependency CVE scan)
-        run: uv run pip-audit
+        run: uv run pip-audit -l
 
       - name: Gitleaks (secret scanning)
         uses: gitleaks/gitleaks-action@v3.0.0 # v3.0.0, pinned to a released tag (e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Optional: only needed for Gitleaks Enterprise features. Community scanning works
-          # without it.
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+  contracts:
+    name: contracts (serde allowlist)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup atlas
+        uses: ./.github/actions/setup-atlas
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: CI contract tests
+        run: uv run pytest tests/test_ci_contracts.py -q
 
   integration:
     name: integration (postgres persistence)
@@ -115,17 +155,10 @@ jobs:
     env:
       DATABASE_URL: postgresql://atlas:atlas@localhost:5432/atlas
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7.0.0 # v7.0.0, pinned to a released tag (9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0)
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v8.2.0 # v8.2.0, pinned to a released tag (fac544c07dec837d0ccb6301d7b5580bf5edae39)
+      - name: Setup atlas
+        uses: ./.github/actions/setup-atlas
         with:
-          enable-cache: true
           python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install dependencies
-        run: uv sync --all-extras --dev
 
       - name: Integration tests (Postgres-backed checkpointer + audit)
         run: uv run pytest -m integration
@@ -138,17 +171,10 @@ jobs:
     # run_gate.py self-skip when the key is absent, so this is safe to run everywhere.
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7.0.0 # v7.0.0, pinned to a released tag (9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0)
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v8.2.0 # v8.2.0, pinned to a released tag (fac544c07dec837d0ccb6301d7b5580bf5edae39)
+      - name: Setup atlas
+        uses: ./.github/actions/setup-atlas
         with:
-          enable-cache: true
           python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install dependencies
-        run: uv sync --all-extras --dev
 
       - name: Run evaluation gate
         # The blocking deterministic suite needs no secrets. The keys are supplied only so the

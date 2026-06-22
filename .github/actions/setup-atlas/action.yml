@@ -1,0 +1,30 @@
+name: Setup atlas
+description: Checkout repository, install uv, and sync all dependencies.
+
+inputs:
+  python-version:
+    description: Python version for uv.
+    required: false
+    default: "3.13"
+  fetch-depth:
+    description: Checkout fetch depth (0 = full history).
+    required: false
+    default: "1"
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout
+      uses: actions/checkout@v7.0.0 # v7.0.0, pinned to a released tag (9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0)
+      with:
+        fetch-depth: ${{ inputs.fetch-depth }}
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v8.2.0 # v8.2.0, pinned to a released tag (fac544c07dec837d0ccb6301d7b5580bf5edae39)
+      with:
+        enable-cache: true
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install dependencies
+      shell: bash
+      run: uv sync --all-extras --dev

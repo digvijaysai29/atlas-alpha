@@ -1,0 +1,29 @@
+name: Security (scheduled)
+
+on:
+  # Weekly dependency audit on the default branch (main). Scheduled workflows only run on main.
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Avoid overlapping scheduled or manual runs.
+concurrency:
+  group: security-scheduled-${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-audit:
+    name: dependency-audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup atlas
+        uses: ./.github/actions/setup-atlas
+
+      - name: Verify lockfile is current
+        run: uv lock --check
+
+      - name: pip-audit (dependency CVE scan, locked)
+        run: uv run pip-audit -l

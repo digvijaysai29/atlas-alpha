@@ -42,6 +42,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/atlas"]
 
+[tool.hatch.build.targets.sdist]
+exclude = [".cursor", ".github", "tests", "evals", "docs", "scripts", ".venv"]
+
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
