@@ -1,0 +1,42 @@
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: uv
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      # [project].dependencies — runtime / deploy surface
+      production-dependencies:
+        patterns:
+          - "fastapi"
+          - "langchain"
+          - "langchain-anthropic"
+          - "langgraph"
+          - "langgraph-checkpoint-postgres"
+          - "langgraph-checkpoint-sqlite"
+          - "langsmith"
+          - "psycopg*"
+          - "pydantic*"
+          - "pyjwt*"
+          - "python-dotenv"
+          - "resend"
+          - "upstash-ratelimit"
+          - "uvicorn"
+      # [dependency-groups].dev — CI / lint / test tooling only
+      dev-dependencies:
+        patterns:
+          - "pytest*"
+          - "ruff"
+          - "mypy"
+          - "bandit"
+          - "pip-audit"

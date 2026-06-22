@@ -20,7 +20,9 @@ from typing import Any
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
-from atlas.governance import InMemoryAuditLog
+from atlas.actions import ProposedAction
+from atlas.execution import GuardedExecutor
+from atlas.governance import AuditEventType, InMemoryAuditLog
 from atlas.governance.confidence import GROUNDED_ANSWER, UNGROUNDED_ANSWER
 from atlas.governance.rbac import Principal
 from atlas.knowledge import seed_demo_graph
@@ -29,7 +31,8 @@ from atlas.orchestration import build_graph
 from atlas.orchestration.nodes import PlanFn
 from atlas.orchestration.serde import atlas_serde
 from atlas.orchestration.state import initial_state
-from tests.helpers import offline_registry
+from atlas.tools import ToolRegistry
+from tests.helpers import FakeEmailSender, offline_registry
 from evals.deterministic.scenarios import (
     GUEST,
     MEMBER,
@@ -119,6 +122,63 @@ def approval_reject() -> OracleResult:
     return OracleResult("approval/reject", passed, f"audit={trace.audit_types}")
 
 
+def _approved_send(registry: ToolRegistry) -> ProposedAction:
+    return registry.propose("send_email", {"to": "a@b.com", "subject": "hi", "body": "x"})
+
+
+def idempotency_replay_skip() -> OracleResult:
+    """Double ``execute_guarded`` on the same action → one EXECUTED, one REPLAY_SKIPPED."""
+    sender = FakeEmailSender()
+    registry = offline_registry(sender)
+    audit = InMemoryAuditLog()
+    guarded = GuardedExecutor(registry)
+    action = _approved_send(registry)
+
+    first = guarded.execute_guarded(action, audit)
+    second = guarded.execute_guarded(action, audit)
+
+    event_types = [e.event_type for e in audit.events()]
+    passed = (
+        sender.call_count == 1
+        and first.ok is True
+        and second.ok is True
+        and isinstance(second.output, dict)
+        and second.output.get("replay_skipped") is True
+        and event_types.count(AuditEventType.EXECUTED) == 1
+        and AuditEventType.REPLAY_SKIPPED in event_types
+    )
+    audit_detail = [e.event_type.value for e in audit.events()]
+    return OracleResult(
+        "idempotency/replay-skip", passed, f"audit={audit_detail} calls={sender.call_count}"
+    )
+
+
+def idempotency_failed_retry() -> OracleResult:
+    """Failed send → FAILED (not EXECUTED); retry after recovery → EXECUTED."""
+    sender = FakeEmailSender(fail=True)
+    registry = offline_registry(sender)
+    audit = InMemoryAuditLog()
+    guarded = GuardedExecutor(registry)
+    action = _approved_send(registry)
+
+    first = guarded.execute_guarded(action, audit)
+    sender.fail = False
+    second = guarded.execute_guarded(action, audit)
+
+    event_types = [e.event_type for e in audit.events()]
+    passed = (
+        first.ok is False
+        and second.ok is True
+        and sender.call_count == 2
+        and AuditEventType.FAILED in event_types
+        and event_types.count(AuditEventType.EXECUTED) == 1
+    )
+    audit_detail = [e.event_type.value for e in audit.events()]
+    return OracleResult(
+        "idempotency/failed-retry", passed, f"audit={audit_detail} calls={sender.call_count}"
+    )
+
+
 def anti_replay() -> OracleResult:
     """A resume carrying a wrong/stale action_id must NOT authorize the real action."""
     trace = _run(
@@ -202,6 +262,8 @@ ORACLES: tuple[Callable[[], OracleResult], ...] = (
     approval_approve,
     approval_reject,
     anti_replay,
+    idempotency_replay_skip,
+    idempotency_failed_retry,
     rbac_deny_before_approval,
     rbac_kg_idor,
     read_only_auto,

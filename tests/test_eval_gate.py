@@ -23,6 +23,8 @@ def test_healthy_suite_scores_perfect() -> None:
         "approval/approve",
         "approval/reject",
         "anti-replay",
+        "idempotency/replay-skip",
+        "idempotency/failed-retry",
         "rbac/deny-before-approval",
         "rbac/kg-idor",
         "read-only/auto",

@@ -1,0 +1,33 @@
+name: Setup atlas
+description: Checkout repository, install uv, and sync all dependencies.
+
+inputs:
+  python-version:
+    description: Python version for uv.
+    required: false
+    default: "3.13"
+  fetch-depth:
+    description: Checkout fetch depth (0 = full history).
+    required: false
+    default: "1"
+
+runs:
+  using: composite
+  steps:
+    - name: Checkout
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      with:
+        fetch-depth: ${{ inputs.fetch-depth }}
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      with:
+        enable-cache: true
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install dependencies
+      shell: bash
+      # --frozen: never rewrite uv.lock during setup so a later uv lock --check still
+      # sees the committed lockfile and catches uncommitted drift (plain uv sync would
+      # regenerate a stale lock and make --check pass falsely).
+      run: uv sync --all-extras --dev --frozen

@@ -1,0 +1,10 @@
+# Security-critical paths — changes require review from @digvijaysai29.
+
+/src/atlas/governance/ @digvijaysai29
+/src/atlas/orchestration/ @digvijaysai29
+/src/atlas/interface/auth.py @digvijaysai29
+/src/atlas/execution.py @digvijaysai29
+/evals/ @digvijaysai29
+/.github/workflows/ @digvijaysai29
+/.github/actions/ @digvijaysai29
+/.semgrep/ @digvijaysai29
