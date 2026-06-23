@@ -135,6 +135,17 @@ def make_policy_store(settings: Settings | None = None) -> PolicyStore:
                 "atlas_role_permissions is empty — all roles are denied until seeded. "
                 "Run: python scripts/manage_policy.py seed"
             )
+        else:
+            drift = store.missing_default_grants()
+            if drift:
+                pairs = sorted(
+                    (role, perm) for role, perms in drift.items() for perm in sorted(perms)
+                )
+                logger.warning(
+                    "atlas_role_permissions is missing default grants: %s. "
+                    "Run: python scripts/manage_policy.py seed",
+                    pairs,
+                )
         return store
     return InMemoryPolicyStore()
 

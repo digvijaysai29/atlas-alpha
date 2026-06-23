@@ -12,7 +12,7 @@ import abc
 import logging
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from atlas.actions import ActionResult, ProposedAction, RiskTier
 from atlas.config import Settings, get_settings
@@ -23,6 +23,7 @@ from atlas.integrations.email import (
     build_email_sender,
 )
 from atlas.integrations.slack import (
+    SLACK_MAX_TEXT_CHARS,
     FakeSlackSender,
     SlackMessage,
     SlackSender,
@@ -167,7 +168,28 @@ class SendEmailTool(BaseTool):
 
 class _SlackPostArgs(BaseModel):
     channel: str = Field(min_length=1, description="Slack channel ID or name.")
-    text: str = Field(min_length=1, description="Message text.")
+    text: str = Field(
+        min_length=1,
+        max_length=SLACK_MAX_TEXT_CHARS,
+        description="Message text.",
+    )
+
+    @field_validator("channel")
+    @classmethod
+    def reject_non_channel_targets(cls, value: str) -> str:
+        stripped = value.strip()
+        if stripped.startswith("@"):
+            raise ValueError(
+                "channel must be a channel name or ID (C…/G…/#name); "
+                "@-mentions are not allowed for slack_post"
+            )
+        # Slack user (U…) and DM conversation (D…) IDs open DMs, not channel posts.
+        if stripped[:1].upper() in {"U", "D"} and len(stripped) > 1:
+            raise ValueError(
+                "channel must be a channel name or ID (C…/G…/#name); "
+                "user/DM targets are not allowed for slack_post"
+            )
+        return value
 
 
 class SlackPostTool(BaseTool):

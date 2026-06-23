@@ -19,7 +19,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
 from atlas.governance.policy import PolicyStore
-from atlas.governance.rbac import WILDCARD, Principal
+from atlas.governance.rbac import ROLE_PERMISSIONS, WILDCARD, Principal
 
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS atlas_role_permissions (
@@ -83,3 +83,14 @@ class PostgresPolicyStore(PolicyStore):
         with self._pool.connection() as conn, conn.cursor() as cur:
             cur.execute(_COUNT)
             return cur.fetchone() is None
+
+    def missing_default_grants(self) -> dict[str, frozenset[str]]:
+        """Return default grants absent from the durable store (code defaults minus persisted rows)."""
+        current = self.list_policies()
+        missing: dict[str, set[str]] = defaultdict(set)
+        for role, defaults in ROLE_PERMISSIONS.items():
+            have = current.get(role, frozenset())
+            for permission in defaults:
+                if permission not in have:
+                    missing[role].add(permission)
+        return {role: frozenset(perms) for role, perms in missing.items()}

@@ -13,6 +13,9 @@ from pydantic import BaseModel, ConfigDict, SecretStr
 
 from atlas.config import Settings
 
+# Slack chat.postMessage documented text limit; reject before API call to avoid silent truncation.
+SLACK_MAX_TEXT_CHARS = 40_000
+
 
 class SlackMessage(BaseModel):
     """Immutable outbound Slack payload (workspace/token is owned by the sender, not the caller)."""
@@ -58,9 +61,19 @@ class SlackApiSender(SlackSender):
         from slack_sdk import WebClient
         from slack_sdk.errors import SlackApiError
 
-        client = WebClient(token=self._bot_token.get_secret_value())
+        # Disable SDK connection retries: a hidden retry after Slack accepts the post can
+        # duplicate the side effect within a single guarded execution.
+        client = WebClient(
+            token=self._bot_token.get_secret_value(),
+            retry_handlers=[],
+        )
         try:
-            response = client.chat_postMessage(channel=message.channel, text=message.text)
+            response = client.chat_postMessage(
+                channel=message.channel,
+                text=message.text,
+                unfurl_links=False,
+                unfurl_media=False,
+            )
         except SlackApiError as exc:
             raise RuntimeError(str(exc)) from exc
         if not response.get("ok"):

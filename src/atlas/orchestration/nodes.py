@@ -36,6 +36,8 @@ PlanFn = Callable[[str, ToolRegistry, Sequence[Entity]], list[ProposedAction]]
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 _SEND_KEYWORDS = ("email", "send", "notify", "reply", "message")
 _SEARCH_KEYWORDS = ("search", "find", "look up", "lookup", "research", "what", "who", "lookup")
+_SLACK_KEYWORDS = ("slack",)
+_SLACK_CHANNEL_RE = re.compile(r"#([\w-]+)")
 
 _PLANNER_SYSTEM_PROMPT = (
     "You are atlas, an enterprise agent. Decide which tools to call to satisfy the user. "
@@ -76,6 +78,20 @@ def heuristic_plan(
     del context  # KG-free mode
     text = request.lower()
     actions: list[ProposedAction] = []
+    if (
+        any(keyword in text for keyword in _SLACK_KEYWORDS)
+        and "slack_post" in registry.names()
+        and not _EMAIL_RE.search(request)
+    ):
+        channel_match = _SLACK_CHANNEL_RE.search(request)
+        channel = f"#{channel_match.group(1)}" if channel_match else "#general"
+        return [
+            registry.propose(
+                "slack_post",
+                {"channel": channel, "text": request},
+                rationale="User asked to post to Slack.",
+            )
+        ]
     if any(keyword in text for keyword in _SEND_KEYWORDS) and "send_email" in registry.names():
         recipient = _EMAIL_RE.search(request)
         actions.append(

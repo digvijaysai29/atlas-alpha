@@ -243,7 +243,9 @@ Each is a separate milestone; keep the sub-phase discipline (small PRs, green CI
   pluggable **`SlackSender`** (managed `slack_sdk` bot token; service identity), mirroring the M4.1
   `EmailSender` shape (`integrations/slack.py`, `_resolve_slack_sender`, both registries). **Idempotency
   is inherited for free** from `GuardedExecutor` (any `RiskTier.SEND` action) — no new idempotency code.
-  Live post requires `DATABASE_URL` + `SLACK_BOT_TOKEN`. **Deferred → M4.3+.**
+  Live post requires `DATABASE_URL` + `SLACK_BOT_TOKEN`. After upgrading to a release that adds new
+  default grants (e.g. `tool:slack:post`), re-run `python scripts/manage_policy.py seed` on Postgres-backed
+  installs so existing `atlas_role_permissions` rows pick up missing defaults. **Deferred → M4.3+.**
 - **M4.3+ — Real tool integrations** (per-principal "send as the user" OAuth; Gmail / Jira / Calendar).
   Per-integration OAuth + secret management; correct per-tool `risk_tier` + `required_permission`;
   provider-side idempotency keys; sandboxing; webhook ingestion. Treat all tool output as adversarial.

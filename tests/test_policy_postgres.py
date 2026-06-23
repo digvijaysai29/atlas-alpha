@@ -69,3 +69,16 @@ def test_policy_is_durable_across_a_fresh_store_instance(pg_pool: object) -> Non
     reloaded = PostgresPolicyStore(pg_pool, setup=False)  # type: ignore[arg-type]
     assert reloaded.can(MEMBER, "tool:send") is True
     assert reloaded.list_policies() == {"member": frozenset({"tool:send"})}
+
+
+def test_missing_default_grants_reports_absent_permissions(pg_pool: object) -> None:
+    store = PostgresPolicyStore(pg_pool)  # type: ignore[arg-type]
+    store.grant("member", "tool:send")
+    drift = store.missing_default_grants()
+    assert "tool:slack:post" in drift.get("member", frozenset())
+
+
+def test_missing_default_grants_empty_when_fully_seeded(pg_pool: object) -> None:
+    store = PostgresPolicyStore(pg_pool)  # type: ignore[arg-type]
+    _seed(store)
+    assert store.missing_default_grants() == {}
