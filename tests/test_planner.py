@@ -79,8 +79,6 @@ def test_email_intent_unaffected_when_slack_not_mentioned() -> None:
 
 def test_email_wins_when_request_mentions_slack_and_has_address() -> None:
     registry = default_registry()
-    actions = heuristic_plan(
-        "Please email alice@example.com about the Slack rollout", registry, []
-    )
+    actions = heuristic_plan("Please email alice@example.com about the Slack rollout", registry, [])
     assert any(a.tool == "send_email" for a in actions)
     assert not any(a.tool == "slack_post" for a in actions)

@@ -103,7 +103,9 @@ def test_slack_api_sender_raises_on_slack_api_error(monkeypatch: pytest.MonkeyPa
         def __init__(self, token: str, **kwargs: object) -> None:
             pass
 
-        def chat_postMessage(self, *, channel: str, text: str, **kwargs: object) -> dict[str, object]:
+        def chat_postMessage(
+            self, *, channel: str, text: str, **kwargs: object
+        ) -> dict[str, object]:
             raise SlackApiError("The request to the Slack API failed.", _FakeResponse())  # type: ignore[no-untyped-call]
 
     import slack_sdk
@@ -121,7 +123,9 @@ def test_slack_api_sender_raises_on_not_ok_response(monkeypatch: pytest.MonkeyPa
         def __init__(self, token: str, **kwargs: object) -> None:
             pass
 
-        def chat_postMessage(self, *, channel: str, text: str, **kwargs: object) -> dict[str, object]:
+        def chat_postMessage(
+            self, *, channel: str, text: str, **kwargs: object
+        ) -> dict[str, object]:
             return {"ok": False, "error": "channel_not_found"}
 
     import slack_sdk
