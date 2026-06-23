@@ -70,7 +70,7 @@ def test_slack_api_sender_raises_on_slack_api_error(monkeypatch: pytest.MonkeyPa
             pass
 
         def chat_postMessage(self, *, channel: str, text: str) -> dict[str, object]:
-            raise SlackApiError("The request to the Slack API failed.", _FakeResponse())
+            raise SlackApiError("The request to the Slack API failed.", _FakeResponse())  # type: ignore[no-untyped-call]
 
     import slack_sdk
 
