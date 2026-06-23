@@ -221,11 +221,10 @@ executor refuses to run a gated action without a matching, in-scope `ApprovalDec
   `EXECUTED` = success-only). Live send requires `DATABASE_URL` (Postgres audit) plus Resend creds;
   SQLite/in-memory audit alone is insufficient. Unconfigured ⇒ fail-closed (no mock-success).
   (PR #22.)
-- **M4.2 (planned):** second integration — **Slack post** (`slack_post`, `RiskTier.SEND`,
+- **M4.2 (done):** second integration — **Slack post** (`slack_post`, `RiskTier.SEND`,
   `required_permission="tool:slack:post"`) behind a pluggable `SlackSender` (managed `slack_sdk` bot
   token; `integrations/slack.py`), mirroring the M4.1 `EmailSender` shape. **Idempotency is inherited**
-  from `GuardedExecutor` for any `RiskTier.SEND` action — no new execution code. Guide:
-  [`M4.2_PLAN.md`](../plans/M4.2_PLAN.md).
+  from `GuardedExecutor` for any `RiskTier.SEND` action — no new execution code. (PR #29.)
 - **Later (M4.3+):** per-principal "send as the user" OAuth; Gmail/Jira/Calendar adapters;
   resource/argument-aware `ToolPermission`; pgvector semantic retrieval; SSE streaming; Merkle
   anchoring.

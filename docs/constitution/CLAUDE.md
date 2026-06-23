@@ -34,7 +34,7 @@ sub-phase is its own branch → PR into `main` → CI must be green.
 | **M3.5** | **Hierarchical wildcard RBAC** — granted `kg:read:*` satisfies `kg:read:org`; shared `permission_satisfied` across in-memory/Postgres stores + KG SQL filter | ✅ **merged (PR #19)** |
 | **M3.6** | **Per-principal rate limiting** on `/chat` + `/approve` (Upstash-backed; `interface/rate_limit.py`); 429 + `Retry-After`; fail-open; per-IP for anonymous | ✅ **merged (PR #20)** |
 | **M4.1** | **Real email send (Resend)** behind a pluggable `EmailSender` + **idempotent execution** (`GuardedExecutor`, audit `REPLAY_SKIPPED`/`FAILED` by `action_id`) | ✅ **merged (PR #22)** |
-| **M4.2** | **NEXT** → second integration: **Slack post** (`slack_post`, managed `slack_sdk` bot token) reusing the `EmailSender`/`GuardedExecutor` pattern — idempotency inherited. Guide: **[`M4.2_PLAN.md`](../plans/M4.2_PLAN.md)** | 📋 **planned** |
+| **M4.2** | **Slack post** (`slack_post`, managed `slack_sdk` bot token) reusing the `EmailSender`/`GuardedExecutor` pattern — idempotency inherited | ✅ **PR #29** |
 | **M4.3+** | "Send as the user" OAuth; Gmail/Jira/Calendar; resource/argument-aware `ToolPermission`; pgvector semantic retrieval; sessions/provisioning; SSE streaming | future |
 
 ## 3. Tech Stack
@@ -48,7 +48,7 @@ sub-phase is its own branch → PR into `main` → CI must be green.
 | Interface | **FastAPI** + uvicorn | M3.2: `/chat`, `/approve`, `/threads/{id}`; sync handlers; `create_app` factory |
 | Auth | **OIDC / JWT** via `PyJWT[crypto]` | M3.3: RS256 bearer validation (JWKS); dev header shim fallback; see [`AUTH.md`](../guides/AUTH.md) |
 | Rate limiting | **Upstash** via `upstash-ratelimit` | M3.6: per-principal throttle on `/chat`+`/approve`; fail-open; off unless creds set; see [`AUTH.md`](../guides/AUTH.md) |
-| Integrations | **Resend** (email) · **Slack** via `slack_sdk` (M4.2-planned) | Pluggable `EmailSender`/`SlackSender` behind `tool:*`; off unless creds set; idempotent via `GuardedExecutor` |
+| Integrations | **Resend** (email) · **Slack** via `slack_sdk` (M4.2) | Pluggable `EmailSender`/`SlackSender` behind `tool:*`; off unless creds set; idempotent via `GuardedExecutor` |
 | Observability | **LangSmith** | Env-driven (`LANGSMITH_*`); zero code |
 | Runtime / tooling | **Python 3.13**, **uv**, ruff, mypy, pytest, bandit, semgrep | 3.14 deferred until wheels stabilize |
 
@@ -59,9 +59,9 @@ config.py            Pydantic Settings — secrets/env ONLY (anthropic, langsmit
 llm.py               build_model() — Claude factory (raises if no key; planner falls back offline)
 actions.py           RiskTier; ProposedAction / ApprovalDecision / ActionResult (frozen); requires_approval()
 tools.py             BaseTool(risk_tier, required_permission, ArgsSchema); ToolRegistry; search + Resend-backed send_email
-                     (M4.2-planned: slack_post via SlackSender)
+                     (M4.2: slack_post via SlackSender)
 integrations/email.py  EmailMessage, EmailSender ABC, ResendEmailSender, build_email_sender
-                     (M4.2-planned: integrations/slack.py — SlackSender ABC, SlackApiSender, build_slack_sender)
+                     (M4.2: integrations/slack.py — SlackSender ABC, SlackApiSender, build_slack_sender)
 execution.py         GuardedExecutor.execute_guarded — idempotency + audit routing
 governance/
   audit.py           AuditEvent + AuditEventType(PROPOSED/APPROVED/REJECTED/EXECUTED/SKIPPED/DENIED);
@@ -192,7 +192,7 @@ per-principal rate limiting in M3.6.) **M4.1 (PR #22) landed:** `send_email` is 
 send (Resend, behind a pluggable `EmailSender`) with **idempotent execution** so an executor replay
 never double-sends — the side-effect rule lives in a reusable execution wrapper (`GuardedExecutor`, not
 the node), keyed by the checkpointed `action_id` via the audit log (`REPLAY_SKIPPED`/`FAILED` events;
-`EXECUTED` = success-only). **M4.2 (next, see [`M4.2_PLAN.md`](../plans/M4.2_PLAN.md))** reuses that pattern
+`EXECUTED` = success-only). **M4.2 (PR #29; see [`M4.2_PLAN.md`](../plans/M4.2_PLAN.md))** reuses that pattern
 for a second integration, **Slack post** — idempotency inherited for free.
 
 ## 7. Coding & Architectural Principles

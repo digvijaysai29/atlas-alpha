@@ -1,5 +1,5 @@
 {
   "admin": ["*"],
-  "member": ["tool:send", "kg:read:org", "kg:read:personal"],
+  "member": ["tool:send", "tool:slack:post", "kg:read:org", "kg:read:personal"],
   "guest": ["kg:read:personal"]
 }

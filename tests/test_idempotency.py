@@ -7,12 +7,16 @@ from atlas.governance.rbac import Principal
 from atlas.orchestration.nodes import _summarize, make_executor_node
 from atlas.orchestration.state import initial_state
 from atlas.tools import ToolRegistry
-from tests.helpers import FakeEmailSender, offline_registry
+from tests.helpers import FakeEmailSender, FakeSlackSender, offline_registry
 
 
 def _approved_send(registry: ToolRegistry) -> ProposedAction:
     action = registry.propose("send_email", {"to": "a@b.com", "subject": "hi", "body": "x"})
     return action
+
+
+def _approved_slack(registry: ToolRegistry) -> ProposedAction:
+    return registry.propose("slack_post", {"channel": "#general", "text": "hi"})
 
 
 def test_double_execute_calls_sender_once_and_replay_skips() -> None:
@@ -100,3 +104,22 @@ def test_summarize_labels_replay_skip() -> None:
     summary = _summarize([action], [first, replay], rejected=set())
     assert "Replay skipped (already executed)" in summary
     assert "Skipped (not approved)" not in summary
+
+
+def test_double_slack_execute_calls_sender_once_and_replay_skips() -> None:
+    sender = FakeSlackSender()
+    registry = offline_registry(slack_sender=sender)
+    audit = InMemoryAuditLog()
+    guarded = GuardedExecutor(registry)
+    action = _approved_slack(registry)
+
+    first = guarded.execute_guarded(action, audit)
+    second = guarded.execute_guarded(action, audit)
+
+    assert sender.call_count == 1
+    assert first.ok is True
+    assert second.ok is True
+    assert isinstance(second.output, dict) and second.output.get("replay_skipped") is True
+    types = [e.event_type for e in audit.events()]
+    assert types.count(AuditEventType.EXECUTED) == 1
+    assert AuditEventType.REPLAY_SKIPPED in types

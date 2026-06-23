@@ -52,6 +52,13 @@ only `ATLAS_SQLITE_PATH` for checkpoints — `send_email` still fails closed aft
 
 For an intentional live Resend integration test: also set `ATLAS_EMAIL_LIVE_TEST=1`.
 
+### Slack (M4.2)
+
+Real gated Slack post requires **DATABASE_URL** + **SLACK_BOT_TOKEN** (see `.env.example`). Offline
+demos/tests use `offline_registry()` with a fake sender. For a live integration test, set
+`ATLAS_SLACK_LIVE_TEST=1` plus `SLACK_BOT_TOKEN` and `ATLAS_SLACK_CHANNEL`.
+
+
 ## Project layout
 
 ```
@@ -59,8 +66,9 @@ src/atlas/
   config.py              # Pydantic Settings (env-only secrets)
   llm.py                 # Claude model factory
   actions.py             # RiskTier, action contracts (frozen), requires_approval policy
-  tools.py               # Tool protocol + registry + send_email (Resend when configured)
+  tools.py               # Tool protocol + registry + send_email + slack_post
   integrations/email.py  # EmailSender ABC + ResendEmailSender
+  integrations/slack.py  # SlackSender ABC + SlackApiSender
   execution.py           # GuardedExecutor (idempotent side effects)
   governance.py          # append-only audit log
   orchestration/

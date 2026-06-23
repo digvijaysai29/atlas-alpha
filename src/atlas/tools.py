@@ -12,7 +12,7 @@ import abc
 import logging
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from atlas.actions import ActionResult, ProposedAction, RiskTier
 from atlas.config import Settings, get_settings
@@ -21,6 +21,13 @@ from atlas.integrations.email import (
     EmailSender,
     FakeEmailSender,
     build_email_sender,
+)
+from atlas.integrations.slack import (
+    SLACK_MAX_TEXT_CHARS,
+    FakeSlackSender,
+    SlackMessage,
+    SlackSender,
+    build_slack_sender,
 )
 
 logger = logging.getLogger("atlas.tools")
@@ -159,11 +166,62 @@ class SendEmailTool(BaseTool):
         return self._sender.send(message)
 
 
-def offline_registry(sender: EmailSender | None = None) -> ToolRegistry:
-    """Registry with a fake email sender so offline demos/tests never hit Resend."""
+class _SlackPostArgs(BaseModel):
+    channel: str = Field(min_length=1, description="Slack channel ID or name.")
+    text: str = Field(
+        min_length=1,
+        max_length=SLACK_MAX_TEXT_CHARS,
+        description="Message text.",
+    )
+
+    @field_validator("channel")
+    @classmethod
+    def reject_non_channel_targets(cls, value: str) -> str:
+        stripped = value.strip()
+        if stripped.startswith("@"):
+            raise ValueError(
+                "channel must be a channel name or ID (C…/G…/#name); "
+                "@-mentions are not allowed for slack_post"
+            )
+        # Slack user (U…) and DM conversation (D…) IDs open DMs, not channel posts.
+        if stripped[:1].upper() in {"U", "D"} and len(stripped) > 1:
+            raise ValueError(
+                "channel must be a channel name or ID (C…/G…/#name); "
+                "user/DM targets are not allowed for slack_post"
+            )
+        return value
+
+
+class SlackPostTool(BaseTool):
+    """Posts to Slack — an external, irreversible side effect. Must be gated."""
+
+    name = "slack_post"
+    description = "Post a message to a Slack channel. Irreversible external action."
+    risk_tier = RiskTier.SEND
+    required_permission = "tool:slack:post"
+    ArgsSchema = _SlackPostArgs
+
+    def __init__(self, sender: SlackSender | None = None) -> None:
+        self._sender = sender
+
+    def run(self, args: BaseModel) -> Any:
+        if not isinstance(args, _SlackPostArgs):
+            raise TypeError(f"expected _SlackPostArgs, got {type(args).__name__}")
+        if self._sender is None:
+            raise RuntimeError("slack not configured")
+        message = SlackMessage(channel=args.channel, text=args.text)
+        return self._sender.post(message)
+
+
+def offline_registry(
+    sender: EmailSender | None = None,
+    slack_sender: SlackSender | None = None,
+) -> ToolRegistry:
+    """Registry with fake senders so offline demos/tests never hit Resend or Slack."""
     registry = ToolRegistry()
     registry.register(SearchTool())
     registry.register(SendEmailTool(sender=sender or FakeEmailSender()))
+    registry.register(SlackPostTool(sender=slack_sender or FakeSlackSender()))
     return registry
 
 
@@ -181,14 +239,31 @@ def _resolve_email_sender(settings: Settings) -> EmailSender | None:
     return build_email_sender(settings)
 
 
+def _resolve_slack_sender(settings: Settings) -> SlackSender | None:
+    """Return a real sender only when Slack is configured **and** audit is durable (Postgres)."""
+    if not settings.slack_configured:
+        return None
+    if settings.database_url is None:
+        logger.warning(
+            "SLACK_BOT_TOKEN is set but DATABASE_URL is unset — real slack_post "
+            "is disabled (in-memory audit cannot enforce idempotency across restarts). "
+            "Set DATABASE_URL for durable audit or pass offline_registry() in demos/tests."
+        )
+        return None
+    return build_slack_sender(settings)
+
+
 def default_registry(settings: Settings | None = None) -> ToolRegistry:
     """A registry pre-loaded with the standard tools.
 
     Live Resend send is enabled only when ``DATABASE_URL`` (durable audit) and Resend creds are set.
+    Live Slack post is enabled only when ``DATABASE_URL`` and ``SLACK_BOT_TOKEN`` are set.
     """
     settings = settings or get_settings()
     sender = _resolve_email_sender(settings)
+    slack_sender = _resolve_slack_sender(settings)
     registry = ToolRegistry()
     registry.register(SearchTool())
     registry.register(SendEmailTool(sender=sender))
+    registry.register(SlackPostTool(sender=slack_sender))
     return registry

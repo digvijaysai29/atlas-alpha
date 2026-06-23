@@ -135,6 +135,17 @@ def make_policy_store(settings: Settings | None = None) -> PolicyStore:
                 "atlas_role_permissions is empty — all roles are denied until seeded. "
                 "Run: python scripts/manage_policy.py seed"
             )
+        else:
+            drift = store.missing_default_grants()
+            if drift:
+                pairs = sorted(
+                    (role, perm) for role, perms in drift.items() for perm in sorted(perms)
+                )
+                logger.warning(
+                    "atlas_role_permissions is missing default grants: %s. "
+                    "Run: python scripts/manage_policy.py seed",
+                    pairs,
+                )
         return store
     return InMemoryPolicyStore()
 
@@ -174,6 +185,16 @@ def build_graph(
     elif settings.email_configured and not settings.database_url:
         logger.warning(
             "RESEND_API_KEY/ATLAS_EMAIL_FROM are set but DATABASE_URL is unset — live send_email "
+            "is disabled until Postgres audit is configured (idempotency requires durable audit)."
+        )
+    if settings.database_url and not settings.slack_configured:
+        logger.warning(
+            "DATABASE_URL is set but Slack is not configured — slack_post will fail until "
+            "SLACK_BOT_TOKEN is set."
+        )
+    elif settings.slack_configured and not settings.database_url:
+        logger.warning(
+            "SLACK_BOT_TOKEN is set but DATABASE_URL is unset — live slack_post "
             "is disabled until Postgres audit is configured (idempotency requires durable audit)."
         )
     registry = registry or default_registry(settings)

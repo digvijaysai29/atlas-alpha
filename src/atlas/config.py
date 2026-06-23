@@ -108,6 +108,9 @@ class Settings(BaseSettings):
     resend_api_key: SecretStr | None = Field(default=None, alias="RESEND_API_KEY")
     email_from: str | None = Field(default=None, alias="ATLAS_EMAIL_FROM")
 
+    # --- Slack (M4.2 — managed bot post) ------------------------------------
+    slack_bot_token: SecretStr | None = Field(default=None, alias="SLACK_BOT_TOKEN")
+
     @model_validator(mode="after")
     def validate_oidc_config(self) -> Self:
         """OIDC vars must be all set or all unset — partial config must not fall back to the header shim."""
@@ -202,6 +205,11 @@ class Settings(BaseSettings):
     def email_configured(self) -> bool:
         """True when Resend API key and from-address are both present."""
         return _nonempty_secret(self.resend_api_key) and _nonempty_str(self.email_from)
+
+    @property
+    def slack_configured(self) -> bool:
+        """True when a Slack bot token is present."""
+        return _nonempty_secret(self.slack_bot_token)
 
     @property
     def has_anthropic_key(self) -> bool:

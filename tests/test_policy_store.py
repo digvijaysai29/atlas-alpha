@@ -9,8 +9,10 @@ the orchestration graph honors the *injected* policy rather than silently fallin
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
+import pytest
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -165,3 +167,32 @@ def test_injected_policy_scopes_kg_context_on_prebuilt_graph() -> None:
     kg_ids = {e.id for e in result["kg_context"]}
     assert "doc-1" not in kg_ids
     assert "note-1" not in kg_ids
+
+
+def test_make_policy_store_warns_on_missing_default_grants(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from pydantic import SecretStr
+
+    from atlas.config import Settings
+    from atlas.orchestration.graph import make_policy_store
+
+    class _FakePostgresPolicyStore:
+        def is_empty(self) -> bool:
+            return False
+
+        def missing_default_grants(self) -> dict[str, frozenset[str]]:
+            return {"member": frozenset({"tool:slack:post"})}
+
+    monkeypatch.setattr(
+        "atlas.persistence.PostgresPolicyStore",
+        lambda _pool: _FakePostgresPolicyStore(),
+    )
+    monkeypatch.setattr("atlas.orchestration.graph._pg_pool", lambda _url: object())
+    settings = Settings(DATABASE_URL=SecretStr("postgresql://example/test"))
+
+    with caplog.at_level(logging.WARNING, logger="atlas.orchestration.graph"):
+        make_policy_store(settings)
+
+    assert any("missing default grants" in record.message for record in caplog.records)
+    assert any("tool:slack:post" in record.message for record in caplog.records)
