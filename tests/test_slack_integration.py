@@ -57,21 +57,26 @@ def test_slack_api_sender_maps_response(monkeypatch: pytest.MonkeyPatch) -> None
     assert result == {"ts": "123.456", "channel": "C123", "provider": "slack"}
 
 
-def test_slack_api_sender_raises_on_api_error(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_slack_api_sender_raises_on_slack_api_error(monkeypatch: pytest.MonkeyPatch) -> None:
     from atlas.integrations.slack import SlackApiSender
+    from slack_sdk.errors import SlackApiError
+
+    class _FakeResponse:
+        def get(self, key: str, default: object = None) -> object:
+            return {"error": "invalid_auth"}.get(key, default)
 
     class _FakeWebClient:
         def __init__(self, token: str) -> None:
             pass
 
         def chat_postMessage(self, *, channel: str, text: str) -> dict[str, object]:
-            raise RuntimeError("The request to the Slack API failed.")
+            raise SlackApiError("The request to the Slack API failed.", _FakeResponse())
 
     import slack_sdk
 
     monkeypatch.setattr(slack_sdk, "WebClient", _FakeWebClient)
     sender = SlackApiSender(SecretStr("xoxb-test"))
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="Slack API"):
         sender.post(SlackMessage(channel="#bad", text="hi"))
 
 
