@@ -25,8 +25,8 @@ from atlas.tools import ToolRegistry
 from tests.helpers import offline_registry
 
 THREAD: RunnableConfig = {"configurable": {"thread_id": "rbac-test"}}
-MEMBER = Principal(user_id="alice", roles=("member",))  # has "tool:send"
-GUEST = Principal(user_id="bob", roles=("guest",))  # no "tool:send"
+MEMBER = Principal(user_id="alice", roles=("member",))  # has tool:send + tool:slack:post
+GUEST = Principal(user_id="bob", roles=("guest",))  # no tool:send / tool:slack:post
 
 
 def _send_plan(_request: str, registry: ToolRegistry, _context: object) -> list[ProposedAction]:
@@ -77,7 +77,7 @@ def test_effective_permissions_none_principal_is_empty() -> None:
 
 def test_effective_permissions_expands_role_grants() -> None:
     assert get_effective_permissions(MEMBER) == frozenset(
-        {"tool:send", "kg:read:org", "kg:read:personal"}
+        {"tool:send", "tool:slack:post", "kg:read:org", "kg:read:personal"}
     )
     assert get_effective_permissions(GUEST) == frozenset({"kg:read:personal"})
 
@@ -124,3 +124,25 @@ def test_principal_survives_checkpoint_resume() -> None:
     final = atlas.graph.invoke(Command(resume=True), config=THREAD)
     assert final["action_results"][0].ok is True
     assert final["principal"] == MEMBER
+
+
+def _slack_plan(_request: str, registry: ToolRegistry, _context: object) -> list[ProposedAction]:
+    return [registry.propose("slack_post", {"channel": "#general", "text": "hi"})]
+
+
+def test_guest_denied_slack_before_approval() -> None:
+    atlas = _fresh(_slack_plan)
+    result = atlas.graph.invoke(initial_state("post to slack", principal=GUEST), config=THREAD)
+
+    assert "__interrupt__" not in result
+    assert result.get("action_results") == []
+    event_types = [e.event_type.value for e in atlas.audit.events()]
+    assert "denied" in event_types
+
+
+def test_member_reaches_approval_for_slack_post() -> None:
+    atlas = _fresh(_slack_plan)
+    result = atlas.graph.invoke(initial_state("post to slack", principal=MEMBER), config=THREAD)
+    assert "__interrupt__" in result
+    event_types = [e.event_type.value for e in atlas.audit.events()]
+    assert "denied" not in event_types

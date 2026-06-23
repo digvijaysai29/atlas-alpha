@@ -1,4 +1,4 @@
-"""External service integrations (email, future Slack/Jira/Calendar adapters)."""
+"""External service integrations (email, Slack, future Jira/Calendar adapters)."""
 
 from atlas.integrations.email import (
     EmailMessage,
@@ -7,6 +7,13 @@ from atlas.integrations.email import (
     ResendEmailSender,
     build_email_sender,
 )
+from atlas.integrations.slack import (
+    FakeSlackSender,
+    SlackApiSender,
+    SlackMessage,
+    SlackSender,
+    build_slack_sender,
+)
 
 __all__ = [
     "EmailMessage",
@@ -14,4 +21,9 @@ __all__ = [
     "FakeEmailSender",
     "ResendEmailSender",
     "build_email_sender",
+    "FakeSlackSender",
+    "SlackApiSender",
+    "SlackMessage",
+    "SlackSender",
+    "build_slack_sender",
 ]

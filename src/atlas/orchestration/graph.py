@@ -176,6 +176,16 @@ def build_graph(
             "RESEND_API_KEY/ATLAS_EMAIL_FROM are set but DATABASE_URL is unset — live send_email "
             "is disabled until Postgres audit is configured (idempotency requires durable audit)."
         )
+    if settings.database_url and not settings.slack_configured:
+        logger.warning(
+            "DATABASE_URL is set but Slack is not configured — slack_post will fail until "
+            "SLACK_BOT_TOKEN is set."
+        )
+    elif settings.slack_configured and not settings.database_url:
+        logger.warning(
+            "SLACK_BOT_TOKEN is set but DATABASE_URL is unset — live slack_post "
+            "is disabled until Postgres audit is configured (idempotency requires durable audit)."
+        )
     registry = registry or default_registry(settings)
     audit = audit or make_audit_log(settings)
     plan_fn = plan_fn or default_plan_fn(settings)
