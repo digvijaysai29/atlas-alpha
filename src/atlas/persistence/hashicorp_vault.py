@@ -111,11 +111,15 @@ class HashiCorpCredentialVault(CredentialVault):
     ) -> None:
         org_id = require_org_id(principal)
         assert_principal_scope(principal, org_id, principal.user_id)
-        self._client.secrets.kv.v2.create_or_update_secret(
-            path=self._relative_path(org_id, principal.user_id, provider),
-            secret=_serialize_credential(credential),
-            mount_point=self._mount,
-        )
+        try:
+            self._client.secrets.kv.v2.create_or_update_secret(
+                path=self._relative_path(org_id, principal.user_id, provider),
+                secret=_serialize_credential(credential),
+                mount_point=self._mount,
+            )
+        except VaultError as exc:
+            logger.warning("Vault put failed: %s", type(exc).__name__)
+            raise CredentialAccessError("credential store temporarily unavailable") from exc
 
     def get(self, principal: Principal, provider: OAuthProvider) -> StoredCredential | None:
         org_id = require_org_id(principal)
@@ -127,6 +131,9 @@ class HashiCorpCredentialVault(CredentialVault):
             )
         except InvalidPath:
             return None
+        except VaultError as exc:
+            logger.warning("Vault get failed: %s", type(exc).__name__)
+            raise CredentialAccessError("credential store temporarily unavailable") from exc
         data = response.get("data", {}).get("data")
         if not isinstance(data, dict):
             return None
@@ -142,6 +149,9 @@ class HashiCorpCredentialVault(CredentialVault):
             )
         except InvalidPath:
             return
+        except VaultError as exc:
+            logger.warning("Vault delete failed: %s", type(exc).__name__)
+            raise CredentialAccessError("credential store temporarily unavailable") from exc
 
     def list_connected(self, principal: Principal) -> list[OAuthProvider]:
         org_id = require_org_id(principal)
@@ -157,6 +167,9 @@ class HashiCorpCredentialVault(CredentialVault):
             )
         except InvalidPath:
             return []
+        except VaultError as exc:
+            logger.warning("Vault list failed: %s", type(exc).__name__)
+            raise CredentialAccessError("credential store temporarily unavailable") from exc
         keys = response.get("data", {}).get("keys") or []
         connected: list[OAuthProvider] = []
         for key in keys:

@@ -132,6 +132,9 @@ class Settings(BaseSettings):
     slack_oauth_redirect_uri: str | None = Field(default=None, alias="SLACK_OAUTH_REDIRECT_URI")
     oauth_success_url: str | None = Field(default=None, alias="ATLAS_OAUTH_SUCCESS_URL")
     oauth_state_secret: SecretStr | None = Field(default=None, alias="ATLAS_OAUTH_STATE_SECRET")
+    oauth_allow_insecure_state: bool = Field(
+        default=False, alias="ATLAS_OAUTH_ALLOW_INSECURE_STATE"
+    )
 
     @model_validator(mode="after")
     def validate_vault_config(self) -> Self:
@@ -256,6 +259,33 @@ class Settings(BaseSettings):
                 f"{', '.join(unset_names)} missing. Set both or leave both blank."
             )
             raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def validate_oauth_state_secret(self) -> Self:
+        """OAuth routes require a dedicated state HMAC secret unless dev insecure flag is set."""
+        if self.oauth_routes_enabled and not _nonempty_secret(self.oauth_state_secret):
+            if not self.oauth_allow_insecure_state:
+                raise ValueError(
+                    "OAuth is enabled but ATLAS_OAUTH_STATE_SECRET is not set. "
+                    "Set a strong secret (openssl rand -base64 32) or "
+                    "ATLAS_OAUTH_ALLOW_INSECURE_STATE=true for dev/test only."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def validate_oauth_vault_config(self) -> Self:
+        """Durable Postgres + OAuth requires HashiCorp Vault — in-memory vault is not allowed."""
+        if (
+            self.oauth_routes_enabled
+            and _nonempty_secret(self.database_url)
+            and not self.credential_vault_enabled
+        ):
+            raise ValueError(
+                "OAuth is enabled with DATABASE_URL but Vault is not configured. "
+                "Set VAULT_ADDR + VAULT_TOKEN (or AppRole) — in-memory vault is not allowed "
+                "with durable persistence."
+            )
         return self
 
     @property

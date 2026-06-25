@@ -159,6 +159,11 @@ def make_credential_vault(settings: Settings | None = None) -> CredentialVault:
         from atlas.persistence import HashiCorpCredentialVault
 
         return HashiCorpCredentialVault(settings)
+    if settings.oauth_routes_enabled and not settings.database_url:
+        logger.warning(
+            "OAuth routes are enabled but Vault is not configured — using in-memory credential "
+            "vault (tokens are lost on restart; not suitable for production)."
+        )
     return InMemoryCredentialVault()
 
 

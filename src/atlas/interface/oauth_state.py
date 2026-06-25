@@ -14,6 +14,8 @@ from atlas.config import Settings
 from atlas.governance.credentials import OAuthProvider
 from atlas.governance.rbac import Principal
 
+_INSECURE_DEV_STATE_KEY = b"atlas-dev-oauth-state-insecure-flag-only"
+
 
 class OAuthStateError(ValueError):
     """Invalid or expired OAuth state."""
@@ -22,10 +24,12 @@ class OAuthStateError(ValueError):
 def oauth_state_key(settings: Settings) -> bytes:
     """Derive the HMAC key for OAuth state signing."""
     if settings.oauth_state_secret is not None:
-        return settings.oauth_state_secret.get_secret_value().encode()
-    if settings.vault_token is not None:
-        return settings.vault_token.get_secret_value().encode()
-    return b"atlas-dev-oauth-state-not-for-production"
+        secret = settings.oauth_state_secret.get_secret_value().strip()
+        if secret:
+            return secret.encode()
+    if settings.oauth_allow_insecure_state:
+        return _INSECURE_DEV_STATE_KEY
+    raise OAuthStateError("ATLAS_OAUTH_STATE_SECRET is not configured")
 
 
 def issue_oauth_state(
@@ -62,6 +66,17 @@ def consume_oauth_state(settings: Settings, state: str) -> dict[str, Any]:
     if int(payload.get("exp", 0)) < int(time.time()):
         raise OAuthStateError("expired state")
     return payload
+
+
+def principal_from_payload(payload: dict[str, Any]) -> Principal:
+    """Build a Principal from verified OAuth state (pending-cookie callback path)."""
+    user_id = payload.get("user_id")
+    org_id = payload.get("org_id")
+    if not isinstance(user_id, str) or not user_id.strip():
+        raise OAuthStateError("state missing user_id")
+    if not isinstance(org_id, str) or not org_id.strip():
+        raise OAuthStateError("org_id required")
+    return Principal(user_id=user_id, roles=(), org_id=org_id)
 
 
 def principal_from_state(payload: dict[str, Any], caller: Principal) -> Principal:
