@@ -37,12 +37,16 @@ def issue_oauth_state(
     principal: Principal,
     provider: OAuthProvider,
     *,
+    binding_email: str,
     ttl_seconds: int = 600,
 ) -> str:
+    from atlas.integrations.oauth_binding import normalize_email
+
     payload = {
         "user_id": principal.user_id,
         "org_id": principal.org_id,
         "provider": provider.value,
+        "binding_email": normalize_email(binding_email),
         "nonce": secrets.token_urlsafe(16),
         "exp": int(time.time()) + ttl_seconds,
     }

@@ -19,15 +19,18 @@ from atlas.interface import create_app
 from atlas.interface.auth import OidcAuthenticator
 from atlas.interface.oauth_pending import OAUTH_PENDING_COOKIE, sign_pending_nonce
 from atlas.interface.oauth_state import consume_oauth_state, issue_oauth_state
-from atlas.integrations.oauth import GOOGLE_GMAIL_SEND
+from atlas.integrations.oauth import GOOGLE_GMAIL_SEND, OAuthExchangeResult
+from atlas.integrations.oauth_binding import OAuthBindingError
 from atlas.orchestration import build_graph
 from tests.helpers import offline_registry
 
 _MEMBER = Principal(user_id="alice", roles=("member",), org_id="acme")
+_EMAIL = "alice@example.com"
 _HEADERS = {
     "X-Atlas-User-Id": "alice",
     "X-Atlas-Roles": "member",
     "X-Atlas-Org": "acme",
+    "X-Atlas-Email": _EMAIL,
 }
 _ISSUER = "https://issuer.test/"
 _AUDIENCE = "atlas-api"
@@ -43,6 +46,19 @@ def _oauth_settings(**overrides: Any) -> Settings:
   }
   base.update(overrides)
   return Settings(**base)
+
+
+def _google_exchange(access_token: str) -> OAuthExchangeResult:
+    credential = StoredCredential(
+        provider=OAuthProvider.GOOGLE,
+        scopes=(GOOGLE_GMAIL_SEND,),
+        access_token=access_token,
+    )
+    return OAuthExchangeResult(credential=credential, token_response={"id_token": "mock"})
+
+
+def _passthrough_binding(*args: object, **kwargs: object) -> StoredCredential:
+    return kwargs["credential"]  # type: ignore[return-value]
 
 
 @pytest.fixture
@@ -68,6 +84,7 @@ def _oidc_token(private_key: RSAPrivateKey, *, org: str = "acme") -> str:
             "iss": _ISSUER,
             "aud": _AUDIENCE,
             "org_id": org,
+            "email": _EMAIL,
             "roles": ["member"],
             "exp": now + 3600,
         },
@@ -157,16 +174,16 @@ def test_callback_stores_credential_with_headers(
     oauth_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings = oauth_client.app.state.settings
-    state = issue_oauth_state(settings, _MEMBER, OAuthProvider.GOOGLE)
+    state = issue_oauth_state(settings, _MEMBER, OAuthProvider.GOOGLE, binding_email=_EMAIL)
     mock_client = MagicMock()
-    mock_client.exchange_code.return_value = StoredCredential(
-        provider=OAuthProvider.GOOGLE,
-        scopes=(GOOGLE_GMAIL_SEND,),
-        access_token="stored",
-    )
+    mock_client.exchange_code.return_value = _google_exchange("stored")
     monkeypatch.setattr(
         "atlas.interface.oauth_routes.build_google_oauth_client",
         lambda _settings: mock_client,
+    )
+    monkeypatch.setattr(
+        "atlas.interface.oauth_routes.assert_provider_email_binding",
+        _passthrough_binding,
     )
     resp = oauth_client.get(
         f"/oauth/google/callback?code=abc&state={state}",
@@ -184,19 +201,19 @@ def test_callback_with_pending_cookie_no_headers(
     oauth_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     settings = oauth_client.app.state.settings
-    state = issue_oauth_state(settings, _MEMBER, OAuthProvider.GOOGLE)
+    state = issue_oauth_state(settings, _MEMBER, OAuthProvider.GOOGLE, binding_email=_EMAIL)
     payload = consume_oauth_state(settings, state)
     nonce = str(payload["nonce"])
     cookie = sign_pending_nonce(settings, nonce)
     mock_client = MagicMock()
-    mock_client.exchange_code.return_value = StoredCredential(
-        provider=OAuthProvider.GOOGLE,
-        scopes=(GOOGLE_GMAIL_SEND,),
-        access_token="cookie-stored",
-    )
+    mock_client.exchange_code.return_value = _google_exchange("cookie-stored")
     monkeypatch.setattr(
         "atlas.interface.oauth_routes.build_google_oauth_client",
         lambda _settings: mock_client,
+    )
+    monkeypatch.setattr(
+        "atlas.interface.oauth_routes.assert_provider_email_binding",
+        _passthrough_binding,
     )
     resp = oauth_client.get(
         f"/oauth/google/callback?code=abc&state={state}",
@@ -212,7 +229,7 @@ def test_callback_with_pending_cookie_no_headers(
 
 def test_callback_without_auth_returns_401(oauth_client: TestClient) -> None:
     settings = oauth_client.app.state.settings
-    state = issue_oauth_state(settings, _MEMBER, OAuthProvider.GOOGLE)
+    state = issue_oauth_state(settings, _MEMBER, OAuthProvider.GOOGLE, binding_email=_EMAIL)
     resp = oauth_client.get(
         f"/oauth/google/callback?code=abc&state={state}",
         follow_redirects=False,
@@ -225,16 +242,16 @@ def test_post_callback_with_bearer_oidc(
 ) -> None:
     client = _oidc_client(keypair)
     settings = client.app.state.settings
-    state = issue_oauth_state(settings, _MEMBER, OAuthProvider.GOOGLE)
+    state = issue_oauth_state(settings, _MEMBER, OAuthProvider.GOOGLE, binding_email=_EMAIL)
     mock_client = MagicMock()
-    mock_client.exchange_code.return_value = StoredCredential(
-        provider=OAuthProvider.GOOGLE,
-        scopes=(GOOGLE_GMAIL_SEND,),
-        access_token="post-stored",
-    )
+    mock_client.exchange_code.return_value = _google_exchange("post-stored")
     monkeypatch.setattr(
         "atlas.interface.oauth_routes.build_google_oauth_client",
         lambda _settings: mock_client,
+    )
+    monkeypatch.setattr(
+        "atlas.interface.oauth_routes.assert_provider_email_binding",
+        _passthrough_binding,
     )
     token = _oidc_token(keypair[0])
     resp = client.post(
@@ -255,7 +272,7 @@ def test_oidc_get_callback_without_cookie_or_bearer_returns_401(
 ) -> None:
     client = _oidc_client(keypair)
     settings = client.app.state.settings
-    state = issue_oauth_state(settings, _MEMBER, OAuthProvider.GOOGLE)
+    state = issue_oauth_state(settings, _MEMBER, OAuthProvider.GOOGLE, binding_email=_EMAIL)
     resp = client.get(
         f"/oauth/google/callback?code=abc&state={state}",
         follow_redirects=False,
@@ -277,3 +294,79 @@ def test_revoke_deletes_credential(oauth_client: TestClient) -> None:
     resp = oauth_client.delete("/oauth/google", headers=_HEADERS)
     assert resp.status_code == 200
     assert vault.get(_MEMBER, OAuthProvider.GOOGLE) is None
+
+def test_connect_without_email_returns_400(oauth_client: TestClient) -> None:
+    headers = {
+        "X-Atlas-User-Id": "alice",
+        "X-Atlas-Roles": "member",
+        "X-Atlas-Org": "acme",
+    }
+    resp = oauth_client.get("/oauth/google/connect", headers=headers, follow_redirects=False)
+    assert resp.status_code == 400
+    assert "email" in resp.json()["error"]["message"].lower()
+
+
+def test_callback_rejects_provider_email_mismatch(
+    oauth_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = oauth_client.app.state.settings
+    state = issue_oauth_state(
+        settings, _MEMBER, OAuthProvider.GOOGLE, binding_email=_EMAIL
+    )
+    mock_client = MagicMock()
+    mock_client.exchange_code.return_value = _google_exchange("stolen")
+    monkeypatch.setattr(
+        "atlas.interface.oauth_routes.build_google_oauth_client",
+        lambda _settings: mock_client,
+    )
+
+    def _wrong_email(*args: object, **kwargs: object) -> StoredCredential:
+        raise OAuthBindingError("provider account does not match connected Atlas user")
+
+    monkeypatch.setattr(
+        "atlas.interface.oauth_routes.assert_provider_email_binding",
+        _wrong_email,
+    )
+    resp = oauth_client.get(
+        f"/oauth/google/callback?code=abc&state={state}",
+        headers=_HEADERS,
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    vault: InMemoryCredentialVault = oauth_client.app.state.credential_vault
+    assert vault.get(_MEMBER, OAuthProvider.GOOGLE) is None
+
+
+def test_post_callback_rejects_cross_account_linking(
+    keypair: tuple[RSAPrivateKey, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _oidc_client(keypair)
+    settings = client.app.state.settings
+    state = issue_oauth_state(
+        settings, _MEMBER, OAuthProvider.GOOGLE, binding_email=_EMAIL
+    )
+    mock_client = MagicMock()
+    mock_client.exchange_code.return_value = _google_exchange("victim-token")
+    monkeypatch.setattr(
+        "atlas.interface.oauth_routes.build_google_oauth_client",
+        lambda _settings: mock_client,
+    )
+
+    def _wrong_email(*args: object, **kwargs: object) -> StoredCredential:
+        raise OAuthBindingError("provider account does not match connected Atlas user")
+
+    monkeypatch.setattr(
+        "atlas.interface.oauth_routes.assert_provider_email_binding",
+        _wrong_email,
+    )
+    token = _oidc_token(keypair[0])
+    resp = client.post(
+        "/oauth/google/callback",
+        json={"code": "victim-code", "state": state},
+        headers={"Authorization": f"Bearer {token}"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    vault: InMemoryCredentialVault = client.app.state.credential_vault
+    assert vault.get(_MEMBER, OAuthProvider.GOOGLE) is None
+

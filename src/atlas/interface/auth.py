@@ -67,6 +67,7 @@ class OidcAuthenticator:
         user_claim: str = "sub",
         roles_claim: str = "roles",
         org_claim: str = "org_id",
+        email_claim: str = "email",
         leeway: int = 60,
     ) -> None:
         self._issuer = issuer
@@ -75,17 +76,17 @@ class OidcAuthenticator:
         self._user_claim = user_claim
         self._roles_claim = roles_claim
         self._org_claim = org_claim
+        self._email_claim = email_claim
         self._leeway = leeway
 
-    def principal_from_token(self, token: str) -> Principal:
-        """Verify ``token`` and return the caller's Principal, or raise :class:`AuthError`."""
+    def _verified_claims(self, token: str) -> dict[str, Any]:
         try:
             key = self._get_signing_key(token)
         except jwt.PyJWKClientError as exc:
             raise AuthDependencyError("authentication service unavailable") from exc
 
         try:
-            claims: dict[str, Any] = jwt.decode(
+            return jwt.decode(
                 token,
                 key,
                 algorithms=_ALGORITHMS,
@@ -96,6 +97,19 @@ class OidcAuthenticator:
             )
         except jwt.PyJWTError as exc:
             raise AuthError("invalid or expired token") from exc
+
+    def email_from_token(self, token: str) -> str | None:
+        """Return the normalized email claim from a verified bearer token, or None if absent."""
+        claims = self._verified_claims(token)
+        raw = claims.get(self._email_claim)
+        if raw is None:
+            return None
+        email = str(raw).strip()
+        return email or None
+
+    def principal_from_token(self, token: str) -> Principal:
+        """Verify ``token`` and return the caller's Principal, or raise :class:`AuthError`."""
+        claims = self._verified_claims(token)
 
         user_id = str(claims.get(self._user_claim) or "").strip()
         if not user_id:
@@ -131,5 +145,6 @@ def build_authenticator(settings: Settings) -> OidcAuthenticator | None:
         user_claim=settings.oidc_user_claim,
         roles_claim=settings.oidc_roles_claim,
         org_claim=settings.oidc_org_claim,
+        email_claim=settings.oidc_email_claim,
         leeway=settings.oidc_leeway,
     )

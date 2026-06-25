@@ -75,6 +75,7 @@ class Settings(BaseSettings):
     api_user_header: str = Field(default="X-Atlas-User-Id", alias="ATLAS_API_USER_HEADER")
     api_roles_header: str = Field(default="X-Atlas-Roles", alias="ATLAS_API_ROLES_HEADER")
     api_org_header: str = Field(default="X-Atlas-Org", alias="ATLAS_API_ORG_HEADER")
+    api_email_header: str = Field(default="X-Atlas-Email", alias="ATLAS_API_EMAIL_HEADER")
 
     # --- Authentication (M3.3 OIDC) ----------------------------------------
     # When issuer + audience + jwks_uri are ALL set (see ``oidc_enabled``), bearer-token validation
@@ -86,6 +87,7 @@ class Settings(BaseSettings):
     oidc_user_claim: str = Field(default="sub", alias="ATLAS_OIDC_USER_CLAIM")
     oidc_roles_claim: str = Field(default="roles", alias="ATLAS_OIDC_ROLES_CLAIM")
     oidc_org_claim: str = Field(default="org_id", alias="ATLAS_OIDC_ORG_CLAIM")
+    oidc_email_claim: str = Field(default="email", alias="ATLAS_OIDC_EMAIL_CLAIM")
     # Clock-skew tolerance (seconds) for exp/nbf. 60s is the common default: large enough to absorb
     # normal client/IdP NTP drift, small enough not to meaningfully extend an expired token.
     oidc_leeway: int = Field(default=60, alias="ATLAS_OIDC_LEEWAY")

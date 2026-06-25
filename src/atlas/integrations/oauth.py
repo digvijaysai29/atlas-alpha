@@ -10,23 +10,40 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from authlib.integrations.httpx_client import OAuth2Client
-from pydantic import SecretStr
+from pydantic import BaseModel, ConfigDict, SecretStr
 
 from atlas.config import Settings
 from atlas.governance.credentials import OAuthProvider, StoredCredential
 
 # Google scopes (space-delimited in authorize URL).
+GOOGLE_OPENID = "openid"
+GOOGLE_EMAIL = "email"
 GOOGLE_GMAIL_SEND = "https://www.googleapis.com/auth/gmail.send"
 GOOGLE_CALENDAR_EVENTS = "https://www.googleapis.com/auth/calendar.events"
-GOOGLE_OAUTH_SCOPES = (GOOGLE_GMAIL_SEND, GOOGLE_CALENDAR_EVENTS)
+GOOGLE_OAUTH_SCOPES = (
+    GOOGLE_OPENID,
+    GOOGLE_EMAIL,
+    GOOGLE_GMAIL_SEND,
+    GOOGLE_CALENDAR_EVENTS,
+)
 
 SLACK_USER_CHAT_WRITE = "chat:write"
-SLACK_OAUTH_SCOPES = (SLACK_USER_CHAT_WRITE,)
+SLACK_IDENTITY_BASIC = "identity.basic"
+SLACK_OAUTH_SCOPES = (SLACK_USER_CHAT_WRITE, SLACK_IDENTITY_BASIC)
 
 _GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 _GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 _SLACK_AUTH_URL = "https://slack.com/oauth/v2/authorize"
 _SLACK_TOKEN_URL = "https://slack.com/api/oauth.v2.access"
+
+
+class OAuthExchangeResult(BaseModel):
+    """Authorization-code exchange output for callback binding checks."""
+
+    model_config = ConfigDict(frozen=True)
+
+    credential: StoredCredential
+    token_response: dict[str, Any]
 
 
 def _expires_at_from_token(token: dict[str, Any]) -> datetime | None:
@@ -39,9 +56,6 @@ def _expires_at_from_token(token: dict[str, Any]) -> datetime | None:
 def _stored_from_google_token(token: dict[str, Any]) -> StoredCredential:
     scope_raw = token.get("scope") or ""
     scopes = tuple(s for s in scope_raw.split() if s)
-    metadata: dict[str, str] = {}
-    if token.get("id_token"):
-        metadata["has_id_token"] = "true"
     return StoredCredential(
         provider=OAuthProvider.GOOGLE,
         scopes=scopes,
@@ -49,7 +63,7 @@ def _stored_from_google_token(token: dict[str, Any]) -> StoredCredential:
         refresh_token=token.get("refresh_token"),
         expires_at=_expires_at_from_token(token),
         token_type=str(token.get("token_type") or "Bearer"),
-        metadata=metadata,
+        metadata={},
     )
 
 
@@ -83,6 +97,18 @@ class GoogleOAuthClient:
         self._client_secret = client_secret
         self._redirect_uri = redirect_uri
 
+    @property
+    def client_id(self) -> str:
+        return self._client_id
+
+    @property
+    def client_secret(self) -> SecretStr:
+        return self._client_secret
+
+    @property
+    def redirect_uri(self) -> str:
+        return self._redirect_uri
+
     def authorization_url(self, state: str, *, scopes: tuple[str, ...] | None = None) -> str:
         scope_list = scopes or GOOGLE_OAUTH_SCOPES
         client = OAuth2Client(
@@ -99,14 +125,17 @@ class GoogleOAuthClient:
         )
         return str(uri)
 
-    def exchange_code(self, code: str) -> StoredCredential:
+    def exchange_code(self, code: str) -> OAuthExchangeResult:
         client = OAuth2Client(
             client_id=self._client_id,
             client_secret=self._client_secret.get_secret_value(),
             redirect_uri=self._redirect_uri,
         )
         token = client.fetch_token(_GOOGLE_TOKEN_URL, code=code)
-        return _stored_from_google_token(token)
+        return OAuthExchangeResult(
+            credential=_stored_from_google_token(token),
+            token_response=dict(token),
+        )
 
     def refresh(self, refresh_token: str) -> StoredCredential:
         client = OAuth2Client(
@@ -142,7 +171,7 @@ class SlackOAuthClient:
         )
         return str(uri)
 
-    def exchange_code(self, code: str) -> StoredCredential:
+    def exchange_code(self, code: str) -> OAuthExchangeResult:
         client = OAuth2Client(
             client_id=self._client_id,
             client_secret=self._client_secret.get_secret_value(),
@@ -151,7 +180,10 @@ class SlackOAuthClient:
         token = client.fetch_token(_SLACK_TOKEN_URL, code=code)
         if not token.get("ok", True):
             raise RuntimeError(token.get("error", "Slack OAuth failed"))
-        return _stored_from_slack_token(token)
+        return OAuthExchangeResult(
+            credential=_stored_from_slack_token(token),
+            token_response=dict(token),
+        )
 
     def refresh(self, refresh_token: str) -> StoredCredential:
         client = OAuth2Client(

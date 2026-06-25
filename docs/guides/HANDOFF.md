@@ -246,7 +246,7 @@ Each is a separate milestone; keep the sub-phase discipline (small PRs, green CI
   Live post requires `DATABASE_URL` + `SLACK_BOT_TOKEN`. After upgrading to a release that adds new
   default grants (e.g. `tool:slack:post`), re-run `python scripts/manage_policy.py seed` on Postgres-backed
   installs so existing `atlas_role_permissions` rows pick up missing defaults. **Deferred → M4.3+.**
-- **M4.3 (this branch) — Per-user OAuth + HashiCorp Vault.** `CredentialVault` ABC + `HashiCorpCredentialVault` (KV v2 via `hvac`); OAuth routes (`/oauth/{provider}/connect|callback`, `/oauth/connections`, revoke); `gmail_send`, `calendar_create_event`, `slack_post_as_user` with `CredentialResolver` + inherited `GuardedExecutor` idempotency. Guide: [`M4.3_PLAN.md`](../plans/M4.3_PLAN.md).
+- **M4.3 (this branch) — Per-user OAuth + HashiCorp Vault.** `CredentialVault` ABC + `HashiCorpCredentialVault` (KV v2 via `hvac`); OAuth routes (`/oauth/{provider}/connect|callback`, `/oauth/connections`, revoke); `gmail_send`, `calendar_create_event`, `slack_post_as_user` with `CredentialResolver` + inherited `GuardedExecutor` idempotency. Guide: [`M4.3_PLAN.md`](../plans/M4.3_PLAN.md). OAuth connect embeds the caller's email (OIDC `email` claim or dev `X-Atlas-Email` header) in signed state; callback verifies Google id_token / Slack `users.identity` email matches before Vault write — blocks account-linking CSRF.
   Per-integration OAuth + secret management; correct per-tool `risk_tier` + `required_permission`;
   provider-side idempotency keys; sandboxing; webhook ingestion. Treat all tool output as adversarial.
 - **Cross-cutting hardening.** Merkle / external anchoring of the audit chain; a richer
