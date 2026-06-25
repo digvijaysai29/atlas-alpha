@@ -19,6 +19,7 @@ from langgraph.graph import END, START, StateGraph
 
 from atlas.config import Settings, get_settings
 from atlas.governance import AuditLog, InMemoryAuditLog, InMemoryPolicyStore, PolicyStore
+from atlas.governance.credentials import CredentialVault, InMemoryCredentialVault
 from atlas.knowledge.interfaces import KnowledgeGraph
 from atlas.knowledge.memory_store import InMemoryKnowledgeGraph
 from atlas.orchestration.nodes import (
@@ -32,6 +33,7 @@ from atlas.orchestration.nodes import (
 )
 from atlas.orchestration.serde import atlas_serde
 from atlas.orchestration.state import AgentState
+from atlas.integrations.oauth import build_credential_resolver
 from atlas.tools import ToolRegistry, default_registry
 
 if TYPE_CHECKING:
@@ -150,6 +152,16 @@ def make_policy_store(settings: Settings | None = None) -> PolicyStore:
     return InMemoryPolicyStore()
 
 
+def make_credential_vault(settings: Settings | None = None) -> CredentialVault:
+    """Return the credential vault: HashiCorp Vault when configured, else in-memory."""
+    settings = settings or get_settings()
+    if settings.credential_vault_enabled:
+        from atlas.persistence import HashiCorpCredentialVault
+
+        return HashiCorpCredentialVault(settings)
+    return InMemoryCredentialVault()
+
+
 @dataclass(frozen=True)
 class Atlas:
     """A compiled agent plus the collaborators a caller may want to inspect."""
@@ -159,6 +171,7 @@ class Atlas:
     registry: ToolRegistry
     knowledge: KnowledgeGraph
     policy: PolicyStore
+    credential_vault: CredentialVault
 
 
 def build_graph(
@@ -197,7 +210,11 @@ def build_graph(
             "SLACK_BOT_TOKEN is set but DATABASE_URL is unset — live slack_post "
             "is disabled until Postgres audit is configured (idempotency requires durable audit)."
         )
-    registry = registry or default_registry(settings)
+    credential_vault = make_credential_vault(settings)
+    credential_resolver = (
+        build_credential_resolver(credential_vault, settings) if settings.database_url else None
+    )
+    registry = registry or default_registry(settings, credential_resolver=credential_resolver)
     audit = audit or make_audit_log(settings)
     plan_fn = plan_fn or default_plan_fn(settings)
     policy = policy or make_policy_store(settings)
@@ -224,4 +241,11 @@ def build_graph(
     builder.add_edge("responder", END)
 
     graph = builder.compile(checkpointer=checkpointer)
-    return Atlas(graph=graph, audit=audit, registry=registry, knowledge=knowledge, policy=policy)
+    return Atlas(
+        graph=graph,
+        audit=audit,
+        registry=registry,
+        knowledge=knowledge,
+        policy=policy,
+        credential_vault=credential_vault,
+    )

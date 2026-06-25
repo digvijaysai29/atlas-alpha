@@ -231,7 +231,7 @@ def make_executor_node(
             if requires_approval(action.risk_tier) and action.action_id not in approved:
                 audit.skipped(action, reason="not approved")
                 continue
-            results.append(guarded.execute_guarded(action, audit))
+            results.append(guarded.execute_guarded(action, audit, principal))
         return {"action_results": results}
 
     return executor_node

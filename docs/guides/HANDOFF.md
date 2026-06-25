@@ -30,7 +30,8 @@ branch → PR into `main` → CI must be green.
 | **M3.6** | **Per-principal rate limiting** on `/chat` + `/approve` (Upstash + `upstash-ratelimit`); 429 + `Retry-After`; fail-open; per-IP for anonymous | ✅ merged (PR #20) |
 | **M4.1** | First real integration: **email send (Resend)** behind a pluggable `EmailSender` + **idempotent execution** (`GuardedExecutor`, audit `REPLAY_SKIPPED`/`FAILED`) | ✅ merged (PR #22) |
 | **M4.2** | Second integration: **Slack post** (`slack_post`, managed `slack_sdk` bot token) reusing the `EmailSender`/`GuardedExecutor` pattern — idempotency inherited. Guide: **[`M4.2_PLAN.md`](../plans/M4.2_PLAN.md)** | ✅ PR #29 |
-| **M4.3+** | Per-principal "send as the user" OAuth; Jira/Calendar; pgvector semantic retrieval; sessions/provisioning; SSE streaming | future |
+| **M4.3** | Per-user OAuth + **HashiCorp Vault** credential store; `gmail_send`, `calendar_create_event`, `slack_post_as_user`. Guide: **[`M4.3_PLAN.md`](../plans/M4.3_PLAN.md)** | ✅ this branch |
+| **M4.4+** | Jira; pgvector semantic retrieval; sessions/provisioning; SSE streaming | future |
 
 **Net:** atlas is a secure, durable, identity-aware, knowledge-grounded HITL agent with a transparent
 sources+confidence layer, a real blocking eval gate, a **network interface** (OIDC auth, resume-time
@@ -38,8 +39,7 @@ owner binding, per-principal rate limiting) — all behind a fail-closed securit
 gap is **more real tool integrations** beyond email. **M4.1 landed** — real, human-gated, idempotent
 email send (Resend) behind a pluggable `EmailSender` + `GuardedExecutor`. **M4.2 (PR #29)** adds a
 **second** integration, **Slack post**, reusing that pattern (idempotency inherited for free); other
-adapters (Jira/Calendar), per-principal "send as the user" OAuth, and semantic retrieval follow
-in M4.2+.
+**M4.3** adds per-user OAuth (Vault-backed) plus Gmail, Calendar, and Slack-as-user tools; Jira and semantic retrieval follow in M4.4+.
 
 ## 2. System recap (pointers, not prose)
 
@@ -246,7 +246,7 @@ Each is a separate milestone; keep the sub-phase discipline (small PRs, green CI
   Live post requires `DATABASE_URL` + `SLACK_BOT_TOKEN`. After upgrading to a release that adds new
   default grants (e.g. `tool:slack:post`), re-run `python scripts/manage_policy.py seed` on Postgres-backed
   installs so existing `atlas_role_permissions` rows pick up missing defaults. **Deferred → M4.3+.**
-- **M4.3+ — Real tool integrations** (per-principal "send as the user" OAuth; Gmail / Jira / Calendar).
+- **M4.3 (this branch) — Per-user OAuth + HashiCorp Vault.** `CredentialVault` ABC + `HashiCorpCredentialVault` (KV v2 via `hvac`); OAuth routes (`/oauth/{provider}/connect|callback`, `/oauth/connections`, revoke); `gmail_send`, `calendar_create_event`, `slack_post_as_user` with `CredentialResolver` + inherited `GuardedExecutor` idempotency. Guide: [`M4.3_PLAN.md`](../plans/M4.3_PLAN.md).
   Per-integration OAuth + secret management; correct per-tool `risk_tier` + `required_permission`;
   provider-side idempotency keys; sandboxing; webhook ingestion. Treat all tool output as adversarial.
 - **Cross-cutting hardening.** Merkle / external anchoring of the audit chain; a richer

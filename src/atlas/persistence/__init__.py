@@ -6,7 +6,13 @@ LangGraph Postgres checkpointer is wired in :mod:`atlas.orchestration.graph`.
 """
 
 from atlas.persistence.audit_store import PostgresAuditLog
+from atlas.persistence.hashicorp_vault import HashiCorpCredentialVault
 from atlas.persistence.knowledge_store import PostgresKnowledgeGraph
 from atlas.persistence.policy_store import PostgresPolicyStore
 
-__all__ = ["PostgresAuditLog", "PostgresKnowledgeGraph", "PostgresPolicyStore"]
+__all__ = [
+    "PostgresAuditLog",
+    "PostgresKnowledgeGraph",
+    "PostgresPolicyStore",
+    "HashiCorpCredentialVault",
+]

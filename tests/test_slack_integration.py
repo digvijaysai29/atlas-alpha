@@ -14,13 +14,17 @@ from atlas.integrations.slack import (
     SlackMessage,
     build_slack_sender,
 )
+from atlas.governance.rbac import Principal
 from atlas.tools import SlackPostTool, default_registry
 
 
 def test_slack_post_tool_uses_injected_sender() -> None:
     sender = FakeSlackSender()
     tool = SlackPostTool(sender=sender)
-    output = tool.run(tool.ArgsSchema.model_validate({"channel": "#general", "text": "hello"}))
+    output = tool.run(
+        tool.ArgsSchema.model_validate({"channel": "#general", "text": "hello"}),
+        principal=Principal(user_id="test", roles=("member",), org_id="org1"),
+    )
     assert output["provider"] == "fake"
     assert len(sender.sent) == 1
     assert sender.sent[0].channel == "#general"
@@ -29,7 +33,10 @@ def test_slack_post_tool_uses_injected_sender() -> None:
 def test_slack_post_without_sender_raises() -> None:
     tool = SlackPostTool(sender=None)
     with pytest.raises(RuntimeError, match="slack not configured"):
-        tool.run(tool.ArgsSchema.model_validate({"channel": "#general", "text": "hi"}))
+        tool.run(
+            tool.ArgsSchema.model_validate({"channel": "#general", "text": "hi"}),
+            principal=Principal(user_id="test", roles=("member",), org_id="org1"),
+        )
 
 
 def test_build_slack_sender_none_when_unconfigured() -> None:
@@ -143,7 +150,7 @@ def test_default_registry_disables_real_slack_without_durable_audit() -> None:
     )
     registry = default_registry(settings)
     action = registry.propose("slack_post", {"channel": "#general", "text": "y"})
-    result = registry.execute(action)
+    result = registry.execute(action, Principal(user_id="test", roles=("member",), org_id="org1"))
     assert result.ok is False
 
 

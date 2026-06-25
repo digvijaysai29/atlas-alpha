@@ -3,6 +3,7 @@
 import pytest
 
 from atlas.actions import RiskTier
+from atlas.governance.rbac import Principal
 from atlas.tools import default_registry
 
 
@@ -41,7 +42,7 @@ def test_unknown_tool_is_rejected() -> None:
 def test_execute_returns_successful_result() -> None:
     registry = default_registry()
     action = registry.propose("search", {"query": "hello"})
-    result = registry.execute(action)
+    result = registry.execute(action, Principal(user_id="test", roles=("member",), org_id="org1"))
     assert result.ok is True
     assert isinstance(result.output, dict)
 
@@ -51,5 +52,5 @@ def test_execute_send_email_unconfigured_returns_failure() -> None:
 
     registry = default_registry(Settings(RESEND_API_KEY=None, ATLAS_EMAIL_FROM=None))
     action = registry.propose("send_email", {"to": "a@b.com", "subject": "x", "body": "y"})
-    result = registry.execute(action)
+    result = registry.execute(action, Principal(user_id="test", roles=("member",), org_id="org1"))
     assert result.ok is False

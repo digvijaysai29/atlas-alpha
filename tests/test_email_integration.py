@@ -9,6 +9,7 @@ from pydantic import SecretStr
 
 from atlas.config import Settings
 from atlas.integrations.email import EmailMessage, FakeEmailSender, build_email_sender
+from atlas.governance.rbac import Principal
 from atlas.tools import SendEmailTool, default_registry
 
 
@@ -16,7 +17,8 @@ def test_send_email_tool_uses_injected_sender() -> None:
     sender = FakeEmailSender()
     tool = SendEmailTool(sender=sender)
     output = tool.run(
-        tool.ArgsSchema.model_validate({"to": "a@b.com", "subject": "hi", "body": "x"})
+        tool.ArgsSchema.model_validate({"to": "a@b.com", "subject": "hi", "body": "x"}),
+        principal=Principal(user_id="test", roles=("member",), org_id="org1"),
     )
     assert output["provider"] == "fake"
     assert len(sender.sent) == 1
@@ -26,7 +28,10 @@ def test_send_email_tool_uses_injected_sender() -> None:
 def test_send_email_without_sender_raises() -> None:
     tool = SendEmailTool(sender=None)
     with pytest.raises(RuntimeError, match="email not configured"):
-        tool.run(tool.ArgsSchema.model_validate({"to": "a@b.com"}))
+        tool.run(
+            tool.ArgsSchema.model_validate({"to": "a@b.com"}),
+            principal=Principal(user_id="test", roles=("member",), org_id="org1"),
+        )
 
 
 def test_build_email_sender_none_when_unconfigured() -> None:
@@ -94,5 +99,5 @@ def test_default_registry_disables_real_send_without_durable_audit() -> None:
     )
     registry = default_registry(settings)
     action = registry.propose("send_email", {"to": "a@b.com", "subject": "x", "body": "y"})
-    result = registry.execute(action)
+    result = registry.execute(action, Principal(user_id="test", roles=("member",), org_id="org1"))
     assert result.ok is False
