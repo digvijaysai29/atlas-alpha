@@ -16,6 +16,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
+from atlas.interface.rate_limit import RateLimited
 from atlas.interface.schemas import IngestRequest, IngestResponse
 from atlas.interface.security import RequestPrincipal
 from atlas.knowledge.ingestion import IngestDocument, IngestionDenied, IngestionService
@@ -32,7 +33,7 @@ def get_ingestion(request: Request) -> IngestionService:
 IngestionDep = Annotated[IngestionService, Depends(get_ingestion)]
 
 
-@router.post("/kg/ingest", response_model=IngestResponse)
+@router.post("/kg/ingest", response_model=IngestResponse, dependencies=[RateLimited])
 def ingest(
     body: IngestRequest, principal: RequestPrincipal, ingestion: IngestionDep
 ) -> IngestResponse:
