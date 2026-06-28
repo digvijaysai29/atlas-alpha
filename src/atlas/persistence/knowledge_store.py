@@ -25,7 +25,7 @@ from psycopg_pool import ConnectionPool
 
 from atlas.governance.policy import DEFAULT_POLICY, PolicyStore
 from atlas.governance.rbac import Principal
-from atlas.knowledge.interfaces import Entity, KnowledgeGraph, Relation, can_read
+from atlas.knowledge.interfaces import Entity, KnowledgeGraph, Relation, can_read, identity_acl
 
 _ADMIN_WILDCARD = "*"
 
@@ -169,6 +169,12 @@ class PostgresKnowledgeGraph(KnowledgeGraph):
         # LIKE prefix patterns ("a:b:%"), with the prefix ``_like_escape``-d so a permission string
         # can never inject LIKE metacharacters. ``LIKE ANY('{}')`` is harmless (false) when empty.
         exact = [p for p in permissions if p != _ADMIN_WILDCARD and not p.endswith(":*")]
+        # Identity ACL (PKG isolation): grant the principal read on entities tagged
+        # ``kg:read:user:<their id>`` via the same static ``acl && %(exact)s`` overlap clause — no SQL
+        # change. A role wildcard could still over-match an identity acl in SQL (e.g. ``kg:read:*``),
+        # but the ``can_read`` re-filter below is the authority and rejects that, preserving isolation.
+        if principal is not None:
+            exact = [*exact, identity_acl(principal.user_id)]
         wildcard_like = [f"{_like_escape(p[:-1])}%" for p in permissions if p.endswith(":*")]
         terms = [term for term in text.lower().split() if term]
         params = {

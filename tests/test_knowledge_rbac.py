@@ -13,7 +13,7 @@ from atlas.actions import ProposedAction
 from atlas.governance import InMemoryPolicyStore
 from atlas.governance.rbac import Principal
 from atlas.knowledge import seed_demo_graph
-from atlas.knowledge.interfaces import Entity, can_read
+from atlas.knowledge.interfaces import Entity, can_read, identity_acl
 from atlas.orchestration import build_graph
 from atlas.orchestration.graph import Atlas
 from atlas.orchestration.serde import atlas_serde
@@ -49,6 +49,29 @@ def test_org_entity_hidden_from_guest_visible_to_member() -> None:
     assert "doc-1" in member_ids  # org doc visible to member
     assert "doc-1" not in guest_ids  # IDOR guard: org doc hidden from guest
     assert "note-1" in guest_ids  # personal note still visible to guest
+
+
+def test_identity_acl_readable_only_by_owner() -> None:
+    # An identity-scoped entity (a PKG node) is readable by its owner...
+    entity = Entity(id="p", type="note", name="n", content="c", acl=(identity_acl("alice"),))
+    assert can_read(Principal(user_id="alice", roles=("member",)), entity) is True
+    # ...and by nobody else — not another member, not the anonymous principal.
+    assert can_read(Principal(user_id="bob", roles=("member",)), entity) is False
+    assert can_read(None, entity) is False
+
+
+def test_identity_acl_not_satisfied_by_role_wildcards() -> None:
+    # Even an admin (the "*" wildcard) cannot read another user's PKG node: identity acls are matched
+    # only by exact owner identity, never by a role wildcard.
+    entity = Entity(id="p", type="note", name="n", content="c", acl=(identity_acl("alice"),))
+    assert can_read(Principal(user_id="root", roles=("admin",)), entity) is False
+    reader = Principal(user_id="carol", roles=("reader",))
+    graph = seed_demo_graph()
+    graph.upsert_entity(entity)
+    graph.bind_policy(InMemoryPolicyStore({"reader": frozenset({"kg:read:*"})}))
+    assert "p" not in {
+        e.id for e in graph.query(reader, "n")
+    }  # kg:read:* never matches an identity acl
 
 
 def test_wildcard_grant_reveals_org_entity_in_memory() -> None:

@@ -22,10 +22,16 @@ from langgraph.types import Command
 
 from atlas.actions import ProposedAction
 from atlas.execution import GuardedExecutor
-from atlas.governance import AuditEventType, InMemoryAuditLog
+from atlas.governance import AuditEventType, InMemoryAuditLog, InMemoryPolicyStore
 from atlas.governance.confidence import GROUNDED_ANSWER, UNGROUNDED_ANSWER
 from atlas.governance.rbac import Principal
-from atlas.knowledge import seed_demo_graph
+from atlas.knowledge import (
+    IngestDocument,
+    IngestionDenied,
+    IngestionService,
+    InMemoryKnowledgeGraph,
+    seed_demo_graph,
+)
 from atlas.knowledge.interfaces import KnowledgeGraph
 from atlas.orchestration import build_graph
 from atlas.orchestration.nodes import PlanFn
@@ -261,6 +267,72 @@ def confidence_grounded_vs_ungrounded() -> OracleResult:
     )
 
 
+# ---------------------------------------------------------------------------
+# Ingestion oracles (M4.4) — the KG *write* path. Hermetic: drive the IngestionService + in-memory KG
+# directly, no graph/LLM/network. These guard PKG isolation, dedup/idempotency, and OKG-write authz.
+# ---------------------------------------------------------------------------
+_ALICE = Principal(user_id="alice", roles=("member",))
+_BOB = Principal(user_id="bob", roles=("member",))
+_ADMIN = Principal(user_id="root", roles=("admin",))
+
+
+def ingest_pkg_isolation() -> OracleResult:
+    """A personal doc Alice ingests is visible to Alice and invisible to Bob (PKG isolation / IDOR)."""
+    kg = InMemoryKnowledgeGraph()
+    service = IngestionService(kg, InMemoryPolicyStore())
+    service.ingest(
+        _ALICE, IngestDocument(text="alice onboarding plan", title="plan", scope="personal")
+    )
+
+    alice_ids = {entity.id for entity in kg.query(_ALICE, "onboarding")}
+    bob_ids = {entity.id for entity in kg.query(_BOB, "onboarding")}
+    passed = bool(alice_ids) and not bob_ids and not (alice_ids & bob_ids)
+    return OracleResult("ingest/pkg-isolation", passed, f"alice={alice_ids} bob={bob_ids}")
+
+
+def ingest_dedup_idempotent() -> OracleResult:
+    """Re-ingesting the same document is idempotent — same ids, no duplicate growth."""
+    kg = InMemoryKnowledgeGraph()
+    service = IngestionService(kg, InMemoryPolicyStore())
+    document = IngestDocument(text="repeatable content", title="dup", scope="personal")
+
+    first = service.ingest(_ALICE, document)
+    count_after_first = len(kg.query(_ALICE, "", limit=1000))
+    second = service.ingest(_ALICE, document)
+    count_after_second = len(kg.query(_ALICE, "", limit=1000))
+
+    passed = (
+        first.entity_ids == second.entity_ids
+        and count_after_first == count_after_second
+        and count_after_first == len(first.entity_ids)
+    )
+    return OracleResult(
+        "ingest/dedup-idempotent", passed, f"first={count_after_first} second={count_after_second}"
+    )
+
+
+def ingest_okg_write_denied() -> OracleResult:
+    """A member's org write is denied (nothing written); an admin's org write succeeds and is org-readable."""
+    kg = InMemoryKnowledgeGraph()
+    service = IngestionService(kg, InMemoryPolicyStore())
+    org_doc = IngestDocument(text="org wide policy", title="policy", scope="org")
+
+    denied = False
+    try:
+        service.ingest(_ALICE, org_doc)
+    except IngestionDenied:
+        denied = True
+    nothing_written = len(kg.query(_ADMIN, "", limit=1000)) == 0
+
+    admin_result = service.ingest(_ADMIN, org_doc)
+    member_can_read_org = bool(kg.query(_ALICE, "policy"))
+
+    passed = denied and nothing_written and bool(admin_result.entity_ids) and member_can_read_org
+    return OracleResult(
+        "ingest/okg-write-denied", passed, f"denied={denied} admin_wrote={admin_result.entity_ids}"
+    )
+
+
 # The full golden-trace suite. Order is informational only; scoring is order-independent.
 ORACLES: tuple[Callable[[], OracleResult], ...] = (
     approval_approve,
@@ -272,6 +344,9 @@ ORACLES: tuple[Callable[[], OracleResult], ...] = (
     rbac_kg_idor,
     read_only_auto,
     confidence_grounded_vs_ungrounded,
+    ingest_pkg_isolation,
+    ingest_dedup_idempotent,
+    ingest_okg_write_denied,
 )
 
 

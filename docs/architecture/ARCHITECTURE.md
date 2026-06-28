@@ -226,6 +226,13 @@ executor refuses to run a gated action without a matching, in-scope `ApprovalDec
   token; `integrations/slack.py`), mirroring the M4.1 `EmailSender` shape. **Idempotency is inherited**
   from `GuardedExecutor` for any `RiskTier.SEND` action — no new execution code. (PR #29.)
 - **M4.3 (done):** per-principal OAuth + **HashiCorp Vault** credential store (`HashiCorpCredentialVault`, KV v2); `gmail_send`, `calendar_create_event`, `slack_post_as_user` behind `CredentialResolver` + inherited `GuardedExecutor` idempotency. OAuth HTTP routes under `/oauth/*`. See [`M4.3_PLAN.md`](../plans/M4.3_PLAN.md).
-- **Later (M4.4+):** Jira adapter;
-  resource/argument-aware `ToolPermission`; pgvector semantic retrieval; SSE streaming; Merkle
-  anchoring.
+- **M4.4 (done):** **Knowledge Ingestion Core** — deterministic `IngestionService`
+  (`knowledge/ingestion.py`) + `POST /kg/ingest`; documents become RBAC-scoped, deduplicated
+  `Entity` upserts. PKG per-user isolation via **identity ACLs** (`kg:read:user:<uid>`, matched only
+  by the owner — never a role wildcard), enforced in both backends; fail-closed OKG write gate
+  (`kg:write:org`). Hermetic/deterministic (no LLM, no embeddings) so it's covered by the eval gate.
+  See [`M4.4_PLAN.md`](../plans/M4.4_PLAN.md).
+- **Later (M4.5+):** LLM entity/relation extraction over the ingestion pipeline; **pgvector**
+  embeddings + semantic retrieval (behind the same `KnowledgeGraph` interface); OAuth-connector
+  ingestion (Gmail/Jira/Calendar) over the same `IngestionService`; resource/argument-aware
+  `ToolPermission`; SSE streaming; Merkle anchoring.
