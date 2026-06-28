@@ -83,6 +83,35 @@ def test_resolver_refresh_calls_refresher() -> None:
     assert token == "new"
 
 
+def test_resolver_refresh_preserves_scopes_when_refresher_omits_scope() -> None:
+    vault = InMemoryCredentialVault()
+    expired = StoredCredential(
+        provider=OAuthProvider.GOOGLE,
+        scopes=(GOOGLE_GMAIL_SEND,),
+        access_token="old",
+        refresh_token="rt",
+        expires_at=datetime.now(UTC) - timedelta(minutes=5),
+    )
+    vault.put(_MEMBER, OAuthProvider.GOOGLE, expired)
+
+    def _refresh(token: str) -> StoredCredential:
+        assert token == "rt"
+        return StoredCredential(
+            provider=OAuthProvider.GOOGLE,
+            scopes=(),
+            access_token="new",
+            refresh_token="rt",
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+
+    resolver = CredentialResolver(vault, refresh_google=_refresh)
+    token = resolver.get_access_token(_MEMBER, OAuthProvider.GOOGLE, frozenset({GOOGLE_GMAIL_SEND}))
+    assert token == "new"
+    stored = vault.get(_MEMBER, OAuthProvider.GOOGLE)
+    assert stored is not None
+    assert stored.scopes == (GOOGLE_GMAIL_SEND,)
+
+
 def test_resolver_not_connected_raises() -> None:
     resolver = CredentialResolver(InMemoryCredentialVault())
     with pytest.raises(RuntimeError, match="not connected"):

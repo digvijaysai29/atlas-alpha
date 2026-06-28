@@ -28,8 +28,8 @@ GOOGLE_OAUTH_SCOPES = (
 )
 
 SLACK_USER_CHAT_WRITE = "chat:write"
-SLACK_IDENTITY_BASIC = "identity.basic"
-SLACK_OAUTH_SCOPES = (SLACK_USER_CHAT_WRITE, SLACK_IDENTITY_BASIC)
+SLACK_USER_READ_EMAIL = "users:read.email"
+SLACK_OAUTH_USER_SCOPES = (SLACK_USER_CHAT_WRITE, SLACK_USER_READ_EMAIL)
 
 _GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 _GOOGLE_OAUTH_API = "https://oauth2.googleapis.com"
@@ -82,7 +82,7 @@ def _stored_from_slack_token(token: dict[str, Any]) -> StoredCredential:
         metadata["user_id"] = str(authed_user["id"])
     return StoredCredential(
         provider=OAuthProvider.SLACK,
-        scopes=SLACK_OAUTH_SCOPES,
+        scopes=SLACK_OAUTH_USER_SCOPES,
         access_token=str(access),
         refresh_token=authed_user.get("refresh_token"),
         expires_at=_expires_at_from_token(authed_user),
@@ -163,12 +163,11 @@ class SlackOAuthClient:
             client_id=self._client_id,
             client_secret=self._client_secret.get_secret_value(),
             redirect_uri=self._redirect_uri,
-            scope=",".join(SLACK_OAUTH_SCOPES),
         )
         uri, _ = client.create_authorization_url(
             _SLACK_AUTH_URL,
             state=state,
-            user_scope=",".join(SLACK_OAUTH_SCOPES),
+            user_scope=",".join(SLACK_OAUTH_USER_SCOPES),
         )
         return str(uri)
 

@@ -272,6 +272,37 @@ def test_post_callback_with_bearer_oidc(
     assert stored.access_token == "post-stored"
 
 
+def test_oidc_get_callback_with_pending_cookie_succeeds(
+    keypair: tuple[RSAPrivateKey, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _oidc_client(keypair)
+    settings = _fastapi_app(client).state.settings
+    state = issue_oauth_state(settings, _MEMBER, OAuthProvider.GOOGLE, binding_email=_EMAIL)
+    payload = consume_oauth_state(settings, state)
+    nonce = str(payload["nonce"])
+    cookie = sign_pending_nonce(settings, nonce)
+    mock_client = MagicMock()
+    mock_client.exchange_code.return_value = _google_exchange("oidc-cookie-stored")
+    monkeypatch.setattr(
+        "atlas.interface.oauth_routes.build_google_oauth_client",
+        lambda _settings: mock_client,
+    )
+    monkeypatch.setattr(
+        "atlas.interface.oauth_routes.assert_provider_email_binding",
+        _passthrough_binding,
+    )
+    resp = client.get(
+        f"/oauth/google/callback?code=abc&state={state}",
+        cookies={OAUTH_PENDING_COOKIE: cookie},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    vault: InMemoryCredentialVault = _fastapi_app(client).state.credential_vault
+    stored = vault.get(_MEMBER, OAuthProvider.GOOGLE)
+    assert stored is not None
+    assert stored.access_token == "oidc-cookie-stored"
+
+
 def test_oidc_get_callback_without_cookie_or_bearer_returns_401(
     keypair: tuple[RSAPrivateKey, Any],
 ) -> None:

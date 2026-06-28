@@ -8,7 +8,7 @@ import pytest
 from pydantic import SecretStr
 
 from atlas.governance.credentials import OAuthProvider, StoredCredential
-from atlas.integrations.oauth import GoogleOAuthClient, SLACK_IDENTITY_BASIC, SLACK_USER_CHAT_WRITE
+from atlas.integrations.oauth import GoogleOAuthClient, SLACK_USER_CHAT_WRITE, SLACK_USER_READ_EMAIL
 from atlas.integrations.oauth_binding import (
     OAuthBindingError,
     assert_emails_match,
@@ -63,17 +63,17 @@ def test_google_provider_email_missing_id_token() -> None:
         google_provider_email(client, {})
 
 
-def test_slack_provider_email_fetches_identity() -> None:
+def test_slack_provider_email_fetches_users_info() -> None:
     response = MagicMock()
     response.json.return_value = {
         "ok": True,
-        "user": {"id": "U123", "email": _ALICE},
+        "user": {"id": "U123", "profile": {"email": _ALICE}},
         "team": {"id": "T456"},
     }
     response.raise_for_status = MagicMock()
     with patch("atlas.integrations.oauth_binding.httpx.Client") as mock_client:
         mock_client.return_value.__enter__.return_value.get.return_value = response
-        email, metadata = slack_provider_email("xoxp-token")
+        email, metadata = slack_provider_email("xoxp-token", user_id="U123")
     assert email == _ALICE
     assert metadata["user_id"] == "U123"
     assert metadata["team_id"] == "T456"
@@ -100,8 +100,10 @@ def test_assert_provider_email_binding_google_mismatch() -> None:
             )
 
 
-def test_slack_oauth_scopes_include_identity() -> None:
-    from atlas.integrations.oauth import SLACK_OAUTH_SCOPES
+def test_slack_oauth_user_scopes_exclude_identity() -> None:
+    from atlas.integrations.oauth import SLACK_OAUTH_USER_SCOPES
 
-    assert SLACK_USER_CHAT_WRITE in SLACK_OAUTH_SCOPES
-    assert SLACK_IDENTITY_BASIC in SLACK_OAUTH_SCOPES
+    assert SLACK_USER_CHAT_WRITE in SLACK_OAUTH_USER_SCOPES
+    assert SLACK_USER_READ_EMAIL in SLACK_OAUTH_USER_SCOPES
+    assert "identity.basic" not in SLACK_OAUTH_USER_SCOPES
+    assert "identity.read" not in SLACK_OAUTH_USER_SCOPES

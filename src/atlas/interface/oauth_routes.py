@@ -31,7 +31,7 @@ from atlas.interface.oauth_state import (
     principal_from_payload,
     principal_from_state,
 )
-from atlas.interface.rate_limit import RateLimited
+from atlas.interface.rate_limit import RateLimited, RateLimitedByIp
 from atlas.interface.security import RequestPrincipal, _bearer_token, _principal_from_headers
 from atlas.integrations.oauth import (
     OAuthExchangeResult,
@@ -269,7 +269,7 @@ def oauth_connect(
     return redirect
 
 
-@router.get("/{provider}/callback", dependencies=[RateLimited])
+@router.get("/{provider}/callback", dependencies=[RateLimitedByIp])
 def oauth_callback_get(
     provider: str,
     request: Request,

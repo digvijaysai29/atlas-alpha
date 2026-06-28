@@ -197,5 +197,7 @@ class CredentialResolver:
         if refresher is None:
             raise RuntimeError(f"{provider.value} refresh not configured")
         updated: StoredCredential = refresher(stored.refresh_token)
+        if not updated.scopes and stored.scopes:
+            updated = updated.model_copy(update={"scopes": stored.scopes})
         self._vault.put(principal, provider, updated)
         return updated

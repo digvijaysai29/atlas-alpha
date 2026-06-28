@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
     from atlas.interface.auth import OidcAuthenticator
 
-_SLACK_IDENTITY_URL = "https://slack.com/api/users.identity"
+_SLACK_USERS_INFO_URL = "https://slack.com/api/users.info"
 
 
 class OAuthBindingError(ValueError):
@@ -98,29 +98,30 @@ def google_provider_email(
     return email, metadata
 
 
-def slack_provider_email(access_token: str) -> tuple[str, dict[str, str]]:
-    """Fetch Slack user identity email via users.identity."""
+def slack_provider_email(access_token: str, *, user_id: str) -> tuple[str, dict[str, str]]:
+    """Fetch Slack user email via users.info (requires users:read.email user scope)."""
     with httpx.Client(timeout=10.0) as http:
         resp = http.get(
-            _SLACK_IDENTITY_URL,
+            _SLACK_USERS_INFO_URL,
+            params={"user": user_id},
             headers={"Authorization": f"Bearer {access_token}"},
         )
         resp.raise_for_status()
         data = resp.json()
 
     if not data.get("ok"):
-        raise OAuthBindingError(data.get("error", "Slack identity lookup failed"))
+        raise OAuthBindingError(data.get("error", "Slack users.info lookup failed"))
 
     user = data.get("user") or {}
-    email_raw = user.get("email")
+    profile = user.get("profile") or {}
+    email_raw = profile.get("email")
     if not email_raw:
-        raise OAuthBindingError("Slack identity missing email")
+        raise OAuthBindingError("Slack user profile missing email")
     email = normalize_email(str(email_raw))
 
     metadata: dict[str, str] = {"provider_email": email}
-    user_id = user.get("id")
-    if user_id:
-        metadata["user_id"] = str(user_id)
+    if user.get("id"):
+        metadata["user_id"] = str(user["id"])
     team = data.get("team") or {}
     if team.get("id"):
         metadata["team_id"] = str(team["id"])
@@ -141,7 +142,15 @@ def assert_provider_email_binding(
             raise OAuthBindingError("Google OAuth client not configured")
         provider_email, metadata = google_provider_email(google_client, token_response)
     elif provider is OAuthProvider.SLACK:
-        provider_email, metadata = slack_provider_email(credential.access_token)
+        user_id = credential.metadata.get("user_id")
+        if not user_id:
+            authed_user = token_response.get("authed_user") or {}
+            raw_id = authed_user.get("id")
+            if raw_id:
+                user_id = str(raw_id)
+        if not user_id:
+            raise OAuthBindingError("Slack OAuth response missing user id")
+        provider_email, metadata = slack_provider_email(credential.access_token, user_id=user_id)
     else:
         raise OAuthBindingError(f"unsupported provider: {provider.value}")
 

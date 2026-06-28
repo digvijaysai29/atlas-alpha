@@ -157,5 +157,23 @@ def enforce_rate_limit(request: Request, principal: RequestPrincipal) -> None:
         )
 
 
+def enforce_rate_limit_by_ip(request: Request) -> None:
+    """FastAPI dependency: IP-keyed rate limit without requiring authenticated identity.
+
+    Used for OAuth provider browser redirects (GET callback) where no bearer token is present.
+    """
+    limiter: RateLimiter | None = getattr(request.app.state, "rate_limiter", None)
+    if limiter is None:
+        return
+    decision = limiter.acquire(rate_limit_key(Principal.anonymous(), request))
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Rate limit exceeded.",
+            headers={"Retry-After": str(ceil(decision.retry_after))},
+        )
+
+
 # A route-level dependency: `dependencies=[RateLimited]` on /chat and /approve.
 RateLimited = Depends(enforce_rate_limit)
+RateLimitedByIp = Depends(enforce_rate_limit_by_ip)
