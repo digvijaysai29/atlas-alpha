@@ -22,7 +22,7 @@ Because the agent takes **real, irreversible actions**, the architecture is buil
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  INTERFACE LAYER            FastAPI · /chat /approve /threads + OIDC (M3.2/3.3) │
+│  INTERFACE LAYER       FastAPI · /chat /approve /threads /kg/ingest + OIDC (M3.2/3.3/4.4) │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  AGENT ORCHESTRATION LAYER  LangGraph state machine  ◄── THE CORE             │
 │      planner → (approval/interrupt) → executor → responder                    │
@@ -42,7 +42,7 @@ Because the agent takes **real, irreversible actions**, the architecture is buil
 
 | Layer | Responsibility | M1 status |
 |---|---|---|
-| **Interface** | HTTP surface; chat + approve/reject + thread reads | **built (M3.2)** |
+| **Interface** | HTTP surface; chat + approve/reject + thread reads + KG ingest (M4.4) | **built (M3.2)** |
 | **Agent Orchestration** | Stateful graph: plan, gate, execute, respond | **built (M1)** |
 | **Integration** | Declare tools (name, args schema, **risk tier**), run them | built (mock tools) |
 | **Knowledge** | RBAC-scoped read/write of PKG + OKG | interface + stub (M2) |
