@@ -45,7 +45,17 @@ class Principal(BaseModel):
 # ``admin`` is intentionally given the wildcard "*" (see ``can`` for how that is interpreted).
 ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
     "admin": frozenset({"*"}),
-    "member": frozenset({"tool:send", "tool:slack:post", "kg:read:org", "kg:read:personal"}),
+    "member": frozenset(
+        {
+            "tool:send",
+            "tool:slack:post",
+            "tool:gmail:send",
+            "tool:calendar:write",
+            "tool:slack:post_as_user",
+            "kg:read:org",
+            "kg:read:personal",
+        }
+    ),
     "guest": frozenset({"kg:read:personal"}),
 }
 

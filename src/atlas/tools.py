@@ -16,11 +16,25 @@ from pydantic import BaseModel, Field, field_validator
 
 from atlas.actions import ActionResult, ProposedAction, RiskTier
 from atlas.config import Settings, get_settings
+from atlas.governance.credentials import CredentialResolver, OAuthProvider
+from atlas.governance.rbac import Principal
+from atlas.integrations.calendar import (
+    CalendarClient,
+    CalendarEvent,
+    FakeCalendarClient,
+    GoogleCalendarClient,
+)
 from atlas.integrations.email import (
     EmailMessage,
     EmailSender,
     FakeEmailSender,
     build_email_sender,
+)
+from atlas.integrations.gmail import FakeGmailSender, GmailApiSender, GmailMessage, GmailSender
+from atlas.integrations.oauth import (
+    GOOGLE_CALENDAR_EVENTS,
+    GOOGLE_GMAIL_SEND,
+    SLACK_USER_CHAT_WRITE,
 )
 from atlas.integrations.slack import (
     SLACK_MAX_TEXT_CHARS,
@@ -28,6 +42,12 @@ from atlas.integrations.slack import (
     SlackMessage,
     SlackSender,
     build_slack_sender,
+)
+from atlas.integrations.slack_user import (
+    FakeSlackUserSender,
+    SlackUserApiSender,
+    SlackUserMessage,
+    SlackUserSender,
 )
 
 logger = logging.getLogger("atlas.tools")
@@ -50,7 +70,7 @@ class BaseTool(abc.ABC):
     required_permission: str | None = None
 
     @abc.abstractmethod
-    def run(self, args: BaseModel) -> Any:
+    def run(self, args: BaseModel, *, principal: Principal) -> Any:
         """Execute the tool with already-validated arguments and return its output."""
         raise NotImplementedError
 
@@ -89,7 +109,7 @@ class ToolRegistry:
             rationale=rationale,
         )
 
-    def execute(self, action: ProposedAction) -> ActionResult:
+    def execute(self, action: ProposedAction, principal: Principal) -> ActionResult:
         """Run a single action, capturing success or failure as an immutable result.
 
         Callers (the executor node) are responsible for confirming the action is authorized *before*
@@ -98,7 +118,7 @@ class ToolRegistry:
         try:
             tool = self.get(action.tool)
             args = tool.ArgsSchema.model_validate(action.args)
-            output = tool.run(args)
+            output = tool.run(args, principal=principal)
             return ActionResult(
                 action_id=action.action_id, tool=action.tool, ok=True, output=output
             )
@@ -128,10 +148,10 @@ class SearchTool(BaseTool):
     risk_tier = RiskTier.READ
     ArgsSchema = _SearchArgs
 
-    def run(self, args: BaseModel) -> Any:
+    def run(self, args: BaseModel, *, principal: Principal) -> Any:
+        del principal
         if not isinstance(args, _SearchArgs):
             raise TypeError(f"expected _SearchArgs, got {type(args).__name__}")
-        # Mock result — a real implementation would query the Knowledge Graph (RBAC-scoped).
         return {
             "query": args.query,
             "results": [f"(mock) top result for {args.query!r}"],
@@ -151,13 +171,14 @@ class SendEmailTool(BaseTool):
     name = "send_email"
     description = "Send an email to a recipient. Irreversible external action."
     risk_tier = RiskTier.SEND
-    required_permission = "tool:send"  # RBAC: only principals granted "tool:send" may use this
+    required_permission = "tool:send"
     ArgsSchema = _SendEmailArgs
 
     def __init__(self, sender: EmailSender | None = None) -> None:
         self._sender = sender
 
-    def run(self, args: BaseModel) -> Any:
+    def run(self, args: BaseModel, *, principal: Principal) -> Any:
+        del principal
         if not isinstance(args, _SendEmailArgs):
             raise TypeError(f"expected _SendEmailArgs, got {type(args).__name__}")
         if self._sender is None:
@@ -183,7 +204,6 @@ class _SlackPostArgs(BaseModel):
                 "channel must be a channel name or ID (C…/G…/#name); "
                 "@-mentions are not allowed for slack_post"
             )
-        # Slack user (U…) and DM conversation (D…) IDs open DMs, not channel posts.
         if stripped[:1].upper() in {"U", "D"} and len(stripped) > 1:
             raise ValueError(
                 "channel must be a channel name or ID (C…/G…/#name); "
@@ -204,7 +224,8 @@ class SlackPostTool(BaseTool):
     def __init__(self, sender: SlackSender | None = None) -> None:
         self._sender = sender
 
-    def run(self, args: BaseModel) -> Any:
+    def run(self, args: BaseModel, *, principal: Principal) -> Any:
+        del principal
         if not isinstance(args, _SlackPostArgs):
             raise TypeError(f"expected _SlackPostArgs, got {type(args).__name__}")
         if self._sender is None:
@@ -213,15 +234,178 @@ class SlackPostTool(BaseTool):
         return self._sender.post(message)
 
 
+class _GmailSendArgs(BaseModel):
+    to: str = Field(min_length=3, description="Recipient address.")
+    subject: str = Field(default="", description="Email subject.")
+    body: str = Field(default="", description="Email body.")
+
+
+class GmailSendTool(BaseTool):
+    """Send email via the user's connected Gmail account."""
+
+    name = "gmail_send"
+    description = "Send an email as the authenticated user via Gmail. Irreversible external action."
+    risk_tier = RiskTier.SEND
+    required_permission = "tool:gmail:send"
+    ArgsSchema = _GmailSendArgs
+
+    def __init__(
+        self,
+        *,
+        sender: GmailSender | None = None,
+        credential_resolver: CredentialResolver | None = None,
+    ) -> None:
+        self._sender = sender
+        self._credential_resolver = credential_resolver
+
+    def run(self, args: BaseModel, *, principal: Principal) -> Any:
+        if not isinstance(args, _GmailSendArgs):
+            raise TypeError(f"expected _GmailSendArgs, got {type(args).__name__}")
+        if self._sender is None or self._credential_resolver is None:
+            raise RuntimeError("gmail not configured")
+        token = self._credential_resolver.get_access_token(
+            principal, OAuthProvider.GOOGLE, frozenset({GOOGLE_GMAIL_SEND})
+        )
+        message = GmailMessage(to=args.to, subject=args.subject, text=args.body or None)
+        return self._sender.send(message, access_token=token)
+
+
+class _CalendarCreateEventArgs(BaseModel):
+    summary: str = Field(min_length=1, description="Event title.")
+    start: str = Field(min_length=1, description="ISO-8601 start datetime.")
+    end: str = Field(min_length=1, description="ISO-8601 end datetime.")
+    description: str = Field(default="", description="Event description.")
+    location: str = Field(default="", description="Event location.")
+    timezone: str = Field(default="UTC", description="IANA timezone for start/end.")
+
+
+class CalendarCreateEventTool(BaseTool):
+    """Create a calendar event on the user's connected Google Calendar."""
+
+    name = "calendar_create_event"
+    description = "Create a calendar event as the authenticated user. Irreversible external action."
+    risk_tier = RiskTier.SEND
+    required_permission = "tool:calendar:write"
+    ArgsSchema = _CalendarCreateEventArgs
+
+    def __init__(
+        self,
+        *,
+        client: CalendarClient | None = None,
+        credential_resolver: CredentialResolver | None = None,
+    ) -> None:
+        self._client = client
+        self._credential_resolver = credential_resolver
+
+    def run(self, args: BaseModel, *, principal: Principal) -> Any:
+        if not isinstance(args, _CalendarCreateEventArgs):
+            raise TypeError(f"expected _CalendarCreateEventArgs, got {type(args).__name__}")
+        if self._client is None or self._credential_resolver is None:
+            raise RuntimeError("calendar not configured")
+        token = self._credential_resolver.get_access_token(
+            principal, OAuthProvider.GOOGLE, frozenset({GOOGLE_CALENDAR_EVENTS})
+        )
+        event = CalendarEvent(
+            summary=args.summary,
+            start=args.start,
+            end=args.end,
+            description=args.description,
+            location=args.location,
+            timezone=args.timezone,
+        )
+        return self._client.create_event(event, access_token=token)
+
+
+class _SlackPostAsUserArgs(BaseModel):
+    channel: str = Field(min_length=1, description="Slack channel ID or name.")
+    text: str = Field(
+        min_length=1,
+        max_length=SLACK_MAX_TEXT_CHARS,
+        description="Message text.",
+    )
+
+
+class SlackPostAsUserTool(BaseTool):
+    """Post to Slack as the authenticated user (user OAuth token)."""
+
+    name = "slack_post_as_user"
+    description = "Post a Slack message as the authenticated user. Irreversible external action."
+    risk_tier = RiskTier.SEND
+    required_permission = "tool:slack:post_as_user"
+    ArgsSchema = _SlackPostAsUserArgs
+
+    def __init__(
+        self,
+        *,
+        sender: SlackUserSender | None = None,
+        credential_resolver: CredentialResolver | None = None,
+    ) -> None:
+        self._sender = sender
+        self._credential_resolver = credential_resolver
+
+    def run(self, args: BaseModel, *, principal: Principal) -> Any:
+        if not isinstance(args, _SlackPostAsUserArgs):
+            raise TypeError(f"expected _SlackPostAsUserArgs, got {type(args).__name__}")
+        if self._sender is None or self._credential_resolver is None:
+            raise RuntimeError("slack user post not configured")
+        token = self._credential_resolver.get_access_token(
+            principal, OAuthProvider.SLACK, frozenset({SLACK_USER_CHAT_WRITE})
+        )
+        message = SlackUserMessage(channel=args.channel, text=args.text)
+        return self._sender.post(message, access_token=token)
+
+
+def _register_oauth_tools(
+    registry: ToolRegistry,
+    credential_resolver: CredentialResolver | None,
+    *,
+    gmail_sender: GmailSender | None = None,
+    calendar_client: CalendarClient | None = None,
+    slack_user_sender: SlackUserSender | None = None,
+) -> None:
+    registry.register(
+        GmailSendTool(
+            sender=gmail_sender,
+            credential_resolver=credential_resolver,
+        )
+    )
+    registry.register(
+        CalendarCreateEventTool(
+            client=calendar_client,
+            credential_resolver=credential_resolver,
+        )
+    )
+    registry.register(
+        SlackPostAsUserTool(
+            sender=slack_user_sender,
+            credential_resolver=credential_resolver,
+        )
+    )
+
+
 def offline_registry(
     sender: EmailSender | None = None,
     slack_sender: SlackSender | None = None,
+    credential_resolver: CredentialResolver | None = None,
 ) -> ToolRegistry:
-    """Registry with fake senders so offline demos/tests never hit Resend or Slack."""
+    """Registry with fake senders so offline demos/tests never hit external APIs."""
+    from atlas.governance.credentials import InMemoryCredentialVault
+    from atlas.integrations.oauth import build_credential_resolver
+
     registry = ToolRegistry()
+    resolver = credential_resolver or build_credential_resolver(
+        InMemoryCredentialVault(), Settings()
+    )
     registry.register(SearchTool())
     registry.register(SendEmailTool(sender=sender or FakeEmailSender()))
     registry.register(SlackPostTool(sender=slack_sender or FakeSlackSender()))
+    _register_oauth_tools(
+        registry,
+        resolver,
+        gmail_sender=FakeGmailSender(),
+        calendar_client=FakeCalendarClient(),
+        slack_user_sender=FakeSlackUserSender(),
+    )
     return registry
 
 
@@ -253,17 +437,54 @@ def _resolve_slack_sender(settings: Settings) -> SlackSender | None:
     return build_slack_sender(settings)
 
 
-def default_registry(settings: Settings | None = None) -> ToolRegistry:
+def _resolve_oauth_tools(
+    settings: Settings,
+    credential_resolver: CredentialResolver | None,
+) -> tuple[
+    GmailSender | None, CalendarClient | None, SlackUserSender | None, CredentialResolver | None
+]:
+    """Return live OAuth tool backends when durable audit and resolver are available."""
+    if credential_resolver is None:
+        if settings.database_url:
+            logger.warning(
+                "DATABASE_URL is set but credential_resolver is unset — per-user OAuth tools "
+                "are disabled until a credential vault is wired."
+            )
+        return None, None, None, None
+    if settings.database_url is None:
+        logger.warning(
+            "OAuth tool credentials may be configured but DATABASE_URL is unset — per-user OAuth "
+            "tools are disabled (idempotency requires durable audit)."
+        )
+        return None, None, None, None
+    return GmailApiSender(), GoogleCalendarClient(), SlackUserApiSender(), credential_resolver
+
+
+def default_registry(
+    settings: Settings | None = None,
+    credential_resolver: CredentialResolver | None = None,
+) -> ToolRegistry:
     """A registry pre-loaded with the standard tools.
 
     Live Resend send is enabled only when ``DATABASE_URL`` (durable audit) and Resend creds are set.
     Live Slack post is enabled only when ``DATABASE_URL`` and ``SLACK_BOT_TOKEN`` are set.
+    Per-user OAuth tools require ``DATABASE_URL`` and a wired ``credential_resolver``.
     """
     settings = settings or get_settings()
     sender = _resolve_email_sender(settings)
     slack_sender = _resolve_slack_sender(settings)
+    gmail_sender, calendar_client, slack_user_sender, resolver = _resolve_oauth_tools(
+        settings, credential_resolver
+    )
     registry = ToolRegistry()
     registry.register(SearchTool())
     registry.register(SendEmailTool(sender=sender))
     registry.register(SlackPostTool(sender=slack_sender))
+    _register_oauth_tools(
+        registry,
+        resolver,
+        gmail_sender=gmail_sender,
+        calendar_client=calendar_client,
+        slack_user_sender=slack_user_sender,
+    )
     return registry

@@ -77,7 +77,15 @@ def test_effective_permissions_none_principal_is_empty() -> None:
 
 def test_effective_permissions_expands_role_grants() -> None:
     assert get_effective_permissions(MEMBER) == frozenset(
-        {"tool:send", "tool:slack:post", "kg:read:org", "kg:read:personal"}
+        {
+            "tool:send",
+            "tool:slack:post",
+            "tool:gmail:send",
+            "tool:calendar:write",
+            "tool:slack:post_as_user",
+            "kg:read:org",
+            "kg:read:personal",
+        }
     )
     assert get_effective_permissions(GUEST) == frozenset({"kg:read:personal"})
 

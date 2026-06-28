@@ -5,6 +5,14 @@ even though the implementation is split across :mod:`atlas.governance.audit` and
 :mod:`atlas.governance.rbac`.
 """
 
+from atlas.governance.credentials import (
+    CredentialAccessError,
+    CredentialResolver,
+    CredentialVault,
+    InMemoryCredentialVault,
+    OAuthProvider,
+    StoredCredential,
+)
 from atlas.governance.audit import (
     GENESIS_HASH,
     AuditEvent,
@@ -67,4 +75,11 @@ __all__ = [
     "Source",
     "collect_sources",
     "score_confidence",
+    # credentials
+    "CredentialAccessError",
+    "CredentialResolver",
+    "CredentialVault",
+    "InMemoryCredentialVault",
+    "OAuthProvider",
+    "StoredCredential",
 ]

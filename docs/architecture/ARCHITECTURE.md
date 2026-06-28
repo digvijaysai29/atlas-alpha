@@ -225,6 +225,7 @@ executor refuses to run a gated action without a matching, in-scope `ApprovalDec
   `required_permission="tool:slack:post"`) behind a pluggable `SlackSender` (managed `slack_sdk` bot
   token; `integrations/slack.py`), mirroring the M4.1 `EmailSender` shape. **Idempotency is inherited**
   from `GuardedExecutor` for any `RiskTier.SEND` action — no new execution code. (PR #29.)
-- **Later (M4.3+):** per-principal "send as the user" OAuth; Gmail/Jira/Calendar adapters;
+- **M4.3 (done):** per-principal OAuth + **HashiCorp Vault** credential store (`HashiCorpCredentialVault`, KV v2); `gmail_send`, `calendar_create_event`, `slack_post_as_user` behind `CredentialResolver` + inherited `GuardedExecutor` idempotency. OAuth HTTP routes under `/oauth/*`. See [`M4.3_PLAN.md`](../plans/M4.3_PLAN.md).
+- **Later (M4.4+):** Jira adapter;
   resource/argument-aware `ToolPermission`; pgvector semantic retrieval; SSE streaming; Merkle
   anchoring.

@@ -1,5 +1,13 @@
 {
   "admin": ["*"],
-  "member": ["tool:send", "tool:slack:post", "kg:read:org", "kg:read:personal"],
+  "member": [
+    "tool:send",
+    "tool:slack:post",
+    "tool:gmail:send",
+    "tool:calendar:write",
+    "tool:slack:post_as_user",
+    "kg:read:org",
+    "kg:read:personal"
+  ],
   "guest": ["kg:read:personal"]
 }

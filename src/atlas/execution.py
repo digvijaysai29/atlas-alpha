@@ -12,6 +12,7 @@ from __future__ import annotations
 from atlas.actions import ActionResult, ProposedAction, requires_approval
 from atlas.governance import AuditLog
 from atlas.governance.audit import _counts_as_executed
+from atlas.governance.rbac import Principal
 from atlas.tools import ToolRegistry
 
 
@@ -21,11 +22,13 @@ class GuardedExecutor:
     def __init__(self, registry: ToolRegistry) -> None:
         self._registry = registry
 
-    def execute_guarded(self, action: ProposedAction, audit: AuditLog) -> ActionResult:
+    def execute_guarded(
+        self, action: ProposedAction, audit: AuditLog, principal: Principal
+    ) -> ActionResult:
         if requires_approval(action.risk_tier) and audit.has_executed(action.action_id):
             audit.replay_skipped(action, reason="already executed")
             return self._replay_result(action, audit)
-        result = self._registry.execute(action)
+        result = self._registry.execute(action, principal)
         if result.ok:
             audit.executed(result)
         else:

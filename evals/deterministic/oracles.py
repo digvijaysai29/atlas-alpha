@@ -134,8 +134,10 @@ def idempotency_replay_skip() -> OracleResult:
     guarded = GuardedExecutor(registry)
     action = _approved_send(registry)
 
-    first = guarded.execute_guarded(action, audit)
-    second = guarded.execute_guarded(action, audit)
+    principal = Principal(user_id="test", roles=("member",), org_id="org1")
+
+    first = guarded.execute_guarded(action, audit, principal)
+    second = guarded.execute_guarded(action, audit, principal)
 
     event_types = [e.event_type for e in audit.events()]
     passed = (
@@ -161,9 +163,11 @@ def idempotency_failed_retry() -> OracleResult:
     guarded = GuardedExecutor(registry)
     action = _approved_send(registry)
 
-    first = guarded.execute_guarded(action, audit)
+    principal = Principal(user_id="test", roles=("member",), org_id="org1")
+
+    first = guarded.execute_guarded(action, audit, principal)
     sender.fail = False
-    second = guarded.execute_guarded(action, audit)
+    second = guarded.execute_guarded(action, audit, principal)
 
     event_types = [e.event_type for e in audit.events()]
     passed = (

@@ -75,6 +75,7 @@ class Settings(BaseSettings):
     api_user_header: str = Field(default="X-Atlas-User-Id", alias="ATLAS_API_USER_HEADER")
     api_roles_header: str = Field(default="X-Atlas-Roles", alias="ATLAS_API_ROLES_HEADER")
     api_org_header: str = Field(default="X-Atlas-Org", alias="ATLAS_API_ORG_HEADER")
+    api_email_header: str = Field(default="X-Atlas-Email", alias="ATLAS_API_EMAIL_HEADER")
 
     # --- Authentication (M3.3 OIDC) ----------------------------------------
     # When issuer + audience + jwks_uri are ALL set (see ``oidc_enabled``), bearer-token validation
@@ -86,6 +87,7 @@ class Settings(BaseSettings):
     oidc_user_claim: str = Field(default="sub", alias="ATLAS_OIDC_USER_CLAIM")
     oidc_roles_claim: str = Field(default="roles", alias="ATLAS_OIDC_ROLES_CLAIM")
     oidc_org_claim: str = Field(default="org_id", alias="ATLAS_OIDC_ORG_CLAIM")
+    oidc_email_claim: str = Field(default="email", alias="ATLAS_OIDC_EMAIL_CLAIM")
     # Clock-skew tolerance (seconds) for exp/nbf. 60s is the common default: large enough to absorb
     # normal client/IdP NTP drift, small enough not to meaningfully extend an expired token.
     oidc_leeway: int = Field(default=60, alias="ATLAS_OIDC_LEEWAY")
@@ -110,6 +112,84 @@ class Settings(BaseSettings):
 
     # --- Slack (M4.2 — managed bot post) ------------------------------------
     slack_bot_token: SecretStr | None = Field(default=None, alias="SLACK_BOT_TOKEN")
+
+    # --- Credential vault (M4.3 — HashiCorp Vault KV v2) ----------------------
+    vault_addr: str | None = Field(default=None, alias="VAULT_ADDR")
+    vault_token: SecretStr | None = Field(default=None, alias="VAULT_TOKEN")
+    vault_mount: str = Field(default="secret", alias="VAULT_MOUNT")
+    vault_namespace: str | None = Field(default=None, alias="VAULT_NAMESPACE")
+    vault_role_id: str | None = Field(default=None, alias="VAULT_ROLE_ID")
+    vault_secret_id: SecretStr | None = Field(default=None, alias="VAULT_SECRET_ID")
+
+    # --- Outbound OAuth (M4.3 — per-user integrations) ------------------------
+    google_oauth_client_id: str | None = Field(default=None, alias="GOOGLE_OAUTH_CLIENT_ID")
+    google_oauth_client_secret: SecretStr | None = Field(
+        default=None, alias="GOOGLE_OAUTH_CLIENT_SECRET"
+    )
+    google_oauth_redirect_uri: str | None = Field(default=None, alias="GOOGLE_OAUTH_REDIRECT_URI")
+    slack_oauth_client_id: str | None = Field(default=None, alias="SLACK_OAUTH_CLIENT_ID")
+    slack_oauth_client_secret: SecretStr | None = Field(
+        default=None, alias="SLACK_OAUTH_CLIENT_SECRET"
+    )
+    slack_oauth_redirect_uri: str | None = Field(default=None, alias="SLACK_OAUTH_REDIRECT_URI")
+    oauth_success_url: str | None = Field(default=None, alias="ATLAS_OAUTH_SUCCESS_URL")
+    oauth_state_secret: SecretStr | None = Field(default=None, alias="ATLAS_OAUTH_STATE_SECRET")
+    oauth_allow_insecure_state: bool = Field(
+        default=False, alias="ATLAS_OAUTH_ALLOW_INSECURE_STATE"
+    )
+
+    @model_validator(mode="after")
+    def validate_vault_config(self) -> Self:
+        """Vault auth must be token-based or AppRole — partial AppRole is rejected."""
+        has_token = _nonempty_secret(self.vault_token)
+        has_role = _nonempty_str(self.vault_role_id) and _nonempty_secret(self.vault_secret_id)
+        partial_role = (
+            _nonempty_str(self.vault_role_id) or _nonempty_secret(self.vault_secret_id)
+        ) and not has_role
+        if partial_role:
+            raise ValueError(
+                "Partial Vault AppRole configuration: set both VAULT_ROLE_ID and "
+                "VAULT_SECRET_ID or leave both blank."
+            )
+        if _nonempty_str(self.vault_addr) and not has_token and not has_role:
+            raise ValueError(
+                "VAULT_ADDR is set but neither VAULT_TOKEN nor AppRole credentials are configured."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def validate_google_oauth_config(self) -> Self:
+        google_fields = {
+            "GOOGLE_OAUTH_CLIENT_ID": _nonempty_str(self.google_oauth_client_id),
+            "GOOGLE_OAUTH_CLIENT_SECRET": _nonempty_secret(self.google_oauth_client_secret),
+            "GOOGLE_OAUTH_REDIRECT_URI": _nonempty_str(self.google_oauth_redirect_uri),
+        }
+        set_names = [name for name, present in google_fields.items() if present]
+        unset_names = [name for name, present in google_fields.items() if not present]
+        if set_names and unset_names:
+            msg = (
+                f"Partial Google OAuth configuration: {', '.join(set_names)} set but "
+                f"{', '.join(unset_names)} missing. Set all three or leave all blank."
+            )
+            raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def validate_slack_oauth_config(self) -> Self:
+        slack_fields = {
+            "SLACK_OAUTH_CLIENT_ID": _nonempty_str(self.slack_oauth_client_id),
+            "SLACK_OAUTH_CLIENT_SECRET": _nonempty_secret(self.slack_oauth_client_secret),
+            "SLACK_OAUTH_REDIRECT_URI": _nonempty_str(self.slack_oauth_redirect_uri),
+        }
+        set_names = [name for name, present in slack_fields.items() if present]
+        unset_names = [name for name, present in slack_fields.items() if not present]
+        if set_names and unset_names:
+            msg = (
+                f"Partial Slack OAuth configuration: {', '.join(set_names)} set but "
+                f"{', '.join(unset_names)} missing. Set all three or leave all blank."
+            )
+            raise ValueError(msg)
+        return self
 
     @model_validator(mode="after")
     def validate_oidc_config(self) -> Self:
@@ -183,6 +263,33 @@ class Settings(BaseSettings):
             raise ValueError(msg)
         return self
 
+    @model_validator(mode="after")
+    def validate_oauth_state_secret(self) -> Self:
+        """OAuth routes require a dedicated state HMAC secret unless dev insecure flag is set."""
+        if self.oauth_routes_enabled and not _nonempty_secret(self.oauth_state_secret):
+            if not self.oauth_allow_insecure_state:
+                raise ValueError(
+                    "OAuth is enabled but ATLAS_OAUTH_STATE_SECRET is not set. "
+                    "Set a strong secret (openssl rand -base64 32) or "
+                    "ATLAS_OAUTH_ALLOW_INSECURE_STATE=true for dev/test only."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def validate_oauth_vault_config(self) -> Self:
+        """Durable Postgres + OAuth requires HashiCorp Vault — in-memory vault is not allowed."""
+        if (
+            self.oauth_routes_enabled
+            and _nonempty_secret(self.database_url)
+            and not self.credential_vault_enabled
+        ):
+            raise ValueError(
+                "OAuth is enabled with DATABASE_URL but Vault is not configured. "
+                "Set VAULT_ADDR + VAULT_TOKEN (or AppRole) — in-memory vault is not allowed "
+                "with durable persistence."
+            )
+        return self
+
     @property
     def oidc_enabled(self) -> bool:
         """True when OIDC is fully configured; otherwise the dev header shim is used."""
@@ -210,6 +317,38 @@ class Settings(BaseSettings):
     def slack_configured(self) -> bool:
         """True when a Slack bot token is present."""
         return _nonempty_secret(self.slack_bot_token)
+
+    @property
+    def vault_configured(self) -> bool:
+        """True when Vault address and authentication are present."""
+        has_token = _nonempty_secret(self.vault_token)
+        has_role = _nonempty_str(self.vault_role_id) and _nonempty_secret(self.vault_secret_id)
+        return _nonempty_str(self.vault_addr) and (has_token or has_role)
+
+    @property
+    def oauth_google_configured(self) -> bool:
+        return (
+            _nonempty_str(self.google_oauth_client_id)
+            and _nonempty_secret(self.google_oauth_client_secret)
+            and _nonempty_str(self.google_oauth_redirect_uri)
+        )
+
+    @property
+    def oauth_slack_configured(self) -> bool:
+        return (
+            _nonempty_str(self.slack_oauth_client_id)
+            and _nonempty_secret(self.slack_oauth_client_secret)
+            and _nonempty_str(self.slack_oauth_redirect_uri)
+        )
+
+    @property
+    def credential_vault_enabled(self) -> bool:
+        """True when a durable Vault backend is configured for user OAuth tokens."""
+        return self.vault_configured
+
+    @property
+    def oauth_routes_enabled(self) -> bool:
+        return self.oauth_google_configured or self.oauth_slack_configured
 
     @property
     def has_anthropic_key(self) -> bool:
