@@ -83,6 +83,42 @@ def test_ingest_validation_error_on_missing_text() -> None:
     assert resp.status_code == 422
 
 
+def test_ingest_validation_error_on_whitespace_only_text() -> None:
+    client, _ = _build()
+    resp = client.post(
+        "/kg/ingest",
+        json={"text": "   ", "title": "blank"},
+        headers=_headers("alice"),
+    )
+    assert resp.status_code == 422
+
+
+def test_whitespace_only_ingest_leaves_prior_entities_and_audit_unchanged() -> None:
+    client, atlas = _build()
+    first = client.post(
+        "/kg/ingest",
+        json={"text": "alice onboarding plan", "title": "plan", "scope": "personal"},
+        headers=_headers("alice"),
+    )
+    assert first.status_code == 200
+    entity_ids = first.json()["entity_ids"]
+    audit_count_before = len(atlas.audit.events())
+
+    second = client.post(
+        "/kg/ingest",
+        json={"text": "   ", "title": "plan", "scope": "personal"},
+        headers=_headers("alice"),
+    )
+    assert second.status_code == 422
+    assert len(atlas.audit.events()) == audit_count_before
+
+    still_there = client.post(
+        "/chat", json={"message": "onboarding"}, headers=_headers("alice")
+    ).json()
+    refs = {s.get("ref") for s in still_there.get("sources", [])}
+    assert any(ref in entity_ids for ref in refs)
+
+
 def test_ingested_personal_doc_is_owner_scoped_through_chat() -> None:
     # Ingest as alice, then prove the planner's RBAC-scoped retrieval surfaces it for alice (cited as
     # a knowledge source) but never for bob — end-to-end PKG isolation through the HTTP layer.

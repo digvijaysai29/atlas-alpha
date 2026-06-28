@@ -26,9 +26,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from atlas.governance.audit import AuditLog
 from atlas.governance.policy import PolicyStore
@@ -50,13 +50,15 @@ DEFAULT_ORG_ACL: tuple[str, ...] = ("kg:read:org",)
 
 Scope = Literal["personal", "org"]
 
+NonEmptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
 
 class IngestDocument(BaseModel):
     """A document submitted for ingestion. Immutable; validated at the boundary."""
 
     model_config = ConfigDict(frozen=True)
 
-    text: str = Field(min_length=1, description="The raw document text to chunk and store.")
+    text: NonEmptyText = Field(description="The raw document text to chunk and store.")
     title: str = Field(
         min_length=1, description="Human-readable title; also used to derive a stable source id."
     )
@@ -158,6 +160,8 @@ class IngestionService:
         scope, acl, owner_segment = self._resolve_scope_acl(principal, document)
         source_id = _source_id_for(document)
         chunks = chunk_text(document.text, chunk_size=self._chunk_size, overlap=self._chunk_overlap)
+        if not chunks:
+            raise IngestionDenied("document text is empty")
 
         entity_ids: list[str] = []
         for index, chunk in enumerate(chunks):

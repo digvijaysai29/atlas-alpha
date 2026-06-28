@@ -12,6 +12,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from atlas.knowledge.ingestion import NonEmptyText
+
 
 # --- errors (consistent envelope) -------------------------------------------
 class ErrorDetail(BaseModel):
@@ -36,7 +38,7 @@ class IngestRequest(BaseModel):
     (``org`` requires ``kg:write:org``). ``org_acl`` is only meaningful for ``org`` scope.
     """
 
-    text: str = Field(min_length=1, description="The raw document text to ingest.")
+    text: NonEmptyText = Field(description="The raw document text to ingest.")
     title: str = Field(min_length=1, description="Human-readable title.")
     type: str = "doc"
     scope: Literal["personal", "org"] = "personal"

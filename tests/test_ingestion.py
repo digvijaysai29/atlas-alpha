@@ -8,6 +8,7 @@ fail-closed OKG write gate, and the content-agnostic audit event. Mirrors the AA
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from atlas.governance import InMemoryAuditLog, InMemoryPolicyStore, Principal
 from atlas.knowledge import (
@@ -54,6 +55,26 @@ def test_chunk_text_empty_or_whitespace_yields_no_chunks() -> None:
 def test_chunk_text_rejects_invalid_overlap() -> None:
     with pytest.raises(ValueError):
         chunk_text("x", chunk_size=10, overlap=10)
+
+
+def test_ingest_document_rejects_whitespace_only_text() -> None:
+    with pytest.raises(ValidationError):
+        IngestDocument(text="   ", title="t")
+
+
+def test_whitespace_only_ingest_denied_after_prior_real_content() -> None:
+    audit = InMemoryAuditLog()
+    service, kg = _service(audit)
+    document = IngestDocument(text="real content here", title="memo", source_id="src-1")
+    first = service.ingest(ALICE, document)
+    assert first.chunk_count == 1
+
+    with pytest.raises(ValidationError):
+        IngestDocument(text="   ", title="memo", source_id="src-1")
+
+    assert len(kg.query(ALICE, "real", limit=10)) == 1
+    assert len(audit.events()) == 1
+    assert audit.events()[0].detail == {"scope": "personal", "entity_count": 1}
 
 
 # --- ingest: chunking → entities ---------------------------------------------

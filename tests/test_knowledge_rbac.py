@@ -14,6 +14,7 @@ from atlas.governance import InMemoryPolicyStore
 from atlas.governance.rbac import Principal
 from atlas.knowledge import seed_demo_graph
 from atlas.knowledge.interfaces import Entity, can_read, identity_acl
+from atlas.knowledge.memory_store import InMemoryKnowledgeGraph
 from atlas.orchestration import build_graph
 from atlas.orchestration.graph import Atlas
 from atlas.orchestration.serde import atlas_serde
@@ -93,6 +94,37 @@ def test_query_keyword_match_is_scoped_to_terms() -> None:
 def test_query_respects_limit() -> None:
     graph = seed_demo_graph()
     assert len(graph.query(MEMBER, "", limit=1)) == 1
+
+
+def test_query_limit_after_can_read_with_dense_foreign_pkg() -> None:
+    # Six foreign PKG nodes sort before doc-1; limit=1 must still return the readable org entity
+    # (in-memory reference for Postgres pagination + can_read parity).
+    graph = InMemoryKnowledgeGraph()
+    for index in range(6):
+        graph.upsert_entity(
+            Entity(
+                id=f"a-pkg-{index:02d}",
+                type="note",
+                name=f"Foreign PKG {index}",
+                content="private notes",
+                acl=(identity_acl(f"other-{index}"),),
+                scope="personal",
+            )
+        )
+    graph.upsert_entity(
+        Entity(
+            id="doc-1",
+            type="doc",
+            name="Org policy",
+            content="Organization-wide policy text.",
+            acl=("kg:read:org",),
+            scope="org",
+        )
+    )
+    admin = Principal(user_id="root", roles=("admin",))
+    results = graph.query(admin, "", limit=1)
+    assert len(results) == 1
+    assert results[0].id == "doc-1"
 
 
 # --- planner wiring (RBAC-filtered kg_context flows into state) ---------------
