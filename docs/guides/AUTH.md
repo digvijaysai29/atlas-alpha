@@ -137,8 +137,9 @@ uv run python scripts/manage_policy.py grant member kg:read:*   # one grant cove
 
 ## Rate limiting (M3.6)
 
-The two graph-invoking endpoints — **`/chat`** and **`/approve`** — are rate limited **per principal**
-to cap cost and resist DoS. `/threads/{id}` reads and `/healthz` are not limited.
+The state-changing endpoints — **`/chat`**, **`/approve`**, and **`/kg/ingest`** (M4.4) — are rate
+limited **per principal** to cap cost and resist DoS. `/threads/{id}` reads and `/healthz` are not
+limited.
 
 - **Backend: Upstash** (managed serverless Redis) via the `upstash-ratelimit` SDK
   (`interface/rate_limit.py`). A fixed window of `ATLAS_RATE_LIMIT_REQUESTS` per

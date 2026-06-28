@@ -261,8 +261,10 @@ enabling phase arrives:
 2. **Verified identity (replace the trusted-network header shim)** → ✅ **DONE in M3.3** (OIDC bearer
    auth; `interface/auth.py`). The header shim remains a dev-only fallback — real deployments set
    `ATLAS_OIDC_*` (see [`AUTH.md`](./AUTH.md)).
-3. **Fail-closed default `Entity.acl`** → **M3.3+** (still no *untrusted* `upsert_entity` write path —
-   M3.2 added no KG write endpoint; revisit when an API write path lands).
+3. **Fail-closed default `Entity.acl`** → **M3.3+**. The API write path landed in **M4.4**
+   (`POST /kg/ingest`): the server resolves scope/ACL from the authenticated principal (personal →
+   per-user identity ACL; org → `kg:write:org`), so the LLM/caller never sets ACLs. See
+   [`M4.4_PLAN.md`](../plans/M4.4_PLAN.md).
 3. **Richer `ToolPermission`/ACL model** (resource/argument-aware) → M4 (M3.5 added hierarchical
    `:*` wildcard matching on plain strings; structured permissions are still a placeholder).
 4. **Merkle / external anchoring** of the hash-chained audit → cross-cutting hardening.

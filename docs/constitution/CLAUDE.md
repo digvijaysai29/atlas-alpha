@@ -92,6 +92,7 @@ orchestration/       ← THE CORE
 interface/           ← M3.2 FastAPI HTTP layer over the compiled graph
   app.py             create_app(atlas?, settings?) factory (DI mirrors build_graph); ErrorResponse handlers
   routes.py          /healthz, /chat, /approve, /threads/{id} (sync handlers → threadpool); get_atlas dep
+  kg_routes.py       /kg/ingest — KG write path; rate-limited; IngestionDenied→403 (M4.4)
   auth.py            OidcAuthenticator — RS256 bearer-JWT validation (JWKS), claims→Principal;
                      build_authenticator(settings); _parse_roles (M3.3)
   security.py        get_request_principal (OIDC bearer if configured, else dev header shim);
