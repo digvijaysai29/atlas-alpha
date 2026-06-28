@@ -10,9 +10,9 @@ from __future__ import annotations
 import abc
 import base64
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from enum import Enum
-from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -147,8 +147,8 @@ class CredentialResolver:
         self,
         vault: CredentialVault,
         *,
-        refresh_google: Any | None = None,
-        refresh_slack: Any | None = None,
+        refresh_google: Callable[..., StoredCredential] | None = None,
+        refresh_slack: Callable[[str], StoredCredential] | None = None,
     ) -> None:
         self._vault = vault
         self._refresh_google = refresh_google
@@ -192,15 +192,14 @@ class CredentialResolver:
     ) -> StoredCredential:
         if not stored.refresh_token:
             raise RuntimeError(f"{provider.value} token expired and no refresh token — reconnect")
-        refresher = (
-            self._refresh_google if provider is OAuthProvider.GOOGLE else self._refresh_slack
-        )
-        if refresher is None:
-            raise RuntimeError(f"{provider.value} refresh not configured")
         if provider is OAuthProvider.GOOGLE:
-            updated = refresher(stored.refresh_token, prior_scopes=stored.scopes)
+            if self._refresh_google is None:
+                raise RuntimeError(f"{provider.value} refresh not configured")
+            updated = self._refresh_google(stored.refresh_token, prior_scopes=stored.scopes)
         else:
-            updated = refresher(stored.refresh_token)
+            if self._refresh_slack is None:
+                raise RuntimeError(f"{provider.value} refresh not configured")
+            updated = self._refresh_slack(stored.refresh_token)
         if not updated.scopes and stored.scopes:
             updated = updated.model_copy(update={"scopes": stored.scopes})
         self._vault.put(principal, provider, updated)
