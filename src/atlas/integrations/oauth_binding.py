@@ -15,7 +15,7 @@ from atlas.config import Settings
 from atlas.governance.credentials import OAuthProvider, StoredCredential
 from atlas.interface.auth import AuthDependencyError, AuthError
 from atlas.interface.security import _bearer_token
-from atlas.integrations.oauth import GoogleOAuthClient, SlackOAuthClient
+from atlas.integrations.oauth import GoogleOAuthClient
 
 if TYPE_CHECKING:
     from fastapi import Request

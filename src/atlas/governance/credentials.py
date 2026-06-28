@@ -128,9 +128,7 @@ class InMemoryCredentialVault(CredentialVault):
         self._store.pop(self._key(principal, provider), None)
 
     def list_connected(self, principal: Principal) -> list[OAuthProvider]:
-        require_org_id(principal)
-        org_id = principal.org_id
-        assert org_id is not None
+        org_id = require_org_id(principal)
         return sorted(
             {
                 provider

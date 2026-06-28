@@ -156,7 +156,7 @@ def test_double_gmail_execute_calls_sender_once_and_replay_skips() -> None:
     )
     resolver = build_credential_resolver(vault, Settings())
     registry = offline_registry(credential_resolver=resolver)
-    gmail = registry.get("gmail_send")._sender
+    gmail = registry.get("gmail_send")._sender  # type: ignore[attr-defined]
     assert isinstance(gmail, FakeGmailSender)
     audit = InMemoryAuditLog()
     guarded = GuardedExecutor(registry)

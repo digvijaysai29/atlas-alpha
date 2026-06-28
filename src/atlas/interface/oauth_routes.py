@@ -203,9 +203,7 @@ def _complete_oauth_callback(
 
     exchange = _exchange_code(settings, oauth_provider, code)
     google_client = (
-        build_google_oauth_client(settings)
-        if oauth_provider is OAuthProvider.GOOGLE
-        else None
+        build_google_oauth_client(settings) if oauth_provider is OAuthProvider.GOOGLE else None
     )
     try:
         credential = assert_provider_email_binding(
@@ -258,9 +256,7 @@ def oauth_connect(
         binding_email = resolve_binding_email(request, settings)
     except OAuthBindingError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
-    state = issue_oauth_state(
-        settings, principal, oauth_provider, binding_email=binding_email
-    )
+    state = issue_oauth_state(settings, principal, oauth_provider, binding_email=binding_email)
     url = _authorization_url(settings, oauth_provider, state)
     secure = _request_is_secure(request)
     accept = request.headers.get("accept", "")

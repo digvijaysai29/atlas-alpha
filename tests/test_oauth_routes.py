@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from atlas.config import Settings
@@ -37,15 +38,19 @@ _AUDIENCE = "atlas-api"
 
 
 def _oauth_settings(**overrides: Any) -> Settings:
-  base = {
-      "ANTHROPIC_API_KEY": None,
-      "GOOGLE_OAUTH_CLIENT_ID": "gid",
-      "GOOGLE_OAUTH_CLIENT_SECRET": "gsecret",
-      "GOOGLE_OAUTH_REDIRECT_URI": "http://localhost/oauth/google/callback",
-      "ATLAS_OAUTH_ALLOW_INSECURE_STATE": True,
-  }
-  base.update(overrides)
-  return Settings(**base)
+    base = {
+        "ANTHROPIC_API_KEY": None,
+        "GOOGLE_OAUTH_CLIENT_ID": "gid",
+        "GOOGLE_OAUTH_CLIENT_SECRET": "gsecret",
+        "GOOGLE_OAUTH_REDIRECT_URI": "http://localhost/oauth/google/callback",
+        "ATLAS_OAUTH_ALLOW_INSECURE_STATE": True,
+    }
+    base.update(overrides)
+    return Settings.model_validate(base)
+
+
+def _fastapi_app(client: TestClient) -> FastAPI:
+    return cast(FastAPI, client.app)
 
 
 def _google_exchange(access_token: str) -> OAuthExchangeResult:
@@ -123,7 +128,7 @@ def test_list_connections_empty(oauth_client: TestClient) -> None:
 
 
 def test_list_connections_shows_connected(oauth_client: TestClient) -> None:
-    vault: InMemoryCredentialVault = oauth_client.app.state.credential_vault
+    vault: InMemoryCredentialVault = _fastapi_app(oauth_client).state.credential_vault
     vault.put(
         _MEMBER,
         OAuthProvider.GOOGLE,
@@ -173,7 +178,7 @@ def test_connect_json_mode_returns_url_and_cookie(
 def test_callback_stores_credential_with_headers(
     oauth_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    settings = oauth_client.app.state.settings
+    settings = _fastapi_app(oauth_client).state.settings
     state = issue_oauth_state(settings, _MEMBER, OAuthProvider.GOOGLE, binding_email=_EMAIL)
     mock_client = MagicMock()
     mock_client.exchange_code.return_value = _google_exchange("stored")
@@ -191,7 +196,7 @@ def test_callback_stores_credential_with_headers(
         follow_redirects=False,
     )
     assert resp.status_code == 302
-    vault: InMemoryCredentialVault = oauth_client.app.state.credential_vault
+    vault: InMemoryCredentialVault = _fastapi_app(oauth_client).state.credential_vault
     stored = vault.get(_MEMBER, OAuthProvider.GOOGLE)
     assert stored is not None
     assert stored.access_token == "stored"
@@ -200,7 +205,7 @@ def test_callback_stores_credential_with_headers(
 def test_callback_with_pending_cookie_no_headers(
     oauth_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    settings = oauth_client.app.state.settings
+    settings = _fastapi_app(oauth_client).state.settings
     state = issue_oauth_state(settings, _MEMBER, OAuthProvider.GOOGLE, binding_email=_EMAIL)
     payload = consume_oauth_state(settings, state)
     nonce = str(payload["nonce"])
@@ -221,14 +226,14 @@ def test_callback_with_pending_cookie_no_headers(
         follow_redirects=False,
     )
     assert resp.status_code == 302
-    vault: InMemoryCredentialVault = oauth_client.app.state.credential_vault
+    vault: InMemoryCredentialVault = _fastapi_app(oauth_client).state.credential_vault
     stored = vault.get(_MEMBER, OAuthProvider.GOOGLE)
     assert stored is not None
     assert stored.access_token == "cookie-stored"
 
 
 def test_callback_without_auth_returns_401(oauth_client: TestClient) -> None:
-    settings = oauth_client.app.state.settings
+    settings = _fastapi_app(oauth_client).state.settings
     state = issue_oauth_state(settings, _MEMBER, OAuthProvider.GOOGLE, binding_email=_EMAIL)
     resp = oauth_client.get(
         f"/oauth/google/callback?code=abc&state={state}",
@@ -241,7 +246,7 @@ def test_post_callback_with_bearer_oidc(
     keypair: tuple[RSAPrivateKey, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client = _oidc_client(keypair)
-    settings = client.app.state.settings
+    settings = _fastapi_app(client).state.settings
     state = issue_oauth_state(settings, _MEMBER, OAuthProvider.GOOGLE, binding_email=_EMAIL)
     mock_client = MagicMock()
     mock_client.exchange_code.return_value = _google_exchange("post-stored")
@@ -261,7 +266,7 @@ def test_post_callback_with_bearer_oidc(
         follow_redirects=False,
     )
     assert resp.status_code == 302
-    vault: InMemoryCredentialVault = client.app.state.credential_vault
+    vault: InMemoryCredentialVault = _fastapi_app(client).state.credential_vault
     stored = vault.get(_MEMBER, OAuthProvider.GOOGLE)
     assert stored is not None
     assert stored.access_token == "post-stored"
@@ -271,7 +276,7 @@ def test_oidc_get_callback_without_cookie_or_bearer_returns_401(
     keypair: tuple[RSAPrivateKey, Any],
 ) -> None:
     client = _oidc_client(keypair)
-    settings = client.app.state.settings
+    settings = _fastapi_app(client).state.settings
     state = issue_oauth_state(settings, _MEMBER, OAuthProvider.GOOGLE, binding_email=_EMAIL)
     resp = client.get(
         f"/oauth/google/callback?code=abc&state={state}",
@@ -281,7 +286,7 @@ def test_oidc_get_callback_without_cookie_or_bearer_returns_401(
 
 
 def test_revoke_deletes_credential(oauth_client: TestClient) -> None:
-    vault: InMemoryCredentialVault = oauth_client.app.state.credential_vault
+    vault: InMemoryCredentialVault = _fastapi_app(oauth_client).state.credential_vault
     vault.put(
         _MEMBER,
         OAuthProvider.GOOGLE,
@@ -294,6 +299,7 @@ def test_revoke_deletes_credential(oauth_client: TestClient) -> None:
     resp = oauth_client.delete("/oauth/google", headers=_HEADERS)
     assert resp.status_code == 200
     assert vault.get(_MEMBER, OAuthProvider.GOOGLE) is None
+
 
 def test_connect_without_email_returns_400(oauth_client: TestClient) -> None:
     headers = {
@@ -309,10 +315,8 @@ def test_connect_without_email_returns_400(oauth_client: TestClient) -> None:
 def test_callback_rejects_provider_email_mismatch(
     oauth_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    settings = oauth_client.app.state.settings
-    state = issue_oauth_state(
-        settings, _MEMBER, OAuthProvider.GOOGLE, binding_email=_EMAIL
-    )
+    settings = _fastapi_app(oauth_client).state.settings
+    state = issue_oauth_state(settings, _MEMBER, OAuthProvider.GOOGLE, binding_email=_EMAIL)
     mock_client = MagicMock()
     mock_client.exchange_code.return_value = _google_exchange("stolen")
     monkeypatch.setattr(
@@ -333,7 +337,7 @@ def test_callback_rejects_provider_email_mismatch(
         follow_redirects=False,
     )
     assert resp.status_code == 400
-    vault: InMemoryCredentialVault = oauth_client.app.state.credential_vault
+    vault: InMemoryCredentialVault = _fastapi_app(oauth_client).state.credential_vault
     assert vault.get(_MEMBER, OAuthProvider.GOOGLE) is None
 
 
@@ -341,10 +345,8 @@ def test_post_callback_rejects_cross_account_linking(
     keypair: tuple[RSAPrivateKey, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client = _oidc_client(keypair)
-    settings = client.app.state.settings
-    state = issue_oauth_state(
-        settings, _MEMBER, OAuthProvider.GOOGLE, binding_email=_EMAIL
-    )
+    settings = _fastapi_app(client).state.settings
+    state = issue_oauth_state(settings, _MEMBER, OAuthProvider.GOOGLE, binding_email=_EMAIL)
     mock_client = MagicMock()
     mock_client.exchange_code.return_value = _google_exchange("victim-token")
     monkeypatch.setattr(
@@ -367,6 +369,5 @@ def test_post_callback_rejects_cross_account_linking(
         follow_redirects=False,
     )
     assert resp.status_code == 400
-    vault: InMemoryCredentialVault = client.app.state.credential_vault
+    vault: InMemoryCredentialVault = _fastapi_app(client).state.credential_vault
     assert vault.get(_MEMBER, OAuthProvider.GOOGLE) is None
-

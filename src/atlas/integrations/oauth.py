@@ -32,9 +32,11 @@ SLACK_IDENTITY_BASIC = "identity.basic"
 SLACK_OAUTH_SCOPES = (SLACK_USER_CHAT_WRITE, SLACK_IDENTITY_BASIC)
 
 _GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
-_GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+_GOOGLE_OAUTH_API = "https://oauth2.googleapis.com"
+_GOOGLE_ACCESS_URL = f"{_GOOGLE_OAUTH_API}/token"
 _SLACK_AUTH_URL = "https://slack.com/oauth/v2/authorize"
-_SLACK_TOKEN_URL = "https://slack.com/api/oauth.v2.access"
+_SLACK_OAUTH_API = "https://slack.com/api"
+_SLACK_ACCESS_URL = f"{_SLACK_OAUTH_API}/oauth.v2.access"
 
 
 class OAuthExchangeResult(BaseModel):
@@ -84,7 +86,6 @@ def _stored_from_slack_token(token: dict[str, Any]) -> StoredCredential:
         access_token=str(access),
         refresh_token=authed_user.get("refresh_token"),
         expires_at=_expires_at_from_token(authed_user),
-        token_type="Bearer",
         metadata=metadata,
     )
 
@@ -131,7 +132,7 @@ class GoogleOAuthClient:
             client_secret=self._client_secret.get_secret_value(),
             redirect_uri=self._redirect_uri,
         )
-        token = client.fetch_token(_GOOGLE_TOKEN_URL, code=code)
+        token = client.fetch_token(_GOOGLE_ACCESS_URL, code=code)
         return OAuthExchangeResult(
             credential=_stored_from_google_token(token),
             token_response=dict(token),
@@ -143,7 +144,7 @@ class GoogleOAuthClient:
             client_secret=self._client_secret.get_secret_value(),
             redirect_uri=self._redirect_uri,
         )
-        token = client.refresh_token(_GOOGLE_TOKEN_URL, refresh_token=refresh_token)
+        token = client.refresh_token(_GOOGLE_ACCESS_URL, refresh_token=refresh_token)
         if token.get("refresh_token") is None:
             token["refresh_token"] = refresh_token
         return _stored_from_google_token(token)
@@ -177,7 +178,7 @@ class SlackOAuthClient:
             client_secret=self._client_secret.get_secret_value(),
             redirect_uri=self._redirect_uri,
         )
-        token = client.fetch_token(_SLACK_TOKEN_URL, code=code)
+        token = client.fetch_token(_SLACK_ACCESS_URL, code=code)
         if not token.get("ok", True):
             raise RuntimeError(token.get("error", "Slack OAuth failed"))
         return OAuthExchangeResult(
@@ -191,7 +192,7 @@ class SlackOAuthClient:
             client_secret=self._client_secret.get_secret_value(),
             redirect_uri=self._redirect_uri,
         )
-        token = client.refresh_token(_SLACK_TOKEN_URL, refresh_token=refresh_token)
+        token = client.refresh_token(_SLACK_ACCESS_URL, refresh_token=refresh_token)
         if not token.get("ok", True):
             raise RuntimeError(token.get("error", "Slack token refresh failed"))
         return _stored_from_slack_token(token)
