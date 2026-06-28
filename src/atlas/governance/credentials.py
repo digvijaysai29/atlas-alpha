@@ -8,6 +8,7 @@ detail, or logs.
 from __future__ import annotations
 
 import abc
+import base64
 import logging
 from datetime import UTC, datetime, timedelta
 from enum import Enum
@@ -80,11 +81,11 @@ def require_org_id(principal: Principal) -> str:
 
 
 def vault_path_segment(value: str) -> str:
-    """Sanitize a path segment — block traversal and Vault path separators."""
-    cleaned = value.strip().replace("/", "_").replace("\\", "_").replace(".", "_")
+    """Reversible, path-safe encoding for Vault path segments (no collisions on . / \\)."""
+    cleaned = value.strip()
     if not cleaned:
         raise CredentialAccessError("empty path segment")
-    return cleaned
+    return base64.urlsafe_b64encode(cleaned.encode("utf-8")).decode("ascii").rstrip("=")
 
 
 def credential_secret_path(mount: str, org_id: str, user_id: str, provider: OAuthProvider) -> str:
@@ -196,7 +197,10 @@ class CredentialResolver:
         )
         if refresher is None:
             raise RuntimeError(f"{provider.value} refresh not configured")
-        updated: StoredCredential = refresher(stored.refresh_token)
+        if provider is OAuthProvider.GOOGLE:
+            updated = refresher(stored.refresh_token, prior_scopes=stored.scopes)
+        else:
+            updated = refresher(stored.refresh_token)
         if not updated.scopes and stored.scopes:
             updated = updated.model_copy(update={"scopes": stored.scopes})
         self._vault.put(principal, provider, updated)

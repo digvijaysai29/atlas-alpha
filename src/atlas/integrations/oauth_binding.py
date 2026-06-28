@@ -9,7 +9,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import httpx
-from authlib.integrations.httpx_client import OAuth2Client
+import jwt
+from jwt import PyJWKClient
 
 from atlas.config import Settings
 from atlas.governance.credentials import OAuthProvider, StoredCredential
@@ -23,6 +24,9 @@ if TYPE_CHECKING:
     from atlas.interface.auth import OidcAuthenticator
 
 _SLACK_USERS_INFO_URL = "https://slack.com/api/users.info"
+_GOOGLE_JWKS_URI = "https://www.googleapis.com/oauth2/v3/certs"
+_GOOGLE_ISSUERS = frozenset({"accounts.google.com", "https://accounts.google.com"})
+_GOOGLE_JWK_CLIENT = PyJWKClient(_GOOGLE_JWKS_URI)
 
 
 class OAuthBindingError(ValueError):
@@ -69,22 +73,35 @@ def assert_emails_match(*, expected: str, actual: str) -> None:
         raise OAuthBindingError("provider account does not match connected Atlas user")
 
 
+def _verify_google_id_token(id_token: str, *, client_id: str) -> dict[str, Any]:
+    """Verify a Google OIDC id_token (RS256 + JWKS, audience = OAuth client_id)."""
+    try:
+        signing_key = _GOOGLE_JWK_CLIENT.get_signing_key_from_jwt(id_token)
+        claims = jwt.decode(
+            id_token,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=client_id,
+            options={"require": ["exp", "iss", "aud"]},
+        )
+    except jwt.PyJWKClientError as exc:
+        raise OAuthBindingError("invalid Google id_token") from exc
+    except jwt.PyJWTError as exc:
+        raise OAuthBindingError("invalid Google id_token") from exc
+    if claims.get("iss") not in _GOOGLE_ISSUERS:
+        raise OAuthBindingError("invalid Google id_token")
+    return claims
+
+
 def google_provider_email(
     client: GoogleOAuthClient, token_response: dict[str, Any]
 ) -> tuple[str, dict[str, str]]:
     """Verify Google id_token and return provider email + metadata."""
-    if not token_response.get("id_token"):
+    id_token = token_response.get("id_token")
+    if not id_token:
         raise OAuthBindingError("Google OAuth response missing id_token")
 
-    oauth2 = OAuth2Client(
-        client_id=client.client_id,
-        client_secret=client.client_secret.get_secret_value(),
-        redirect_uri=client.redirect_uri,
-    )
-    try:
-        claims = oauth2.parse_id_token(token_response, nonce=None)
-    except Exception as exc:
-        raise OAuthBindingError("invalid Google id_token") from exc
+    claims = _verify_google_id_token(str(id_token), client_id=client.client_id)
 
     email_raw = claims.get("email")
     if not email_raw:

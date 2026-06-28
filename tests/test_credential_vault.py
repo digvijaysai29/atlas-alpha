@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -13,6 +14,7 @@ from atlas.governance.credentials import (
     OAuthProvider,
     StoredCredential,
     assert_principal_scope,
+    vault_path_segment,
 )
 from atlas.governance.rbac import Principal
 from atlas.integrations.oauth import GOOGLE_GMAIL_SEND
@@ -68,7 +70,7 @@ def test_resolver_refresh_calls_refresher() -> None:
     )
     vault.put(_MEMBER, OAuthProvider.GOOGLE, expired)
 
-    def _refresh(token: str) -> StoredCredential:
+    def _refresh(token: str, *, prior_scopes: tuple[str, ...] = ()) -> StoredCredential:
         assert token == "rt"
         return StoredCredential(
             provider=OAuthProvider.GOOGLE,
@@ -83,6 +85,24 @@ def test_resolver_refresh_calls_refresher() -> None:
     assert token == "new"
 
 
+def test_vault_path_segment_distinct_for_similar_ids() -> None:
+    assert vault_path_segment("alice.smith") != vault_path_segment("alice_smith")
+    assert vault_path_segment("alice/smith") != vault_path_segment("alice_smith")
+
+
+def test_vault_path_segment_round_trip() -> None:
+    original = "org.acme/user-1"
+    segment = vault_path_segment(original)
+    padding = "=" * (-len(segment) % 4)
+    decoded = base64.urlsafe_b64decode(segment + padding).decode("utf-8")
+    assert decoded == original
+
+
+def test_vault_path_segment_rejects_empty() -> None:
+    with pytest.raises(CredentialAccessError, match="empty path segment"):
+        vault_path_segment("   ")
+
+
 def test_resolver_refresh_preserves_scopes_when_refresher_omits_scope() -> None:
     vault = InMemoryCredentialVault()
     expired = StoredCredential(
@@ -94,7 +114,7 @@ def test_resolver_refresh_preserves_scopes_when_refresher_omits_scope() -> None:
     )
     vault.put(_MEMBER, OAuthProvider.GOOGLE, expired)
 
-    def _refresh(token: str) -> StoredCredential:
+    def _refresh(token: str, *, prior_scopes: tuple[str, ...] = ()) -> StoredCredential:
         assert token == "rt"
         return StoredCredential(
             provider=OAuthProvider.GOOGLE,

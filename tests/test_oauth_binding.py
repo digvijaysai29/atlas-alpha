@@ -47,11 +47,19 @@ def test_require_binding_email_missing() -> None:
 
 def test_google_provider_email_verifies_id_token() -> None:
     client = GoogleOAuthClient("gid", SecretStr("secret"), "http://localhost/cb")
-    with patch("atlas.integrations.oauth_binding.OAuth2Client") as mock_oauth2:
-        instance = MagicMock()
-        instance.parse_id_token.return_value = {"email": _ALICE, "sub": "google-sub-1"}
-        mock_oauth2.return_value = instance
-        email, metadata = google_provider_email(client, {"id_token": "jwt"})
+    with patch("atlas.integrations.oauth_binding._GOOGLE_JWK_CLIENT") as mock_jwk:
+        mock_jwk.get_signing_key_from_jwt.return_value = MagicMock(key="key")
+        with patch(
+            "atlas.integrations.oauth_binding.jwt.decode",
+            return_value={
+                "email": _ALICE,
+                "sub": "google-sub-1",
+                "iss": "accounts.google.com",
+                "aud": "gid",
+                "exp": 9999999999,
+            },
+        ):
+            email, metadata = google_provider_email(client, {"id_token": "jwt"})
     assert email == _ALICE
     assert metadata["google_sub"] == "google-sub-1"
     assert metadata["provider_email"] == _ALICE

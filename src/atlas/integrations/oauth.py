@@ -55,9 +55,13 @@ def _expires_at_from_token(token: dict[str, Any]) -> datetime | None:
     return datetime.now(UTC) + timedelta(seconds=int(expires_in))
 
 
-def _stored_from_google_token(token: dict[str, Any]) -> StoredCredential:
+def _stored_from_google_token(
+    token: dict[str, Any], *, fallback_scopes: tuple[str, ...] = ()
+) -> StoredCredential:
     scope_raw = token.get("scope") or ""
     scopes = tuple(s for s in scope_raw.split() if s)
+    if not scopes and fallback_scopes:
+        scopes = fallback_scopes
     return StoredCredential(
         provider=OAuthProvider.GOOGLE,
         scopes=scopes,
@@ -80,12 +84,14 @@ def _stored_from_slack_token(token: dict[str, Any]) -> StoredCredential:
         metadata["team_id"] = str(team["id"])
     if authed_user.get("id"):
         metadata["user_id"] = str(authed_user["id"])
+    refresh_token = authed_user.get("refresh_token") or token.get("refresh_token")
+    expires_at = _expires_at_from_token(authed_user) or _expires_at_from_token(token)
     return StoredCredential(
         provider=OAuthProvider.SLACK,
         scopes=SLACK_OAUTH_USER_SCOPES,
         access_token=str(access),
-        refresh_token=authed_user.get("refresh_token"),
-        expires_at=_expires_at_from_token(authed_user),
+        refresh_token=refresh_token,
+        expires_at=expires_at,
         metadata=metadata,
     )
 
@@ -138,7 +144,9 @@ class GoogleOAuthClient:
             token_response=dict(token),
         )
 
-    def refresh(self, refresh_token: str) -> StoredCredential:
+    def refresh(
+        self, refresh_token: str, *, prior_scopes: tuple[str, ...] = ()
+    ) -> StoredCredential:
         client = OAuth2Client(
             client_id=self._client_id,
             client_secret=self._client_secret.get_secret_value(),
@@ -147,7 +155,7 @@ class GoogleOAuthClient:
         token = client.refresh_token(_GOOGLE_ACCESS_URL, refresh_token=refresh_token)
         if token.get("refresh_token") is None:
             token["refresh_token"] = refresh_token
-        return _stored_from_google_token(token)
+        return _stored_from_google_token(token, fallback_scopes=prior_scopes)
 
 
 class SlackOAuthClient:
@@ -194,7 +202,10 @@ class SlackOAuthClient:
         token = client.refresh_token(_SLACK_ACCESS_URL, refresh_token=refresh_token)
         if not token.get("ok", True):
             raise RuntimeError(token.get("error", "Slack token refresh failed"))
-        return _stored_from_slack_token(token)
+        credential = _stored_from_slack_token(token)
+        if credential.refresh_token is None:
+            credential = credential.model_copy(update={"refresh_token": refresh_token})
+        return credential
 
 
 def build_google_oauth_client(settings: Settings) -> GoogleOAuthClient | None:
