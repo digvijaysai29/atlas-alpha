@@ -1,9 +1,11 @@
 # Local Postgres for atlas durable persistence (M2.1).
 #   docker compose up -d
 #   export DATABASE_URL=postgresql://atlas:atlas@localhost:5432/atlas
+# Uses pgvector/pgvector:pg16 (postgres:16 + the `vector` extension) so the M4.6 KnowledgeGraph
+# setup() (CREATE EXTENSION vector) works locally, matching CI and Neon.
 services:
   postgres:
-    image: postgres:16
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: atlas
       POSTGRES_PASSWORD: atlas

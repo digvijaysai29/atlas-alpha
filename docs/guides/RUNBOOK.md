@@ -59,6 +59,7 @@ full credential set is present. Key groups:
 | Auth (OIDC) | `ATLAS_OIDC_ISSUER`/`AUDIENCE`/`JWKS_URI` (+ claim overrides) | dev header-shim identity (trusted-proxy only) |
 | Rate limiting | `ATLAS_RATE_LIMIT_*`, `UPSTASH_REDIS_REST_URL`/`TOKEN` | unthrottled (fail-open) |
 | Policy store | `DATABASE_URL` | in-memory `ROLE_PERMISSIONS` defaults |
+| KG embeddings (M4.6) | `VOYAGE_API_KEY`, `ATLAS_EMBEDDING_MODEL`/`DIM` | deterministic offline embedder (hybrid vector search still works on Postgres) |
 | Email / Slack | `RESEND_API_KEY`+`ATLAS_EMAIL_FROM` / `SLACK_BOT_TOKEN` | tool fail-closed after approval |
 | Vault / OAuth | `VAULT_ADDR`+auth, `GOOGLE_*`/`SLACK_OAUTH_*`, `ATLAS_OAUTH_STATE_SECRET` | per-user integrations disabled |
 
