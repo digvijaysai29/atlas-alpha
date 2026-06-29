@@ -22,6 +22,7 @@ from atlas.orchestration.graph import _pg_pool
 from atlas.orchestration.state import initial_state
 from atlas.persistence import PostgresAuditLog
 from atlas.tools import ToolRegistry, default_registry
+from tests.conftest import reset_atlas_tables, reset_kg_tables
 from tests.helpers import offline_registry
 
 pytestmark = pytest.mark.integration
@@ -36,6 +37,8 @@ def _send_plan(_request: str, registry: ToolRegistry, _context: object) -> list[
 
 
 def test_pending_approval_survives_a_simulated_restart(database_url: str) -> None:
+    reset_kg_tables(database_url)
+    reset_atlas_tables(database_url)
     settings = _settings(database_url)
     thread = {"configurable": {"thread_id": f"it-{uuid.uuid4().hex[:8]}"}}
 

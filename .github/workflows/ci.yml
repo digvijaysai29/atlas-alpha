@@ -152,7 +152,9 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        # pgvector/pgvector:pg16 = postgres:16 + the `vector` extension preinstalled, required by the
+        # M4.6 KnowledgeGraph setup() (CREATE EXTENSION vector). Stock postgres:16 lacks it.
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: atlas
           POSTGRES_PASSWORD: atlas

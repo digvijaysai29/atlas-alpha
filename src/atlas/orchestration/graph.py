@@ -20,6 +20,7 @@ from langgraph.graph import END, START, StateGraph
 from atlas.config import Settings, get_settings
 from atlas.governance import AuditLog, InMemoryAuditLog, InMemoryPolicyStore, PolicyStore
 from atlas.governance.credentials import CredentialVault, InMemoryCredentialVault
+from atlas.knowledge.embeddings import make_embedder
 from atlas.knowledge.ingestion import IngestionService
 from atlas.knowledge.interfaces import KnowledgeGraph
 from atlas.knowledge.memory_store import InMemoryKnowledgeGraph
@@ -114,8 +115,12 @@ def make_knowledge_graph(
     if settings.database_url:
         from atlas.persistence import PostgresKnowledgeGraph
 
+        # Hybrid semantic retrieval (M4.6) only when VOYAGE_API_KEY is set; otherwise FTS-only.
+        embedder = make_embedder(settings) if settings.embeddings_configured else None
         return PostgresKnowledgeGraph(
-            _pg_pool(settings.database_url.get_secret_value()), policy=policy
+            _pg_pool(settings.database_url.get_secret_value()),
+            policy=policy,
+            embedder=embedder,
         )
     return InMemoryKnowledgeGraph(policy=policy)
 

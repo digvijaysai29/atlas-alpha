@@ -232,7 +232,12 @@ executor refuses to run a gated action without a matching, in-scope `ApprovalDec
   by the owner — never a role wildcard), enforced in both backends; fail-closed OKG write gate
   (`kg:write:org`). Hermetic/deterministic (no LLM, no embeddings) so it's covered by the eval gate.
   See [`M4.4_PLAN.md`](../plans/M4.4_PLAN.md).
-- **Later (M4.5+):** LLM entity/relation extraction over the ingestion pipeline; **pgvector**
-  embeddings + semantic retrieval (behind the same `KnowledgeGraph` interface); OAuth-connector
+- **M4.6 (done):** **pgvector semantic retrieval** — the Postgres `KnowledgeGraph` now embeds entities
+  on upsert and runs **hybrid** retrieval (full-text + vector cosine, fused with RRF) on Neon. Embedder
+  is pluggable: **Voyage AI** when `VOYAGE_API_KEY` is set, else a deterministic offline embedder so
+  CI/the eval gate stay hermetic. The **identical RBAC predicate** filters both the FTS and vector
+  branches (semantic search cannot widen read access), and `can_read` remains the final authority — so
+  PKG/OKG scoping holds on the vector path. See [`M4.6_PLAN.md`](../plans/M4.6_PLAN.md).
+- **Later (M4.5+):** LLM entity/relation extraction over the ingestion pipeline; OAuth-connector
   ingestion (Gmail/Jira/Calendar) over the same `IngestionService`; resource/argument-aware
   `ToolPermission`; SSE streaming; Merkle anchoring.

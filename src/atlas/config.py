@@ -17,6 +17,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # them in Settings for visibility/validation; setting LANGSMITH_TRACING=true is all that is needed.
 _DEFAULT_MODEL = "claude-opus-4-8"
 _LOCAL_HTTP_HOSTS = frozenset({"127.0.0.1", "localhost"})
+_SUPPORTED_EMBEDDING_MODELS = frozenset({"voyage-3"})
+_EMBEDDING_MODEL_DIMS: dict[str, int] = {"voyage-3": 1024}
 
 
 def _is_secure_oidc_url(url: str) -> bool:
@@ -64,6 +66,15 @@ class Settings(BaseSettings):
     # Empty => in-memory checkpointer. A path => SQLite. ``database_url`` is reserved for M2/Postgres.
     sqlite_path: str | None = Field(default=None, alias="ATLAS_SQLITE_PATH")
     database_url: SecretStr | None = Field(default=None, alias="DATABASE_URL")
+
+    # --- Knowledge embeddings (M4.6 — pgvector semantic retrieval) ----------
+    # When VOYAGE_API_KEY is set the Postgres KG embeds entities + queries with Voyage AI for semantic
+    # retrieval; otherwise a deterministic offline embedder is used (CI/dev stays hermetic). The model
+    # and dim MUST agree (voyage-3 => 1024); the dim drives both the vector column width and the
+    # embedder, so a mismatch fails fast rather than writing a wrong-width vector.
+    voyage_api_key: SecretStr | None = Field(default=None, alias="VOYAGE_API_KEY")
+    embedding_model: str = Field(default="voyage-3", alias="ATLAS_EMBEDDING_MODEL")
+    embedding_dim: int = Field(default=1024, alias="ATLAS_EMBEDDING_DIM")
 
     # --- Interface (M3.2 FastAPI) ------------------------------------------
     # Bind address for the dev server (scripts/run_api.py).
@@ -247,6 +258,27 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def validate_embedding_config(self) -> Self:
+        """Fail fast when the embedding model and dimension disagree (drives column width and embedder)."""
+        if self.embedding_dim <= 0:
+            raise ValueError("ATLAS_EMBEDDING_DIM must be a positive integer.")
+        model = self.embedding_model.strip()
+        if not model:
+            raise ValueError("ATLAS_EMBEDDING_MODEL must not be blank.")
+        expected_dim = _EMBEDDING_MODEL_DIMS.get(model)
+        if expected_dim is not None and self.embedding_dim != expected_dim:
+            raise ValueError(
+                f"ATLAS_EMBEDDING_MODEL {model!r} requires ATLAS_EMBEDDING_DIM={expected_dim}."
+            )
+        if self.embeddings_configured and model not in _SUPPORTED_EMBEDDING_MODELS:
+            supported = ", ".join(sorted(_SUPPORTED_EMBEDDING_MODELS))
+            raise ValueError(
+                f"Unsupported ATLAS_EMBEDDING_MODEL {model!r}; supported when VOYAGE_API_KEY is set: "
+                f"{supported}."
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_email_config(self) -> Self:
         """Email creds must be all set or all unset — mirror validate_rate_limit_config."""
         email_fields = {
@@ -317,6 +349,11 @@ class Settings(BaseSettings):
     def slack_configured(self) -> bool:
         """True when a Slack bot token is present."""
         return _nonempty_secret(self.slack_bot_token)
+
+    @property
+    def embeddings_configured(self) -> bool:
+        """True when a Voyage API key is present (else the deterministic offline embedder is used)."""
+        return _nonempty_secret(self.voyage_api_key)
 
     @property
     def vault_configured(self) -> bool:
