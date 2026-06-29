@@ -18,6 +18,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from atlas.actions import ProposedAction
 from atlas.governance import InMemoryPolicyStore
 from atlas.governance.rbac import Principal
+from atlas.knowledge.embeddings import DeterministicEmbedder
 from atlas.knowledge.interfaces import Entity, Relation, identity_acl
 from atlas.orchestration import build_graph
 from atlas.orchestration.serde import atlas_serde
@@ -214,3 +215,47 @@ def test_planner_context_is_rbac_scoped_with_postgres_backend(pg_pool: object) -
     ids = {e.id for e in result["kg_context"]}
     assert "doc-1" not in ids  # org doc never retrieved for a guest
     assert "note-1" in ids
+
+
+# --- M4.6 pgvector hybrid retrieval -----------------------------------------
+# The deterministic embedder is not semantically meaningful, so these tests assert the *plumbing* and
+# the *security invariant* of the vector path. Real semantic-quality is validated manually with a live
+# VOYAGE_API_KEY. The embedder is a pure function: querying a row's exact embedded text yields an
+# identical vector (cosine distance 0), which lets us prove the vector branch influences ranking.
+_EMBED_DIM = 64
+
+
+def _seed_with_embedder(pg_pool: object) -> PostgresKnowledgeGraph:
+    kg = PostgresKnowledgeGraph(pg_pool, embedder=DeterministicEmbedder(_EMBED_DIM))  # type: ignore[arg-type]
+    for entity in (_NOTE, _DOC, _PUBLIC):
+        kg.upsert_entity(entity)
+    return kg
+
+
+def test_embedding_is_populated_on_upsert(pg_pool: object) -> None:
+    _seed_with_embedder(pg_pool)
+    with pg_pool.connection() as conn, conn.cursor() as cur:  # type: ignore[attr-defined]
+        cur.execute("SELECT count(*) AS n FROM atlas_kg_entities WHERE embedding IS NOT NULL")
+        assert cur.fetchone()["n"] == 3  # every upserted entity got a vector
+
+
+def test_hybrid_query_org_doc_hidden_from_guest_visible_to_member(pg_pool: object) -> None:
+    # The IDOR guard on the vector path: the same RBAC predicate filters FTS and vector branches alike.
+    kg = _seed_with_embedder(pg_pool)
+    member_ids = {e.id for e in kg.query(MEMBER, "revenue onboarding")}
+    guest_ids = {e.id for e in kg.query(GUEST, "revenue onboarding")}
+    assert "doc-1" in member_ids
+    assert "doc-1" not in guest_ids  # semantic search cannot widen read access
+    assert "note-1" in guest_ids
+
+
+def test_vector_branch_ranks_exact_embedded_text_first(pg_pool: object) -> None:
+    kg = _seed_with_embedder(pg_pool)
+    query_text = f"{_DOC.name}\n{_DOC.content}"  # identical to _DOC's embedded text -> distance 0
+    top = kg.query(ADMIN, query_text, limit=3)
+    assert top and top[0].id == "doc-1"
+
+
+def test_fts_fallback_when_store_has_no_embedder(pg_pool: object) -> None:
+    kg = _seed(pg_pool)  # no embedder => behavior identical to the M3.1 full-text store
+    assert {e.id for e in kg.query(MEMBER, "onboarding")} == {"note-1"}

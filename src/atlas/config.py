@@ -65,6 +65,15 @@ class Settings(BaseSettings):
     sqlite_path: str | None = Field(default=None, alias="ATLAS_SQLITE_PATH")
     database_url: SecretStr | None = Field(default=None, alias="DATABASE_URL")
 
+    # --- Knowledge embeddings (M4.6 — pgvector semantic retrieval) ----------
+    # When VOYAGE_API_KEY is set the Postgres KG embeds entities + queries with Voyage AI for semantic
+    # retrieval; otherwise a deterministic offline embedder is used (CI/dev stays hermetic). The model
+    # and dim MUST agree (voyage-3 => 1024); the dim drives both the vector column width and the
+    # embedder, so a mismatch fails fast rather than writing a wrong-width vector.
+    voyage_api_key: SecretStr | None = Field(default=None, alias="VOYAGE_API_KEY")
+    embedding_model: str = Field(default="voyage-3", alias="ATLAS_EMBEDDING_MODEL")
+    embedding_dim: int = Field(default=1024, alias="ATLAS_EMBEDDING_DIM")
+
     # --- Interface (M3.2 FastAPI) ------------------------------------------
     # Bind address for the dev server (scripts/run_api.py).
     api_host: str = Field(default="127.0.0.1", alias="ATLAS_API_HOST")
@@ -247,6 +256,13 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def validate_embedding_config(self) -> Self:
+        """The embedding dimension must be positive (it drives the vector column width and embedder)."""
+        if self.embedding_dim <= 0:
+            raise ValueError("ATLAS_EMBEDDING_DIM must be a positive integer.")
+        return self
+
+    @model_validator(mode="after")
     def validate_email_config(self) -> Self:
         """Email creds must be all set or all unset — mirror validate_rate_limit_config."""
         email_fields = {
@@ -317,6 +333,11 @@ class Settings(BaseSettings):
     def slack_configured(self) -> bool:
         """True when a Slack bot token is present."""
         return _nonempty_secret(self.slack_bot_token)
+
+    @property
+    def embeddings_configured(self) -> bool:
+        """True when a Voyage API key is present (else the deterministic offline embedder is used)."""
+        return _nonempty_secret(self.voyage_api_key)
 
     @property
     def vault_configured(self) -> bool:

@@ -20,6 +20,7 @@ from langgraph.graph import END, START, StateGraph
 from atlas.config import Settings, get_settings
 from atlas.governance import AuditLog, InMemoryAuditLog, InMemoryPolicyStore, PolicyStore
 from atlas.governance.credentials import CredentialVault, InMemoryCredentialVault
+from atlas.knowledge.embeddings import make_embedder
 from atlas.knowledge.ingestion import IngestionService
 from atlas.knowledge.interfaces import KnowledgeGraph
 from atlas.knowledge.memory_store import InMemoryKnowledgeGraph
@@ -114,8 +115,12 @@ def make_knowledge_graph(
     if settings.database_url:
         from atlas.persistence import PostgresKnowledgeGraph
 
+        # The embedder enables pgvector semantic retrieval (M4.6): Voyage when VOYAGE_API_KEY is set,
+        # else a deterministic offline embedder so the vector path still works without an API key.
         return PostgresKnowledgeGraph(
-            _pg_pool(settings.database_url.get_secret_value()), policy=policy
+            _pg_pool(settings.database_url.get_secret_value()),
+            policy=policy,
+            embedder=make_embedder(settings),
         )
     return InMemoryKnowledgeGraph(policy=policy)
 

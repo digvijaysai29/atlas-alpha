@@ -25,6 +25,7 @@ from psycopg_pool import ConnectionPool
 
 from atlas.governance.policy import DEFAULT_POLICY, PolicyStore
 from atlas.governance.rbac import Principal
+from atlas.knowledge.embeddings import EmbeddingProvider
 from atlas.knowledge.interfaces import (
     IDENTITY_ACL_PREFIX,
     Entity,
@@ -35,6 +36,12 @@ from atlas.knowledge.interfaces import (
 )
 
 _ADMIN_WILDCARD = "*"
+
+# Reciprocal Rank Fusion constant (the standard k=60) and how deep we fetch each branch before fusing.
+# A larger candidate pool than ``limit`` lets the ``can_read`` re-filter drop rows without starving the
+# result, and gives RRF enough overlap to rank well.
+_RRF_K = 60
+_CANDIDATE_MULTIPLIER = 4
 
 _CREATE_TABLES = """
 CREATE TABLE IF NOT EXISTS atlas_kg_entities (
@@ -71,16 +78,58 @@ ON CONFLICT (id) DO UPDATE SET
     scope = EXCLUDED.scope
 """
 
+# Vector-aware upsert (M4.6): identical to ``_UPSERT_ENTITY`` plus the embedding. The vector is bound as
+# a pgvector text literal and cast with ``::vector`` — still fully parameterized (no string injection).
+_UPSERT_ENTITY_VEC = """
+INSERT INTO atlas_kg_entities (id, type, name, content, acl, scope, embedding)
+VALUES (%s, %s, %s, %s, %s, %s, %s::vector)
+ON CONFLICT (id) DO UPDATE SET
+    type = EXCLUDED.type,
+    name = EXCLUDED.name,
+    content = EXCLUDED.content,
+    acl = EXCLUDED.acl,
+    scope = EXCLUDED.scope,
+    embedding = EXCLUDED.embedding
+"""
+
 _INSERT_RELATION = "INSERT INTO atlas_kg_relations (src_id, dst_id, type) VALUES (%s, %s, %s)"
 _SELECT_RELATIONS = "SELECT src_id, dst_id, type FROM atlas_kg_relations ORDER BY src_id, dst_id"
 
-# RBAC: readable iff the acl is NULL/empty (world-readable), the acl array overlaps (``&&``) the
-# principal's exact permission grants (including their identity ACL for PKG), an acl entry matches one
-# of the principal's hierarchical ``":*"`` grants on **non-identity** entries only, OR the principal
-# is an admin wildcard and the row is not another user's identity-only PKG. Wildcards are honored on
-# the granted side only — keeping the SQL filter in parity with ``permission_satisfied`` / ``can_read``.
-# Relevance: no search terms ⇒ match all; otherwise full-text match OR any-term substring (ILIKE
-# ANY) so behavior matches the in-memory keyword-OR stub.
+# RBAC predicate (shared verbatim by the full-text AND the vector branch — see ``_QUERY`` /
+# ``_VECTOR_QUERY``). Readable iff the acl is NULL/empty (world-readable), the acl array overlaps
+# (``&&``) the principal's exact permission grants (including their identity ACL for PKG), an acl entry
+# matches one of the principal's hierarchical ``":*"`` grants on **non-identity** entries only, OR the
+# principal is an admin wildcard and the row is not another user's identity-only PKG. Wildcards are
+# honored on the granted side only — keeping the SQL filter in parity with ``can_read``. Composing both
+# retrieval queries from this one fragment guarantees semantic (vector) search cannot widen read access
+# beyond keyword search (no IDOR via embeddings).
+# The canonical RBAC predicate. It is inlined **verbatim** into both queries below (kept as static
+# literals so the SQL is never built by string formatting). ``test_rbac_predicate_is_shared_by_both
+# _query_branches`` asserts this exact text appears in both, so the full-text and vector branches can
+# never drift apart — semantic search cannot widen read access (no IDOR via embeddings).
+_RBAC_PREDICATE = """(
+        acl IS NULL
+        OR cardinality(acl) = 0
+        OR acl && %(exact)s::text[]
+        OR EXISTS (
+            SELECT 1 FROM unnest(acl) AS a
+            WHERE NOT a LIKE %(identity_prefix)s
+              AND a LIKE ANY(%(wildcard_like)s::text[])
+        )
+        OR (
+            %(is_admin)s = TRUE
+            AND (
+                EXISTS (
+                    SELECT 1 FROM unnest(acl) AS a
+                    WHERE NOT a LIKE %(identity_prefix)s
+                )
+                OR acl && %(exact)s::text[]
+            )
+        )
+    )"""
+
+# Full-text branch. Relevance: no search terms ⇒ match all; otherwise full-text match OR any-term
+# substring (ILIKE ANY) so behavior matches the in-memory keyword-OR stub.
 _QUERY = """
 SELECT id, type, name, content, acl, scope
 FROM atlas_kg_entities
@@ -115,6 +164,36 @@ LIMIT %(limit)s
 OFFSET %(offset)s
 """
 
+# Vector branch (M4.6). Same RBAC predicate (inlined verbatim); ranks readable rows that have an
+# embedding by cosine distance (``<=>``) to the bound query vector (a parameterized ``::vector`` literal).
+_VECTOR_QUERY = """
+SELECT id, type, name, content, acl, scope
+FROM atlas_kg_entities
+WHERE (
+        acl IS NULL
+        OR cardinality(acl) = 0
+        OR acl && %(exact)s::text[]
+        OR EXISTS (
+            SELECT 1 FROM unnest(acl) AS a
+            WHERE NOT a LIKE %(identity_prefix)s
+              AND a LIKE ANY(%(wildcard_like)s::text[])
+        )
+        OR (
+            %(is_admin)s = TRUE
+            AND (
+                EXISTS (
+                    SELECT 1 FROM unnest(acl) AS a
+                    WHERE NOT a LIKE %(identity_prefix)s
+                )
+                OR acl && %(exact)s::text[]
+            )
+        )
+    )
+    AND embedding IS NOT NULL
+ORDER BY embedding <=> %(qvec)s::vector
+LIMIT %(limit)s
+"""
+
 
 def _like_escape(term: str) -> str:
     """Escape LIKE/ILIKE wildcards so a query term is matched literally (substring), matching the
@@ -135,36 +214,85 @@ def _row_to_entity(row: dict[str, Any]) -> Entity:
     )
 
 
+def _vector_literal(vector: Sequence[float]) -> str:
+    """Render a vector as a pgvector text literal (e.g. ``[0.1,0.2]``) for a bound ``::vector`` param."""
+    return "[" + ",".join(repr(float(value)) for value in vector) + "]"
+
+
+def _embedding_text(entity: Entity) -> str:
+    """The text embedded for an entity: its name and content (same shape the FTS index covers)."""
+    return f"{entity.name}\n{entity.content}"
+
+
+def _rrf_fuse(rankings: Sequence[Sequence[str]], *, k: int) -> list[str]:
+    """Reciprocal Rank Fusion: merge ranked id lists into one order by summed ``1/(k+rank)`` scores.
+
+    Deterministic: ties break on first appearance (insertion order is stable in ``dict``).
+    """
+    scores: dict[str, float] = {}
+    for ranking in rankings:
+        for rank, entity_id in enumerate(ranking):
+            scores[entity_id] = scores.get(entity_id, 0.0) + 1.0 / (k + rank + 1)
+    return sorted(scores, key=lambda entity_id: scores[entity_id], reverse=True)
+
+
 class PostgresKnowledgeGraph(KnowledgeGraph):
     """Durable, RBAC-scoped knowledge graph stored in Postgres."""
 
     def __init__(
-        self, pool: ConnectionPool, policy: PolicyStore | None = None, *, setup: bool = True
+        self,
+        pool: ConnectionPool,
+        policy: PolicyStore | None = None,
+        *,
+        embedder: EmbeddingProvider | None = None,
+        setup: bool = True,
     ) -> None:
         self._pool = pool
         self._policy = policy or DEFAULT_POLICY  # governs the RBAC read filter
+        # When an embedder is injected, entities are embedded on upsert and ``query`` runs hybrid
+        # (full-text + vector) retrieval. With no embedder the backend is exactly the M3.1 FTS store.
+        self._embedder = embedder
         if setup:
             self.setup()
 
     def setup(self) -> None:
-        """Create the KG tables + FTS index if absent (idempotent, static DDL)."""
+        """Create the KG tables + FTS index if absent (idempotent, static DDL).
+
+        When an embedder is configured, also enable pgvector, add the ``embedding`` column (sized to the
+        embedder's ``dim``), and build an HNSW cosine index. The dim is a validated positive integer
+        (never user input), so interpolating it into the DDL is safe.
+        """
         with self._pool.connection() as conn:
             conn.execute(_CREATE_TABLES)
             conn.execute(_CREATE_FTS_INDEX)
+            if self._embedder is not None:
+                dim = int(self._embedder.dim)
+                conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                conn.execute(
+                    f"ALTER TABLE atlas_kg_entities ADD COLUMN IF NOT EXISTS embedding vector({dim})"
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS atlas_kg_hnsw "
+                    "ON atlas_kg_entities USING hnsw (embedding vector_cosine_ops)"
+                )
 
     def upsert_entity(self, entity: Entity) -> None:
+        base = (
+            entity.id,
+            entity.type,
+            entity.name,
+            entity.content,
+            list(entity.acl),
+            entity.scope,
+        )
         with self._pool.connection() as conn:
-            conn.execute(
-                _UPSERT_ENTITY,
-                (
-                    entity.id,
-                    entity.type,
-                    entity.name,
-                    entity.content,
-                    list(entity.acl),
-                    entity.scope,
-                ),
-            )
+            if self._embedder is None:
+                conn.execute(_UPSERT_ENTITY, base)
+                return
+            # Embedding is a side effect of the store (keeps IngestionService deterministic). The source
+            # text is never logged. ``input_type="document"`` matches the query-side ``"query"``.
+            vector = self._embedder.embed_one(_embedding_text(entity), input_type="document")
+            conn.execute(_UPSERT_ENTITY_VEC, (*base, _vector_literal(vector)))
 
     def add_relation(self, relation: Relation) -> None:
         with self._pool.connection() as conn:
@@ -206,6 +334,16 @@ class PostgresKnowledgeGraph(KnowledgeGraph):
             "text": text,
             "patterns": [f"%{_like_escape(term)}%" for term in terms],
         }
+        # Hybrid retrieval only helps a real query: with no embedder or an empty query (match-all), the
+        # vector branch adds nothing, so fall back to the proven full-text path (behavior unchanged).
+        if self._embedder is None or not terms:
+            return self._fts_query(principal, base_params, limit)
+        return self._hybrid_query(self._embedder, principal, text, base_params, limit)
+
+    def _fts_query(
+        self, principal: Principal | None, base_params: dict[str, Any], limit: int
+    ) -> list[Entity]:
+        """The M3.1 full-text path: RBAC-filtered in SQL, re-filtered by ``can_read``, batched to ``limit``."""
         results: list[Entity] = []
         offset = 0
         batch = limit
@@ -225,4 +363,44 @@ class PostgresKnowledgeGraph(KnowledgeGraph):
                 if len(rows) < batch:
                     break
                 offset += len(rows)
+        return results
+
+    def _hybrid_query(
+        self,
+        embedder: EmbeddingProvider,
+        principal: Principal | None,
+        text: str,
+        base_params: dict[str, Any],
+        limit: int,
+    ) -> list[Entity]:
+        """Fuse the full-text and vector rankings (RRF), then apply the ``can_read`` re-filter.
+
+        Both branches are filtered by the *same* RBAC predicate in SQL, so semantic search can never
+        surface a row keyword search could not. ``can_read`` remains the final authority.
+        """
+        qvec = _vector_literal(embedder.embed_one(text, input_type="query"))
+        pool = max(limit * _CANDIDATE_MULTIPLIER, limit)
+        entities_by_id: dict[str, Entity] = {}
+        with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(_QUERY, {**base_params, "limit": pool, "offset": 0})
+            fts_rows = cur.fetchall()
+            cur.execute(_VECTOR_QUERY, {**base_params, "qvec": qvec, "limit": pool})
+            vec_rows = cur.fetchall()
+
+        def _ids(rows: list[dict[str, Any]]) -> list[str]:
+            ids: list[str] = []
+            for row in rows:
+                entity = _row_to_entity(row)
+                entities_by_id[entity.id] = entity
+                ids.append(entity.id)
+            return ids
+
+        fused = _rrf_fuse([_ids(fts_rows), _ids(vec_rows)], k=_RRF_K)
+        results: list[Entity] = []
+        for entity_id in fused:
+            entity = entities_by_id[entity_id]
+            if can_read(principal, entity, self._policy):
+                results.append(entity)
+                if len(results) >= limit:
+                    break
         return results
