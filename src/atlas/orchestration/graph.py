@@ -115,12 +115,12 @@ def make_knowledge_graph(
     if settings.database_url:
         from atlas.persistence import PostgresKnowledgeGraph
 
-        # The embedder enables pgvector semantic retrieval (M4.6): Voyage when VOYAGE_API_KEY is set,
-        # else a deterministic offline embedder so the vector path still works without an API key.
+        # Hybrid semantic retrieval (M4.6) only when VOYAGE_API_KEY is set; otherwise FTS-only.
+        embedder = make_embedder(settings) if settings.embeddings_configured else None
         return PostgresKnowledgeGraph(
             _pg_pool(settings.database_url.get_secret_value()),
             policy=policy,
-            embedder=make_embedder(settings),
+            embedder=embedder,
         )
     return InMemoryKnowledgeGraph(policy=policy)
 

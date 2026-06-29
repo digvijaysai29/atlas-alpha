@@ -17,6 +17,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # them in Settings for visibility/validation; setting LANGSMITH_TRACING=true is all that is needed.
 _DEFAULT_MODEL = "claude-opus-4-8"
 _LOCAL_HTTP_HOSTS = frozenset({"127.0.0.1", "localhost"})
+_SUPPORTED_EMBEDDING_MODELS = frozenset({"voyage-3"})
+_EMBEDDING_MODEL_DIMS: dict[str, int] = {"voyage-3": 1024}
 
 
 def _is_secure_oidc_url(url: str) -> bool:
@@ -257,9 +259,23 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_embedding_config(self) -> Self:
-        """The embedding dimension must be positive (it drives the vector column width and embedder)."""
+        """Fail fast when the embedding model and dimension disagree (drives column width and embedder)."""
         if self.embedding_dim <= 0:
             raise ValueError("ATLAS_EMBEDDING_DIM must be a positive integer.")
+        model = self.embedding_model.strip()
+        if not model:
+            raise ValueError("ATLAS_EMBEDDING_MODEL must not be blank.")
+        expected_dim = _EMBEDDING_MODEL_DIMS.get(model)
+        if expected_dim is not None and self.embedding_dim != expected_dim:
+            raise ValueError(
+                f"ATLAS_EMBEDDING_MODEL {model!r} requires ATLAS_EMBEDDING_DIM={expected_dim}."
+            )
+        if self.embeddings_configured and model not in _SUPPORTED_EMBEDDING_MODELS:
+            supported = ", ".join(sorted(_SUPPORTED_EMBEDDING_MODELS))
+            raise ValueError(
+                f"Unsupported ATLAS_EMBEDDING_MODEL {model!r}; supported when VOYAGE_API_KEY is set: "
+                f"{supported}."
+            )
         return self
 
     @model_validator(mode="after")

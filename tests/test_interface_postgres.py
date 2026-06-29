@@ -17,6 +17,7 @@ from atlas.interface import create_app
 from atlas.orchestration import build_graph
 from atlas.orchestration.graph import _pg_pool
 from atlas.tools import ToolRegistry
+from tests.conftest import reset_atlas_tables, reset_kg_tables
 from tests.helpers import offline_registry
 
 from fastapi.testclient import TestClient
@@ -37,6 +38,8 @@ def _headers(user: str) -> dict[str, str]:
 
 
 def test_thread_resume_is_durable_and_owner_bound_across_restart(database_url: str) -> None:
+    reset_kg_tables(database_url)
+    reset_atlas_tables(database_url)
     settings = _settings(database_url)
 
     # First "process": Alice starts a send; the graph pauses at approval (state lives in Postgres).

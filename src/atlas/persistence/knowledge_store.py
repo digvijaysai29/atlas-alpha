@@ -20,6 +20,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from psycopg import Connection, errors as pg_errors
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
@@ -42,6 +43,7 @@ _ADMIN_WILDCARD = "*"
 # result, and gives RRF enough overlap to rank well.
 _RRF_K = 60
 _CANDIDATE_MULTIPLIER = 4
+_BACKFILL_BATCH = 50
 
 _CREATE_TABLES = """
 CREATE TABLE IF NOT EXISTS atlas_kg_entities (
@@ -261,6 +263,9 @@ class PostgresKnowledgeGraph(KnowledgeGraph):
         When an embedder is configured, also enable pgvector, add the ``embedding`` column (sized to the
         embedder's ``dim``), and build an HNSW cosine index. The dim is a validated positive integer
         (never user input), so interpolating it into the DDL is safe.
+
+        If the column already exists at the wrong width, it is dropped and recreated. Rows with
+        ``embedding IS NULL`` are backfilled in small batches (embed outside the connection).
         """
         with self._pool.connection() as conn:
             conn.execute(_CREATE_TABLES)
@@ -271,10 +276,67 @@ class PostgresKnowledgeGraph(KnowledgeGraph):
                 conn.execute(
                     f"ALTER TABLE atlas_kg_entities ADD COLUMN IF NOT EXISTS embedding vector({dim})"
                 )
+                existing_dim = self._embedding_column_dim(conn)
+                if existing_dim is not None and existing_dim != dim:
+                    conn.execute("DROP INDEX IF EXISTS atlas_kg_hnsw")
+                    conn.execute("ALTER TABLE atlas_kg_entities DROP COLUMN embedding")
+                    conn.execute(
+                        f"ALTER TABLE atlas_kg_entities ADD COLUMN embedding vector({dim})"
+                    )
                 conn.execute(
                     "CREATE INDEX IF NOT EXISTS atlas_kg_hnsw "
                     "ON atlas_kg_entities USING hnsw (embedding vector_cosine_ops)"
                 )
+        if self._embedder is not None:
+            self._backfill_null_embeddings()
+
+    @staticmethod
+    def _embedding_column_dim(conn: Connection) -> int | None:
+        """Return the pgvector dimension of ``atlas_kg_entities.embedding``, or ``None`` if absent."""
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                SELECT a.atttypmod AS dim
+                FROM pg_attribute a
+                JOIN pg_class c ON c.oid = a.attrelid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public'
+                  AND c.relname = 'atlas_kg_entities'
+                  AND a.attname = 'embedding'
+                  AND a.attnum > 0
+                  AND NOT a.attisdropped
+                """
+            )
+            row = cur.fetchone()
+        if row is None or row["dim"] < 0:
+            return None
+        return int(row["dim"])
+
+    def _backfill_null_embeddings(self) -> None:
+        """Embed and persist any rows left with ``embedding IS NULL`` (batched, no held connection)."""
+        assert self._embedder is not None
+        while True:
+            with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    """
+                    SELECT id, name, content
+                    FROM atlas_kg_entities
+                    WHERE embedding IS NULL
+                    LIMIT %s
+                    """,
+                    (_BACKFILL_BATCH,),
+                )
+                rows = cur.fetchall()
+            if not rows:
+                return
+            texts = [f"{row['name']}\n{row['content']}" for row in rows]
+            vectors = self._embedder.embed(texts, input_type="document")
+            with self._pool.connection() as conn:
+                for row, vector in zip(rows, vectors, strict=True):
+                    conn.execute(
+                        "UPDATE atlas_kg_entities SET embedding = %s::vector WHERE id = %s",
+                        (_vector_literal(vector), row["id"]),
+                    )
 
     def upsert_entity(self, entity: Entity) -> None:
         base = (
@@ -285,14 +347,20 @@ class PostgresKnowledgeGraph(KnowledgeGraph):
             list(entity.acl),
             entity.scope,
         )
+        vector: list[float] | None = None
+        if self._embedder is not None:
+            # Compute embedding before acquiring a pooled connection (Voyage can be slow).
+            try:
+                vector = self._embedder.embed_one(
+                    _embedding_text(entity), input_type="document"
+                )
+            except Exception:
+                vector = None
         with self._pool.connection() as conn:
-            if self._embedder is None:
+            if vector is None:
                 conn.execute(_UPSERT_ENTITY, base)
-                return
-            # Embedding is a side effect of the store (keeps IngestionService deterministic). The source
-            # text is never logged. ``input_type="document"`` matches the query-side ``"query"``.
-            vector = self._embedder.embed_one(_embedding_text(entity), input_type="document")
-            conn.execute(_UPSERT_ENTITY_VEC, (*base, _vector_literal(vector)))
+            else:
+                conn.execute(_UPSERT_ENTITY_VEC, (*base, _vector_literal(vector)))
 
     def add_relation(self, relation: Relation) -> None:
         with self._pool.connection() as conn:
@@ -392,11 +460,14 @@ class PostgresKnowledgeGraph(KnowledgeGraph):
         vec_ids: list[str] = []
 
         with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(_VECTOR_QUERY, {**base_params, "qvec": qvec, "limit": pool})
-            for row in cur.fetchall():
-                entity = _row_to_entity(row)
-                entities_by_id[entity.id] = entity
-                vec_ids.append(entity.id)
+            try:
+                cur.execute(_VECTOR_QUERY, {**base_params, "qvec": qvec, "limit": pool})
+                for row in cur.fetchall():
+                    entity = _row_to_entity(row)
+                    entities_by_id[entity.id] = entity
+                    vec_ids.append(entity.id)
+            except pg_errors.DataException:
+                return self._fts_query(principal, base_params, limit)
 
             results: list[Entity] = []
             considered: set[str] = set()

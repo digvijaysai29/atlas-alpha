@@ -118,3 +118,43 @@ def test_rbac_predicate_is_shared_by_both_query_branches() -> None:
     # semantic search can never widen read access (no IDOR via embeddings).
     assert _RBAC_PREDICATE in _QUERY
     assert _RBAC_PREDICATE in _VECTOR_QUERY
+
+# --- Settings embedding validation (M4.6) -----------------------------------
+def test_default_embedding_config_boots_cleanly() -> None:
+    settings = Settings(ANTHROPIC_API_KEY=None)
+    assert settings.embedding_model == "voyage-3"
+    assert settings.embedding_dim == 1024
+
+
+@pytest.mark.parametrize("model", ["", "   "])
+def test_blank_embedding_model_rejected(model: str) -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="ATLAS_EMBEDDING_MODEL must not be blank"):
+        Settings(ANTHROPIC_API_KEY=None, ATLAS_EMBEDDING_MODEL=model)
+
+
+def test_voyage_3_requires_1024_dim() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(
+        ValidationError,
+        match=r"ATLAS_EMBEDDING_MODEL 'voyage-3' requires ATLAS_EMBEDDING_DIM=1024",
+    ):
+        Settings(
+            ANTHROPIC_API_KEY=None,
+            ATLAS_EMBEDDING_MODEL="voyage-3",
+            ATLAS_EMBEDDING_DIM=512,
+        )
+
+def test_unsupported_model_rejected_when_voyage_configured() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="Unsupported ATLAS_EMBEDDING_MODEL"):
+        Settings(
+            ANTHROPIC_API_KEY=None,
+            VOYAGE_API_KEY=SecretStr("vk-test"),
+            ATLAS_EMBEDDING_MODEL="voyage-2",
+            ATLAS_EMBEDDING_DIM=1024,
+        )
+

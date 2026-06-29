@@ -222,7 +222,7 @@ def test_planner_context_is_rbac_scoped_with_postgres_backend(pg_pool: object) -
 # the *security invariant* of the vector path. Real semantic-quality is validated manually with a live
 # VOYAGE_API_KEY. The embedder is a pure function: querying a row's exact embedded text yields an
 # identical vector (cosine distance 0), which lets us prove the vector branch influences ranking.
-_EMBED_DIM = 64
+_EMBED_DIM = 1024
 
 
 def _seed_with_embedder(pg_pool: object) -> PostgresKnowledgeGraph:
@@ -270,12 +270,71 @@ class _QueryFailingEmbedder(DeterministicEmbedder):
         return super().embed(texts, input_type=input_type)
 
 
+class _UpsertFailingEmbedder(DeterministicEmbedder):
+    """Fails document embedding; upsert should persist the entity without a vector."""
+
+    def embed(self, texts, *, input_type="document"):  # type: ignore[no-untyped-def]
+        raise ConnectionError("embedding provider unavailable")
+
+
 def test_hybrid_query_falls_back_to_fts_when_embedding_fails(pg_pool: object) -> None:
     kg = PostgresKnowledgeGraph(pg_pool, embedder=_QueryFailingEmbedder(_EMBED_DIM))  # type: ignore[arg-type]
     for entity in (_NOTE, _DOC, _PUBLIC):
         kg.upsert_entity(entity)
     # Query embedding fails, but FTS still finds the personal note.
     assert {e.id for e in kg.query(MEMBER, "onboarding")} == {"note-1"}
+
+
+def test_upsert_persists_entity_when_embedding_fails(pg_pool: object) -> None:
+    kg = PostgresKnowledgeGraph(pg_pool, embedder=_UpsertFailingEmbedder(_EMBED_DIM))  # type: ignore[arg-type]
+    kg.upsert_entity(_NOTE)
+    with pg_pool.connection() as conn, conn.cursor() as cur:  # type: ignore[attr-defined]
+        cur.execute("SELECT id, embedding FROM atlas_kg_entities WHERE id = %s", ("note-1",))
+        row = cur.fetchone()
+    assert row["id"] == "note-1"
+    assert row["embedding"] is None
+
+
+def test_setup_backfills_null_embeddings(pg_pool: object) -> None:
+    _seed(pg_pool)  # no embedder — rows exist without vectors
+    PostgresKnowledgeGraph(pg_pool, embedder=DeterministicEmbedder(_EMBED_DIM))  # type: ignore[arg-type]
+    with pg_pool.connection() as conn, conn.cursor() as cur:  # type: ignore[attr-defined]
+        cur.execute("SELECT count(*) AS n FROM atlas_kg_entities WHERE embedding IS NOT NULL")
+        assert cur.fetchone()["n"] == 3
+
+
+def test_setup_migrates_embedding_dim(pg_pool: object) -> None:
+    from atlas.persistence.knowledge_store import _CREATE_TABLES, _vector_literal
+
+    old_dim = 64
+    new_dim = 1024
+    with pg_pool.connection() as conn:  # type: ignore[attr-defined]
+        conn.execute("DROP TABLE IF EXISTS atlas_kg_relations")
+        conn.execute("DROP TABLE IF EXISTS atlas_kg_entities")
+        conn.execute(_CREATE_TABLES)
+        conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        conn.execute(f"ALTER TABLE atlas_kg_entities ADD COLUMN embedding vector({old_dim})")
+        embedder_old = DeterministicEmbedder(old_dim)
+        vec = embedder_old.embed_one(f"{_DOC.name}\n{_DOC.content}", input_type="document")
+        conn.execute(
+            """
+            INSERT INTO atlas_kg_entities (id, type, name, content, acl, scope, embedding)
+            VALUES (%s, %s, %s, %s, %s, %s, %s::vector)
+            """,
+            (
+                _DOC.id,
+                _DOC.type,
+                _DOC.name,
+                _DOC.content,
+                list(_DOC.acl),
+                _DOC.scope,
+                _vector_literal(vec),
+            ),
+        )
+    kg = PostgresKnowledgeGraph(pg_pool, embedder=DeterministicEmbedder(new_dim))  # type: ignore[arg-type]
+    query_text = f"{_DOC.name}\n{_DOC.content}"
+    top = kg.query(ADMIN, query_text, limit=1)
+    assert top and top[0].id == "doc-1"
 
 
 def test_hybrid_query_paginates_fts_beyond_initial_candidate_window(pg_pool: object) -> None:
