@@ -189,9 +189,9 @@ class PostgresKnowledgeGraph(KnowledgeGraph):
         # can never inject LIKE metacharacters. ``LIKE ANY('{}')`` is harmless (false) when empty.
         exact = [p for p in permissions if p != _ADMIN_WILDCARD and not p.endswith(":*")]
         # Identity ACL (PKG isolation): grant the principal read on entities tagged
-        # ``kg:read:user:<their id>`` via the same static ``acl && %(exact)s`` overlap clause — no SQL
-        # change. A role wildcard could still over-match an identity acl in SQL (e.g. ``kg:read:*``),
-        # but the ``can_read`` re-filter below is the authority and rejects that, preserving isolation.
+        # ``kg:read:user:<their id>`` via the same static ``acl && %(exact)s`` overlap clause.
+        # Wildcard grants are prevented from matching identity ACL rows in SQL (see ``identity_prefix``),
+        # and ``can_read`` remains the authority (defense-in-depth).
         if principal is not None:
             exact = [*exact, identity_acl(principal.user_id)]
         wildcard_like = [f"{_like_escape(p[:-1])}%" for p in permissions if p.endswith(":*")]
