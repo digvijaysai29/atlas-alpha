@@ -377,30 +377,56 @@ class PostgresKnowledgeGraph(KnowledgeGraph):
 
         Both branches are filtered by the *same* RBAC predicate in SQL, so semantic search can never
         surface a row keyword search could not. ``can_read`` remains the final authority.
+
+        FTS candidates are paginated like :meth:`_fts_query` so matches beyond the first candidate
+        window are not dropped. If query embedding fails (e.g. Voyage outage), degrades to FTS-only.
         """
-        qvec = _vector_literal(embedder.embed_one(text, input_type="query"))
+        try:
+            qvec = _vector_literal(embedder.embed_one(text, input_type="query"))
+        except Exception:
+            return self._fts_query(principal, base_params, limit)
+
         pool = max(limit * _CANDIDATE_MULTIPLIER, limit)
         entities_by_id: dict[str, Entity] = {}
-        with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(_QUERY, {**base_params, "limit": pool, "offset": 0})
-            fts_rows = cur.fetchall()
-            cur.execute(_VECTOR_QUERY, {**base_params, "qvec": qvec, "limit": pool})
-            vec_rows = cur.fetchall()
+        fts_ids: list[str] = []
+        vec_ids: list[str] = []
 
-        def _ids(rows: list[dict[str, Any]]) -> list[str]:
-            ids: list[str] = []
-            for row in rows:
+        with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(_VECTOR_QUERY, {**base_params, "qvec": qvec, "limit": pool})
+            for row in cur.fetchall():
                 entity = _row_to_entity(row)
                 entities_by_id[entity.id] = entity
-                ids.append(entity.id)
-            return ids
+                vec_ids.append(entity.id)
 
-        fused = _rrf_fuse([_ids(fts_rows), _ids(vec_rows)], k=_RRF_K)
-        results: list[Entity] = []
-        for entity_id in fused:
-            entity = entities_by_id[entity_id]
-            if can_read(principal, entity, self._policy):
-                results.append(entity)
-                if len(results) >= limit:
+            results: list[Entity] = []
+            considered: set[str] = set()
+            offset = 0
+            batch = limit
+            while len(results) < limit:
+                params = {**base_params, "limit": batch, "offset": offset}
+                cur.execute(_QUERY, params)
+                rows = cur.fetchall()
+                if not rows:
                     break
+                for row in rows:
+                    entity = _row_to_entity(row)
+                    entities_by_id[entity.id] = entity
+                    if entity.id not in fts_ids:
+                        fts_ids.append(entity.id)
+
+                fused = _rrf_fuse([fts_ids, vec_ids], k=_RRF_K)
+                for entity_id in fused:
+                    if entity_id in considered:
+                        continue
+                    considered.add(entity_id)
+                    entity = entities_by_id[entity_id]
+                    if can_read(principal, entity, self._policy):
+                        results.append(entity)
+                        if len(results) >= limit:
+                            return results
+
+                if len(rows) < batch:
+                    break
+                offset += len(rows)
+
         return results

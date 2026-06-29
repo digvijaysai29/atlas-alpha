@@ -2,6 +2,9 @@
   "plugins": {
     "everything-claude-code/everything-claude-code": {
       "enabled": true
+    },
+    "neon-postgres": {
+      "enabled": true
     }
   }
 }
