@@ -19,6 +19,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from atlas.config import Settings, get_settings
 from atlas.interface.auth import OidcAuthenticator, build_authenticator
 from atlas.interface.rate_limit import RateLimiter, build_rate_limiter
+from atlas.interface.kg_routes import router as kg_router
 from atlas.interface.oauth_routes import router as oauth_router
 from atlas.interface.routes import router
 from atlas.interface.schemas import ErrorDetail, ErrorResponse
@@ -53,6 +54,7 @@ def create_app(
     app.state.rate_limiter = rate_limiter or build_rate_limiter(settings)
     app.include_router(router)
     app.include_router(oauth_router)
+    app.include_router(kg_router)
 
     @app.exception_handler(StarletteHTTPException)
     def _on_http_exception(_request: Request, exc: StarletteHTTPException) -> JSONResponse:

@@ -44,19 +44,46 @@ class Relation(BaseModel):
     type: str
 
 
+# Identity ACL: an acl entry of the form ``kg:read:user:<user_id>`` grants read access to **exactly
+# one** user (their Personal Knowledge Graph). Unlike role-based permission strings it is matched
+# only by the owning principal's ``user_id`` — never by a role wildcard (``*`` / ``kg:read:*``) — so
+# personal knowledge stays personal even from an admin. The ingestion pipeline (M4.4) stamps these.
+IDENTITY_ACL_PREFIX = "kg:read:user:"
+
+
+def identity_acl(user_id: str) -> str:
+    """Return the identity ACL entry that grants read access to exactly ``user_id`` (PKG isolation)."""
+    return f"{IDENTITY_ACL_PREFIX}{user_id}"
+
+
 def can_read(
     principal: Principal | None, entity: Entity, policy: PolicyStore | None = None
 ) -> bool:
     """Return True iff ``principal`` may read ``entity`` (fail-closed).
 
-    An entity with no acl is world-readable. Otherwise the principal must hold at least one of the
-    acl's permissions per the ``policy`` store (defaults to the in-memory built-in policy when none
-    is injected); if none are satisfied the entity is treated as unreadable (and omitted).
+    An entity with no acl is world-readable. Otherwise the principal must satisfy at least one acl
+    entry:
+
+    - An **identity acl** (``kg:read:user:<uid>``) is satisfied only when the principal *is* that
+      user (exact ``user_id`` match). Role wildcards never satisfy it — this is what keeps a PKG
+      private even from ``admin`` (``*``).
+    - Any other entry is a **role permission**, satisfied per the ``policy`` store (defaults to the
+      built-in policy when none is injected).
+
+    If no entry is satisfied the entity is treated as unreadable (and omitted).
     """
     if not entity.acl:
         return True
     store = policy or DEFAULT_POLICY
-    return any(store.can(principal, permission) for permission in entity.acl)
+    for permission in entity.acl:
+        if permission.startswith(IDENTITY_ACL_PREFIX):
+            owner = permission[len(IDENTITY_ACL_PREFIX) :]
+            if principal is not None and principal.user_id == owner:
+                return True
+            continue  # identity acls are never satisfied by role wildcards — isolation by design
+        if store.can(principal, permission):
+            return True
+    return False
 
 
 class KnowledgeGraph(abc.ABC):

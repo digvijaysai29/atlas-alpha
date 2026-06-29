@@ -13,7 +13,8 @@ from atlas.actions import ProposedAction
 from atlas.governance import InMemoryPolicyStore
 from atlas.governance.rbac import Principal
 from atlas.knowledge import seed_demo_graph
-from atlas.knowledge.interfaces import Entity, can_read
+from atlas.knowledge.interfaces import Entity, can_read, identity_acl
+from atlas.knowledge.memory_store import InMemoryKnowledgeGraph
 from atlas.orchestration import build_graph
 from atlas.orchestration.graph import Atlas
 from atlas.orchestration.serde import atlas_serde
@@ -51,6 +52,29 @@ def test_org_entity_hidden_from_guest_visible_to_member() -> None:
     assert "note-1" in guest_ids  # personal note still visible to guest
 
 
+def test_identity_acl_readable_only_by_owner() -> None:
+    # An identity-scoped entity (a PKG node) is readable by its owner...
+    entity = Entity(id="p", type="note", name="n", content="c", acl=(identity_acl("alice"),))
+    assert can_read(Principal(user_id="alice", roles=("member",)), entity) is True
+    # ...and by nobody else — not another member, not the anonymous principal.
+    assert can_read(Principal(user_id="bob", roles=("member",)), entity) is False
+    assert can_read(None, entity) is False
+
+
+def test_identity_acl_not_satisfied_by_role_wildcards() -> None:
+    # Even an admin (the "*" wildcard) cannot read another user's PKG node: identity acls are matched
+    # only by exact owner identity, never by a role wildcard.
+    entity = Entity(id="p", type="note", name="n", content="c", acl=(identity_acl("alice"),))
+    assert can_read(Principal(user_id="root", roles=("admin",)), entity) is False
+    reader = Principal(user_id="carol", roles=("reader",))
+    graph = seed_demo_graph()
+    graph.upsert_entity(entity)
+    graph.bind_policy(InMemoryPolicyStore({"reader": frozenset({"kg:read:*"})}))
+    assert "p" not in {
+        e.id for e in graph.query(reader, "n")
+    }  # kg:read:* never matches an identity acl
+
+
 def test_wildcard_grant_reveals_org_entity_in_memory() -> None:
     # A role granted the hierarchical `kg:read:*` wildcard reads org-scoped entities (M3.5) even
     # though it was never granted the exact `kg:read:org` leaf.
@@ -70,6 +94,37 @@ def test_query_keyword_match_is_scoped_to_terms() -> None:
 def test_query_respects_limit() -> None:
     graph = seed_demo_graph()
     assert len(graph.query(MEMBER, "", limit=1)) == 1
+
+
+def test_query_limit_after_can_read_with_dense_foreign_pkg() -> None:
+    # Six foreign PKG nodes sort before doc-1; limit=1 must still return the readable org entity
+    # (in-memory reference for Postgres pagination + can_read parity).
+    graph = InMemoryKnowledgeGraph()
+    for index in range(6):
+        graph.upsert_entity(
+            Entity(
+                id=f"a-pkg-{index:02d}",
+                type="note",
+                name=f"Foreign PKG {index}",
+                content="private notes",
+                acl=(identity_acl(f"other-{index}"),),
+                scope="personal",
+            )
+        )
+    graph.upsert_entity(
+        Entity(
+            id="doc-1",
+            type="doc",
+            name="Org policy",
+            content="Organization-wide policy text.",
+            acl=("kg:read:org",),
+            scope="org",
+        )
+    )
+    admin = Principal(user_id="root", roles=("admin",))
+    results = graph.query(admin, "", limit=1)
+    assert len(results) == 1
+    assert results[0].id == "doc-1"
 
 
 # --- planner wiring (RBAC-filtered kg_context flows into state) ---------------

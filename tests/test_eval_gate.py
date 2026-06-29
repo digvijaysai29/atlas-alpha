@@ -18,7 +18,7 @@ def test_healthy_suite_scores_perfect() -> None:
     assert score == 1.0
     assert score >= MIN_PASS_SCORE
     assert all(result.passed for result in results), [r for r in results if not r.passed]
-    # The full HANDOFF §5a golden-trace set is present.
+    # The full HANDOFF §5a golden-trace set plus the M4.4 ingestion oracles are present.
     assert {result.name for result in results} == {
         "approval/approve",
         "approval/reject",
@@ -29,6 +29,9 @@ def test_healthy_suite_scores_perfect() -> None:
         "rbac/kg-idor",
         "read-only/auto",
         "confidence",
+        "ingest/pkg-isolation",
+        "ingest/dedup-idempotent",
+        "ingest/okg-write-denied",
     }
 
 

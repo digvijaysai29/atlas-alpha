@@ -18,7 +18,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from atlas.actions import ProposedAction
 from atlas.governance import InMemoryPolicyStore
 from atlas.governance.rbac import Principal
-from atlas.knowledge.interfaces import Entity, Relation
+from atlas.knowledge.interfaces import Entity, Relation, identity_acl
 from atlas.orchestration import build_graph
 from atlas.orchestration.serde import atlas_serde
 from atlas.orchestration.state import initial_state
@@ -141,6 +141,39 @@ def test_empty_query_returns_all_readable_up_to_limit(pg_pool: object) -> None:
     kg = _seed(pg_pool)
     assert {e.id for e in kg.query(MEMBER, "")} == {"note-1", "doc-1", "public-1"}
     assert len(kg.query(MEMBER, "", limit=1)) == 1
+
+
+def _seed_dense_foreign_pkg(pg_pool: object) -> PostgresKnowledgeGraph:
+    kg = PostgresKnowledgeGraph(pg_pool)  # type: ignore[arg-type]
+    kg.upsert_entity(_DOC)
+    for index in range(6):
+        kg.upsert_entity(
+            Entity(
+                id=f"a-pkg-{index:02d}",
+                type="note",
+                name=f"Foreign PKG {index}",
+                content="private personal knowledge",
+                acl=(identity_acl(f"other-{index}"),),
+                scope="personal",
+            )
+        )
+    return kg
+
+
+def test_admin_query_limit_not_displaced_by_foreign_pkg(pg_pool: object) -> None:
+    kg = _seed_dense_foreign_pkg(pg_pool)
+    ids = {e.id for e in kg.query(ADMIN, "", limit=5)}
+    assert "doc-1" in ids
+    assert not any(entity_id.startswith("a-pkg-") for entity_id in ids)
+
+
+def test_wildcard_reader_query_limit_not_displaced_by_foreign_pkg(pg_pool: object) -> None:
+    kg = _seed_dense_foreign_pkg(pg_pool)
+    kg.bind_policy(InMemoryPolicyStore({"reader": frozenset({"kg:read:*"})}))
+    reader = Principal(user_id="carol", roles=("reader",))
+    ids = {e.id for e in kg.query(reader, "", limit=5)}
+    assert "doc-1" in ids
+    assert not any(entity_id.startswith("a-pkg-") for entity_id in ids)
 
 
 # --- durability + upsert ----------------------------------------------------

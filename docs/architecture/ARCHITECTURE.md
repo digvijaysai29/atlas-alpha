@@ -22,7 +22,7 @@ Because the agent takes **real, irreversible actions**, the architecture is buil
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│  INTERFACE LAYER            FastAPI · /chat /approve /threads + OIDC (M3.2/3.3) │
+│  INTERFACE LAYER       FastAPI · /chat /approve /threads /kg/ingest + OIDC (M3.2/3.3/4.4) │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │  AGENT ORCHESTRATION LAYER  LangGraph state machine  ◄── THE CORE             │
 │      planner → (approval/interrupt) → executor → responder                    │
@@ -42,7 +42,7 @@ Because the agent takes **real, irreversible actions**, the architecture is buil
 
 | Layer | Responsibility | M1 status |
 |---|---|---|
-| **Interface** | HTTP surface; chat + approve/reject + thread reads | **built (M3.2)** |
+| **Interface** | HTTP surface; chat + approve/reject + thread reads + KG ingest (M4.4) | **built (M3.2)** |
 | **Agent Orchestration** | Stateful graph: plan, gate, execute, respond | **built (M1)** |
 | **Integration** | Declare tools (name, args schema, **risk tier**), run them | built (mock tools) |
 | **Knowledge** | RBAC-scoped read/write of PKG + OKG | interface + stub (M2) |
@@ -226,6 +226,13 @@ executor refuses to run a gated action without a matching, in-scope `ApprovalDec
   token; `integrations/slack.py`), mirroring the M4.1 `EmailSender` shape. **Idempotency is inherited**
   from `GuardedExecutor` for any `RiskTier.SEND` action — no new execution code. (PR #29.)
 - **M4.3 (done):** per-principal OAuth + **HashiCorp Vault** credential store (`HashiCorpCredentialVault`, KV v2); `gmail_send`, `calendar_create_event`, `slack_post_as_user` behind `CredentialResolver` + inherited `GuardedExecutor` idempotency. OAuth HTTP routes under `/oauth/*`. See [`M4.3_PLAN.md`](../plans/M4.3_PLAN.md).
-- **Later (M4.4+):** Jira adapter;
-  resource/argument-aware `ToolPermission`; pgvector semantic retrieval; SSE streaming; Merkle
-  anchoring.
+- **M4.4 (done):** **Knowledge Ingestion Core** — deterministic `IngestionService`
+  (`knowledge/ingestion.py`) + `POST /kg/ingest`; documents become RBAC-scoped, deduplicated
+  `Entity` upserts. PKG per-user isolation via **identity ACLs** (`kg:read:user:<uid>`, matched only
+  by the owner — never a role wildcard), enforced in both backends; fail-closed OKG write gate
+  (`kg:write:org`). Hermetic/deterministic (no LLM, no embeddings) so it's covered by the eval gate.
+  See [`M4.4_PLAN.md`](../plans/M4.4_PLAN.md).
+- **Later (M4.5+):** LLM entity/relation extraction over the ingestion pipeline; **pgvector**
+  embeddings + semantic retrieval (behind the same `KnowledgeGraph` interface); OAuth-connector
+  ingestion (Gmail/Jira/Calendar) over the same `IngestionService`; resource/argument-aware
+  `ToolPermission`; SSE streaming; Merkle anchoring.

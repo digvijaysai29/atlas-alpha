@@ -20,6 +20,7 @@ from langgraph.graph import END, START, StateGraph
 from atlas.config import Settings, get_settings
 from atlas.governance import AuditLog, InMemoryAuditLog, InMemoryPolicyStore, PolicyStore
 from atlas.governance.credentials import CredentialVault, InMemoryCredentialVault
+from atlas.knowledge.ingestion import IngestionService
 from atlas.knowledge.interfaces import KnowledgeGraph
 from atlas.knowledge.memory_store import InMemoryKnowledgeGraph
 from atlas.orchestration.nodes import (
@@ -119,6 +120,17 @@ def make_knowledge_graph(
     return InMemoryKnowledgeGraph(policy=policy)
 
 
+def make_ingestion_service(
+    knowledge: KnowledgeGraph, policy: PolicyStore, audit: AuditLog
+) -> IngestionService:
+    """Build the KG ingestion service over the *same* collaborators the graph already uses.
+
+    Sharing the live KG/policy/audit instances keeps a single source of truth: a document ingested
+    via ``/kg/ingest`` is immediately visible to the planner's RBAC-scoped ``query`` (M4.4).
+    """
+    return IngestionService(knowledge, policy, audit)
+
+
 def make_policy_store(settings: Settings | None = None) -> PolicyStore:
     """Return the authorization policy store: durable Postgres if ``DATABASE_URL`` set, else the
     in-memory default (seeded from ``ROLE_PERMISSIONS``). Mirrors ``make_audit_log``.
@@ -177,6 +189,7 @@ class Atlas:
     knowledge: KnowledgeGraph
     policy: PolicyStore
     credential_vault: CredentialVault
+    ingestion: IngestionService
 
 
 def build_graph(
@@ -253,4 +266,5 @@ def build_graph(
         knowledge=knowledge,
         policy=policy,
         credential_vault=credential_vault,
+        ingestion=make_ingestion_service(knowledge, policy, audit),
     )

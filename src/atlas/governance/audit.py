@@ -42,6 +42,7 @@ class AuditEventType(str, Enum):
     FAILED = "failed"  # tool execution failed (retryable — not counted as executed)
     SKIPPED = "skipped"  # a gated action that was never approved
     DENIED = "denied"  # blocked by RBAC (the principal lacked the required permission)
+    INGESTED = "ingested"  # knowledge written into the KG (M4.4 ingestion; counts/scope only)
 
 
 def _utc_now() -> datetime:
@@ -249,6 +250,21 @@ class AuditLog(abc.ABC):
                 action_id=action.action_id,
                 tool=action.tool,
                 detail={"reason": reason},
+            )
+        )
+
+    def ingested(self, *, source_id: str, scope: str, entity_count: int, actor: str) -> AuditEvent:
+        """Record a knowledge-ingestion side effect (M4.4).
+
+        Content-agnostic by design: the trail captures *that* a document was ingested (its
+        ``source_id``, ``scope``, chunk/entity count, and the actor) but **never** the document text.
+        """
+        return self.record(
+            AuditEvent(
+                event_type=AuditEventType.INGESTED,
+                action_id=source_id,
+                actor=actor,
+                detail={"scope": scope, "entity_count": entity_count},
             )
         )
 

@@ -12,6 +12,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from atlas.knowledge.ingestion import NonEmptyText
+
 
 # --- errors (consistent envelope) -------------------------------------------
 class ErrorDetail(BaseModel):
@@ -27,6 +29,26 @@ class ErrorResponse(BaseModel):
 # --- requests ----------------------------------------------------------------
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, description="The user's natural-language request.")
+
+
+class IngestRequest(BaseModel):
+    """A document submitted to ``POST /kg/ingest``.
+
+    The caller may *request* a ``scope``; the server resolves the actual ACL and authorizes the write
+    (``org`` requires ``kg:write:org``). ``org_acl`` is only meaningful for ``org`` scope.
+    """
+
+    text: NonEmptyText = Field(description="The raw document text to ingest.")
+    title: str = Field(min_length=1, description="Human-readable title.")
+    type: str = "doc"
+    scope: Literal["personal", "org"] = "personal"
+    source_id: str | None = Field(
+        default=None,
+        description="Stable id for idempotent re-ingest; derived from title if omitted.",
+    )
+    org_acl: list[str] | None = Field(
+        default=None, description="Optional read ACL for org scope only."
+    )
 
 
 class ApproveRequest(BaseModel):
@@ -53,6 +75,16 @@ class ApproveRequest(BaseModel):
 
 
 # --- responses ---------------------------------------------------------------
+class IngestResponse(BaseModel):
+    """The successful response for ``POST /kg/ingest``: which entities were written."""
+
+    ok: Literal[True] = True
+    scope: str
+    source_id: str
+    chunk_count: int
+    entity_ids: list[str] = Field(default_factory=list)
+
+
 class AgentResponse(BaseModel):
     """The unified successful response for /chat, /approve, and /threads/{id}."""
 

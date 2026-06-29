@@ -35,7 +35,8 @@ sub-phase is its own branch → PR into `main` → CI must be green.
 | **M3.6** | **Per-principal rate limiting** on `/chat` + `/approve` (Upstash-backed; `interface/rate_limit.py`); 429 + `Retry-After`; fail-open; per-IP for anonymous | ✅ **merged (PR #20)** |
 | **M4.1** | **Real email send (Resend)** behind a pluggable `EmailSender` + **idempotent execution** (`GuardedExecutor`, audit `REPLAY_SKIPPED`/`FAILED` by `action_id`) | ✅ **merged (PR #22)** |
 | **M4.2** | **Slack post** (`slack_post`, managed `slack_sdk` bot token) reusing the `EmailSender`/`GuardedExecutor` pattern — idempotency inherited | ✅ **PR #29** |
-| **M4.3+** | "Send as the user" OAuth; Gmail/Jira/Calendar; resource/argument-aware `ToolPermission`; pgvector semantic retrieval; sessions/provisioning; SSE streaming | future |
+| **M4.4** | **Knowledge Ingestion Core** — deterministic `IngestionService` + `POST /kg/ingest`; PKG per-user isolation via identity ACLs; fail-closed OKG write gate (`kg:write:org`); 3 new eval oracles. See [`M4.4_PLAN.md`](../plans/M4.4_PLAN.md) | ✅ **branch `feat/m4.4-knowledge-ingestion`** |
+| **M4.5+** | LLM entity/relation extraction over the ingestion pipeline; **pgvector** embeddings + semantic retrieval; OAuth-connector ingestion (Gmail/Jira/Calendar); resource/argument-aware `ToolPermission`; SSE streaming | future |
 
 ## 3. Tech Stack
 
@@ -91,6 +92,7 @@ orchestration/       ← THE CORE
 interface/           ← M3.2 FastAPI HTTP layer over the compiled graph
   app.py             create_app(atlas?, settings?) factory (DI mirrors build_graph); ErrorResponse handlers
   routes.py          /healthz, /chat, /approve, /threads/{id} (sync handlers → threadpool); get_atlas dep
+  kg_routes.py       /kg/ingest — KG write path; rate-limited; IngestionDenied→403 (M4.4)
   auth.py            OidcAuthenticator — RS256 bearer-JWT validation (JWKS), claims→Principal;
                      build_authenticator(settings); _parse_roles (M3.3)
   security.py        get_request_principal (OIDC bearer if configured, else dev header shim);

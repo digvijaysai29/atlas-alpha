@@ -25,7 +25,14 @@ from psycopg_pool import ConnectionPool
 
 from atlas.governance.policy import DEFAULT_POLICY, PolicyStore
 from atlas.governance.rbac import Principal
-from atlas.knowledge.interfaces import Entity, KnowledgeGraph, Relation, can_read
+from atlas.knowledge.interfaces import (
+    IDENTITY_ACL_PREFIX,
+    Entity,
+    KnowledgeGraph,
+    Relation,
+    can_read,
+    identity_acl,
+)
 
 _ADMIN_WILDCARD = "*"
 
@@ -67,23 +74,34 @@ ON CONFLICT (id) DO UPDATE SET
 _INSERT_RELATION = "INSERT INTO atlas_kg_relations (src_id, dst_id, type) VALUES (%s, %s, %s)"
 _SELECT_RELATIONS = "SELECT src_id, dst_id, type FROM atlas_kg_relations ORDER BY src_id, dst_id"
 
-# RBAC: readable iff the principal is an admin wildcard, the acl is NULL/empty (world-readable), the
-# acl array overlaps (``&&``) the principal's exact permission grants, OR an acl entry matches one of
-# the principal's hierarchical ``":*"`` grants (expanded to LIKE prefix patterns). Wildcards are
-# honored on the granted side only — keeping the SQL filter in parity with ``permission_satisfied``
-# / ``can_read`` so a ``kg:read:*`` grant reveals ``kg:read:org`` rows the SQL would otherwise hide.
+# RBAC: readable iff the acl is NULL/empty (world-readable), the acl array overlaps (``&&``) the
+# principal's exact permission grants (including their identity ACL for PKG), an acl entry matches one
+# of the principal's hierarchical ``":*"`` grants on **non-identity** entries only, OR the principal
+# is an admin wildcard and the row is not another user's identity-only PKG. Wildcards are honored on
+# the granted side only — keeping the SQL filter in parity with ``permission_satisfied`` / ``can_read``.
 # Relevance: no search terms ⇒ match all; otherwise full-text match OR any-term substring (ILIKE
 # ANY) so behavior matches the in-memory keyword-OR stub.
 _QUERY = """
 SELECT id, type, name, content, acl, scope
 FROM atlas_kg_entities
 WHERE (
-        %(is_admin)s = TRUE
-        OR acl IS NULL
+        acl IS NULL
         OR cardinality(acl) = 0
         OR acl && %(exact)s::text[]
         OR EXISTS (
-            SELECT 1 FROM unnest(acl) AS a WHERE a LIKE ANY(%(wildcard_like)s::text[])
+            SELECT 1 FROM unnest(acl) AS a
+            WHERE NOT a LIKE %(identity_prefix)s
+              AND a LIKE ANY(%(wildcard_like)s::text[])
+        )
+        OR (
+            %(is_admin)s = TRUE
+            AND (
+                EXISTS (
+                    SELECT 1 FROM unnest(acl) AS a
+                    WHERE NOT a LIKE %(identity_prefix)s
+                )
+                OR acl && %(exact)s::text[]
+            )
         )
     )
     AND (
@@ -94,6 +112,7 @@ WHERE (
     )
 ORDER BY id
 LIMIT %(limit)s
+OFFSET %(offset)s
 """
 
 
@@ -169,19 +188,41 @@ class PostgresKnowledgeGraph(KnowledgeGraph):
         # LIKE prefix patterns ("a:b:%"), with the prefix ``_like_escape``-d so a permission string
         # can never inject LIKE metacharacters. ``LIKE ANY('{}')`` is harmless (false) when empty.
         exact = [p for p in permissions if p != _ADMIN_WILDCARD and not p.endswith(":*")]
+        # Identity ACL (PKG isolation): grant the principal read on entities tagged
+        # ``kg:read:user:<their id>`` via the same static ``acl && %(exact)s`` overlap clause.
+        # Wildcard grants are prevented from matching identity ACL rows in SQL (see ``identity_prefix``),
+        # and ``can_read`` remains the authority (defense-in-depth).
+        if principal is not None:
+            exact = [*exact, identity_acl(principal.user_id)]
         wildcard_like = [f"{_like_escape(p[:-1])}%" for p in permissions if p.endswith(":*")]
         terms = [term for term in text.lower().split() if term]
-        params = {
+        identity_prefix = f"{IDENTITY_ACL_PREFIX}%"
+        base_params = {
             "is_admin": is_admin,
             "exact": exact,
             "wildcard_like": wildcard_like,
+            "identity_prefix": identity_prefix,
             "match_all": not terms,
             "text": text,
             "patterns": [f"%{_like_escape(term)}%" for term in terms],
-            "limit": limit,
         }
+        results: list[Entity] = []
+        offset = 0
+        batch = limit
         with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(_QUERY, params)
-            entities = [_row_to_entity(row) for row in cur.fetchall()]
-        # Defense-in-depth: never trust the query alone — re-apply can_read before returning.
-        return [entity for entity in entities if can_read(principal, entity, self._policy)]
+            while len(results) < limit:
+                params = {**base_params, "limit": batch, "offset": offset}
+                cur.execute(_QUERY, params)
+                rows = cur.fetchall()
+                if not rows:
+                    break
+                for row in rows:
+                    entity = _row_to_entity(row)
+                    if can_read(principal, entity, self._policy):
+                        results.append(entity)
+                        if len(results) >= limit:
+                            return results
+                if len(rows) < batch:
+                    break
+                offset += len(rows)
+        return results
