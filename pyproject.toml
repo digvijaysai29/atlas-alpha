@@ -8,6 +8,7 @@ dependencies = [
     "fastapi>=0.138.0",
     "langchain>=1.3.10",
     "langchain-anthropic>=1.4.6",
+    "langchain-openai>=1.1.0",  # OpenRouter (OpenAI-compatible) LLM entity/relation extraction (M4.5)
     "langgraph>=1.2.6",
     "langgraph-checkpoint-postgres>=2.0.0",
     "langgraph-checkpoint-sqlite>=2.0.0",

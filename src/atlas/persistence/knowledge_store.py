@@ -69,6 +69,15 @@ CREATE INDEX IF NOT EXISTS atlas_kg_fts
     ON atlas_kg_entities USING GIN (to_tsvector('english', name || ' ' || content))
 """
 
+# Dedup edges so re-ingesting the same document is idempotent. ``CREATE TABLE IF NOT EXISTS`` is a
+# no-op on already-deployed tables, so this separate ``CREATE UNIQUE INDEX IF NOT EXISTS`` (run in
+# ``setup()``) is what guarantees existing deployments also get the constraint. It also serves as the
+# ``ON CONFLICT (src_id, dst_id, type)`` arbiter for ``_INSERT_RELATION``.
+_CREATE_RELATIONS_UNIQUE_INDEX = """
+CREATE UNIQUE INDEX IF NOT EXISTS atlas_kg_relations_uniq
+    ON atlas_kg_relations (src_id, dst_id, type)
+"""
+
 _UPSERT_ENTITY = """
 INSERT INTO atlas_kg_entities (id, type, name, content, acl, scope)
 VALUES (%s, %s, %s, %s, %s, %s)
@@ -94,7 +103,13 @@ ON CONFLICT (id) DO UPDATE SET
     embedding = EXCLUDED.embedding
 """
 
-_INSERT_RELATION = "INSERT INTO atlas_kg_relations (src_id, dst_id, type) VALUES (%s, %s, %s)"
+# Idempotent edge insert: re-adding an identical (src_id, dst_id, type) is a silent no-op. The
+# ``ON CONFLICT`` target is the unique index ``atlas_kg_relations_uniq`` created in ``setup()`` (see
+# ``_CREATE_RELATIONS_UNIQUE_INDEX``), so re-ingesting the same document never grows the table.
+_INSERT_RELATION = (
+    "INSERT INTO atlas_kg_relations (src_id, dst_id, type) VALUES (%s, %s, %s) "
+    "ON CONFLICT (src_id, dst_id, type) DO NOTHING"
+)
 _SELECT_RELATIONS = "SELECT src_id, dst_id, type FROM atlas_kg_relations ORDER BY src_id, dst_id"
 
 # RBAC predicate (shared verbatim by the full-text AND the vector branch — see ``_QUERY`` /
@@ -270,6 +285,7 @@ class PostgresKnowledgeGraph(KnowledgeGraph):
         with self._pool.connection() as conn:
             conn.execute(_CREATE_TABLES)
             conn.execute(_CREATE_FTS_INDEX)
+            conn.execute(_CREATE_RELATIONS_UNIQUE_INDEX)
             if self._embedder is not None:
                 dim = int(self._embedder.dim)
                 conn.execute("CREATE EXTENSION IF NOT EXISTS vector")

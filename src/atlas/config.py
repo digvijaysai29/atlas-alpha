@@ -76,6 +76,23 @@ class Settings(BaseSettings):
     embedding_model: str = Field(default="voyage-3", alias="ATLAS_EMBEDDING_MODEL")
     embedding_dim: int = Field(default=1024, alias="ATLAS_EMBEDDING_DIM")
 
+    # --- Knowledge extraction (M4.5 — LLM entity/relation extraction) -------
+    # When ATLAS_KG_EXTRACTION_ENABLED is true AND OPENROUTER_API_KEY is set, the ingestion pipeline
+    # asks an LLM (via OpenRouter, primary model + fallback chain) to extract typed concept entities
+    # and relations from each document; otherwise a deterministic no-op extractor is used so CI and
+    # the eval gate stay hermetic. The model never influences authorization — scope/ACL are always
+    # resolved server-side. Caps bound how much untrusted model output is persisted per document.
+    openrouter_api_key: SecretStr | None = Field(default=None, alias="OPENROUTER_API_KEY")
+    kg_extraction_enabled: bool = Field(default=False, alias="ATLAS_KG_EXTRACTION_ENABLED")
+    extraction_model: str = Field(
+        default="anthropic/claude-3.5-haiku", alias="ATLAS_EXTRACTION_MODEL"
+    )
+    # Comma-separated OpenRouter model ids tried in order when the primary fails (e.g.
+    # "openai/gpt-4o-mini,google/gemini-flash-1.5"). Blank => no fallbacks.
+    extraction_fallback_models: str = Field(default="", alias="ATLAS_EXTRACTION_FALLBACK_MODELS")
+    extraction_max_entities: int = Field(default=64, alias="ATLAS_EXTRACTION_MAX_ENTITIES")
+    extraction_max_relations: int = Field(default=128, alias="ATLAS_EXTRACTION_MAX_RELATIONS")
+
     # --- Interface (M3.2 FastAPI) ------------------------------------------
     # Bind address for the dev server (scripts/run_api.py).
     api_host: str = Field(default="127.0.0.1", alias="ATLAS_API_HOST")
@@ -279,6 +296,25 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def validate_extraction_config(self) -> Self:
+        """Extraction caps must be positive; enabling the flag requires an OpenRouter key (all-or-nothing)."""
+        if self.extraction_max_entities <= 0:
+            raise ValueError("ATLAS_EXTRACTION_MAX_ENTITIES must be a positive integer.")
+        if self.extraction_max_relations <= 0:
+            raise ValueError("ATLAS_EXTRACTION_MAX_RELATIONS must be a positive integer.")
+        if self.kg_extraction_enabled:
+            if not _nonempty_secret(self.openrouter_api_key):
+                raise ValueError(
+                    "ATLAS_KG_EXTRACTION_ENABLED is true but OPENROUTER_API_KEY is not set. "
+                    "Provide a key or leave extraction disabled (the deterministic default)."
+                )
+            if not self.extraction_model.strip():
+                raise ValueError(
+                    "ATLAS_EXTRACTION_MODEL must not be blank when extraction is enabled."
+                )
+        return self
+
+    @model_validator(mode="after")
     def validate_email_config(self) -> Self:
         """Email creds must be all set or all unset — mirror validate_rate_limit_config."""
         email_fields = {
@@ -354,6 +390,27 @@ class Settings(BaseSettings):
     def embeddings_configured(self) -> bool:
         """True when a Voyage API key is present (else the deterministic offline embedder is used)."""
         return _nonempty_secret(self.voyage_api_key)
+
+    @property
+    def openrouter_configured(self) -> bool:
+        """True when an OpenRouter API key is present (required to enable LLM extraction)."""
+        return _nonempty_secret(self.openrouter_api_key)
+
+    @property
+    def extraction_enabled(self) -> bool:
+        """True when LLM entity/relation extraction should run (flag on AND OpenRouter key present).
+
+        When False the ingestion pipeline uses the deterministic no-op extractor, so CI and the
+        deterministic eval gate stay hermetic (ingestion behaves exactly as M4.4).
+        """
+        return self.kg_extraction_enabled and self.openrouter_configured
+
+    @property
+    def extraction_fallback_model_list(self) -> tuple[str, ...]:
+        """The configured fallback model ids, in order (comma-separated; blanks dropped)."""
+        return tuple(
+            model.strip() for model in self.extraction_fallback_models.split(",") if model.strip()
+        )
 
     @property
     def vault_configured(self) -> bool:

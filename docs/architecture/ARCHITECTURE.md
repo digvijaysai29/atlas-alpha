@@ -238,6 +238,12 @@ executor refuses to run a gated action without a matching, in-scope `ApprovalDec
   CI/the eval gate stay hermetic. The **identical RBAC predicate** filters both the FTS and vector
   branches (semantic search cannot widen read access), and `can_read` remains the final authority — so
   PKG/OKG scoping holds on the vector path. See [`M4.6_PLAN.md`](../plans/M4.6_PLAN.md).
-- **Later (M4.5+):** LLM entity/relation extraction over the ingestion pipeline; OAuth-connector
-  ingestion (Gmail/Jira/Calendar) over the same `IngestionService`; resource/argument-aware
-  `ToolPermission`; SSE streaming; Merkle anchoring.
+- **M4.5 (done):** **LLM entity/relation extraction** — an *optional* enrichment of the ingestion
+  pipeline. When enabled, an OpenRouter-backed LLM (primary model + `.with_fallbacks` chain, structured
+  output) extracts typed concept entities (person/project/org/concept) and directed relations, written
+  alongside the deterministic chunks. The model decides only *which* nodes/edges exist — **scope/ACL are
+  server-resolved from the principal** (no model-driven authz; the prompt-injection guard), output is
+  schema-validated, capped, and dangling edges dropped; failures degrade to chunks-only. Default is a
+  deterministic no-op so CI/the eval gate stay hermetic (1.00). See [`M4.5_PLAN.md`](../plans/M4.5_PLAN.md).
+- **Later (M4.7+):** OAuth-connector ingestion (Gmail/Jira/Calendar) over the same `IngestionService`;
+  resource/argument-aware `ToolPermission`; SSE streaming; Merkle anchoring.

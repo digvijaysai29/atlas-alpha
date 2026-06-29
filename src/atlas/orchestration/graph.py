@@ -21,6 +21,7 @@ from atlas.config import Settings, get_settings
 from atlas.governance import AuditLog, InMemoryAuditLog, InMemoryPolicyStore, PolicyStore
 from atlas.governance.credentials import CredentialVault, InMemoryCredentialVault
 from atlas.knowledge.embeddings import make_embedder
+from atlas.knowledge.extraction import make_extractor
 from atlas.knowledge.ingestion import IngestionService
 from atlas.knowledge.interfaces import KnowledgeGraph
 from atlas.knowledge.memory_store import InMemoryKnowledgeGraph
@@ -126,14 +127,29 @@ def make_knowledge_graph(
 
 
 def make_ingestion_service(
-    knowledge: KnowledgeGraph, policy: PolicyStore, audit: AuditLog
+    knowledge: KnowledgeGraph,
+    policy: PolicyStore,
+    audit: AuditLog,
+    settings: Settings | None = None,
 ) -> IngestionService:
     """Build the KG ingestion service over the *same* collaborators the graph already uses.
 
     Sharing the live KG/policy/audit instances keeps a single source of truth: a document ingested
     via ``/kg/ingest`` is immediately visible to the planner's RBAC-scoped ``query`` (M4.4).
+
+    M4.5: an :class:`EntityExtractor` is injected — an OpenRouter-backed LLM extractor when
+    ``ATLAS_KG_EXTRACTION_ENABLED`` + ``OPENROUTER_API_KEY`` are set, else a deterministic no-op that
+    leaves the write path byte-for-byte M4.4. Caps come from settings.
     """
-    return IngestionService(knowledge, policy, audit)
+    settings = settings or get_settings()
+    return IngestionService(
+        knowledge,
+        policy,
+        audit,
+        extractor=make_extractor(settings),
+        max_extracted_entities=settings.extraction_max_entities,
+        max_extracted_relations=settings.extraction_max_relations,
+    )
 
 
 def make_policy_store(settings: Settings | None = None) -> PolicyStore:
@@ -271,5 +287,5 @@ def build_graph(
         knowledge=knowledge,
         policy=policy,
         credential_vault=credential_vault,
-        ingestion=make_ingestion_service(knowledge, policy, audit),
+        ingestion=make_ingestion_service(knowledge, policy, audit, settings),
     )

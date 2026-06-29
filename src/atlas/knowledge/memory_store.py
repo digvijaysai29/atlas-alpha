@@ -25,6 +25,12 @@ class InMemoryKnowledgeGraph(KnowledgeGraph):
         self._entities[entity.id] = entity
 
     def add_relation(self, relation: Relation) -> None:
+        # Dedup on (src_id, dst_id, type) to mirror the Postgres backend's
+        # ``ON CONFLICT (src_id, dst_id, type) DO NOTHING``: re-ingesting the same document must not
+        # grow the edge list. Append-only otherwise, preserving insertion order for ``relations()``.
+        key = (relation.src_id, relation.dst_id, relation.type)
+        if any((r.src_id, r.dst_id, r.type) == key for r in self._relations):
+            return
         self._relations.append(relation)
 
     def relations(self) -> Sequence[Relation]:
