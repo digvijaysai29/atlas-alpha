@@ -314,7 +314,9 @@ class PostgresKnowledgeGraph(KnowledgeGraph):
 
     def _backfill_null_embeddings(self) -> None:
         """Embed and persist any rows left with ``embedding IS NULL`` (batched, no held connection)."""
-        assert self._embedder is not None
+        if self._embedder is None:
+            return
+        embedder = self._embedder
         while True:
             with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
                 cur.execute(
@@ -330,7 +332,7 @@ class PostgresKnowledgeGraph(KnowledgeGraph):
             if not rows:
                 return
             texts = [f"{row['name']}\n{row['content']}" for row in rows]
-            vectors = self._embedder.embed(texts, input_type="document")
+            vectors = embedder.embed(texts, input_type="document")
             with self._pool.connection() as conn:
                 for row, vector in zip(rows, vectors, strict=True):
                     conn.execute(
@@ -351,9 +353,7 @@ class PostgresKnowledgeGraph(KnowledgeGraph):
         if self._embedder is not None:
             # Compute embedding before acquiring a pooled connection (Voyage can be slow).
             try:
-                vector = self._embedder.embed_one(
-                    _embedding_text(entity), input_type="document"
-                )
+                vector = self._embedder.embed_one(_embedding_text(entity), input_type="document")
             except Exception:
                 vector = None
         with self._pool.connection() as conn:

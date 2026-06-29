@@ -16,7 +16,6 @@ if TYPE_CHECKING:
     from psycopg_pool import ConnectionPool
 
 
-
 def reset_kg_tables(database_url: str) -> None:
     """Drop KG tables only — clears vector-dim pollution from M4.6 integration tests."""
     import psycopg

@@ -119,6 +119,7 @@ def test_rbac_predicate_is_shared_by_both_query_branches() -> None:
     assert _RBAC_PREDICATE in _QUERY
     assert _RBAC_PREDICATE in _VECTOR_QUERY
 
+
 # --- Settings embedding validation (M4.6) -----------------------------------
 def test_default_embedding_config_boots_cleanly() -> None:
     settings = Settings(ANTHROPIC_API_KEY=None)
@@ -147,6 +148,7 @@ def test_voyage_3_requires_1024_dim() -> None:
             ATLAS_EMBEDDING_DIM=512,
         )
 
+
 def test_unsupported_model_rejected_when_voyage_configured() -> None:
     from pydantic import ValidationError
 
@@ -157,4 +159,3 @@ def test_unsupported_model_rejected_when_voyage_configured() -> None:
             ATLAS_EMBEDDING_MODEL="voyage-2",
             ATLAS_EMBEDDING_DIM=1024,
         )
-
