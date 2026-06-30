@@ -223,6 +223,12 @@ def _apply_adapter_engine(
     )
     from atlas.tool_egress import HttpxTransport
 
+    if credential_resolver is None:
+        logger.warning(
+            "Adapter engine is enabled but DATABASE_URL is unset — schema-driven OAuth tools "
+            "will fail at runtime until Postgres audit and a credential vault are configured."
+        )
+
     schema_dir = (
         Path(settings.adapter_schema_dir) if settings.adapter_schema_dir else packaged_schema_dir()
     )

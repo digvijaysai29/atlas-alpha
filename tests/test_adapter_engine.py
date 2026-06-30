@@ -10,6 +10,7 @@ Two themes:
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -186,6 +187,12 @@ def test_endpoint_host_not_on_allowlist_rejected_at_build() -> None:
         _engine(FakeTransport(None), allowlist=_ALLOWLIST).build_tool(schema)
 
 
+def test_http_endpoint_rejected_at_build() -> None:
+    schema = _base_schema(endpoint="http://slack.com/x")
+    with pytest.raises(EgressNotAllowed):
+        _engine(FakeTransport(_ALLOWLIST), allowlist=_ALLOWLIST).build_tool(schema)
+
+
 def test_transport_rechecks_allowlist_at_call_time() -> None:
     transport = FakeTransport(_ALLOWLIST)
     with pytest.raises(EgressNotAllowed):
@@ -261,6 +268,16 @@ def test_apply_adapter_engine_replaces_handwritten_tool() -> None:
     assert not isinstance(tool, SlackPostAsUserTool)
     assert type(tool).__name__ == "_SchemaTool"
     assert isinstance(tool.ArgsSchema, type) and issubclass(tool.ArgsSchema, BaseModel)
+
+
+def test_adapter_engine_without_database_url_logs_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from atlas.orchestration import build_graph
+
+    with caplog.at_level(logging.WARNING, logger="atlas.orchestration.graph"):
+        build_graph(settings=Settings(ATLAS_ADAPTER_ENGINE_ENABLED=True, DATABASE_URL=None))
+    assert any("Adapter engine is enabled" in record.message for record in caplog.records)
 
 
 # --- reconstructable audit (M4.8b) -----------------------------------------

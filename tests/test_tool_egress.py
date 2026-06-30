@@ -19,6 +19,7 @@ from atlas.tool_egress import (
     EgressPolicy,
     EgressRoute,
     HttpxTransport,
+    assert_host_allowed,
     resolve_safe_ip,
 )
 
@@ -71,6 +72,16 @@ def test_allowed_route_passes() -> None:
     _POLICY.assert_allowed(httpx.URL(_URL))  # must not raise (default 443)
 
 
+def test_assert_host_allowed_rejects_http() -> None:
+    with pytest.raises(EgressNotAllowed, match="scheme not allowed"):
+        assert_host_allowed(f"http://{_HOST}{_PATH}", frozenset({_HOST}))
+
+
+def test_assert_host_allowed_rejects_userinfo() -> None:
+    with pytest.raises(EgressNotAllowed, match="userinfo"):
+        assert_host_allowed(f"https://user:pass@{_HOST}{_PATH}", frozenset({_HOST}))
+
+
 # --- IP resolution / private + metadata block (fail-closed) ----------------
 
 
@@ -115,8 +126,63 @@ def test_prepare_pinned_pins_ip_and_preserves_host_and_sni(
     monkeypatch.setattr(socket, "getaddrinfo", _getaddrinfo_returning("93.184.216.34"))
     pinned, headers, extensions = HttpxTransport(_POLICY).prepare_pinned(_URL)
     assert pinned.host == "93.184.216.34"  # connect to the validated IP
-    assert headers["Host"] == _HOST  # original host preserved for routing
+    assert headers["Host"] == _HOST  # original host preserved for routing (default port omitted)
     assert extensions["sni_hostname"] == _HOST  # TLS verifies against the real hostname
+
+
+def test_prepare_pinned_host_header_includes_nonstandard_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    url = f"https://{_HOST}:8443{_PATH}"
+    policy = EgressPolicy(
+        frozenset({_HOST}), frozenset({EgressRoute("POST", _HOST, 8443, _PATH)})
+    )
+    monkeypatch.setattr(socket, "getaddrinfo", _getaddrinfo_returning("93.184.216.34"))
+    _, headers, _ = HttpxTransport(policy).prepare_pinned(url)
+    assert headers["Host"] == f"{_HOST}:8443"
+
+
+def test_sni_hostname_used_as_tls_server_hostname(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpcore._backends.sync as sync_be
+
+    for var in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    captured: dict[str, str | None] = {}
+
+    class _FakeStream:
+        def start_tls(
+            self,
+            *,
+            ssl_context: Any,
+            server_hostname: str | None = None,
+            timeout: float | None = None,
+        ) -> Any:
+            captured["server_hostname"] = server_hostname
+            raise RuntimeError("stop after capture")
+
+    def _fake_connect_tcp(
+        self: Any,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: Any = None,
+    ) -> _FakeStream:
+        return _FakeStream()
+
+    monkeypatch.setattr(sync_be.SyncBackend, "connect_tcp", _fake_connect_tcp)
+    monkeypatch.setattr(socket, "getaddrinfo", _getaddrinfo_returning("93.184.216.34"))
+    with pytest.raises(RuntimeError, match="stop after capture"):
+        HttpxTransport(_POLICY).post_json(_URL, json={}, access_token="tok")
+    assert captured["server_hostname"] == _HOST
 
 
 # --- redirects never followed ----------------------------------------------

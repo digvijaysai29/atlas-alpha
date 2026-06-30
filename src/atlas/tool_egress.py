@@ -82,8 +82,13 @@ class EgressPolicy:
 
 
 def assert_host_allowed(url: str, allowlist: frozenset[str]) -> None:
-    """Coarse build-time check: reject ``url`` unless its (httpx-parsed) host is on ``allowlist``."""
-    host = (httpx.URL(url).host or "").lower()
+    """Coarse build-time check: reject ``url`` unless it is https, has no userinfo, and its host is on ``allowlist``."""
+    parsed = httpx.URL(url)
+    if parsed.scheme != "https":
+        raise EgressNotAllowed(f"scheme not allowed: {parsed.scheme!r} (https required)")
+    if parsed.userinfo:
+        raise EgressNotAllowed("url must not contain userinfo")
+    host = (parsed.host or "").lower()
     if not host:
         raise EgressNotAllowed("outbound url has no host")
     if host not in allowlist:
@@ -158,7 +163,12 @@ class HttpxTransport(Transport):
         self._policy.assert_allowed(parsed)
         ip = resolve_safe_ip(parsed.host, parsed.port)
         pinned = parsed.copy_with(host=ip)
-        headers = {"Host": parsed.netloc.decode("ascii")}
+        host_header = parsed.host
+        if parsed.port is not None:
+            host_header = f"{parsed.host}:{parsed.port}"
+        headers = {"Host": host_header}
+        # httpcore (httpx>=0.28) maps extensions["sni_hostname"] to start_tls(server_hostname=...),
+        # which ssl.wrap_bio uses for both SNI and certificate hostname verification (not the pinned IP).
         extensions: dict[str, Any] = {"sni_hostname": parsed.host}
         return pinned, headers, extensions
 
