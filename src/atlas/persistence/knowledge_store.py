@@ -33,6 +33,7 @@ from atlas.knowledge.interfaces import (
     KnowledgeGraph,
     Relation,
     can_read,
+    extraction_entity_prefix,
     identity_acl,
 )
 
@@ -69,6 +70,26 @@ CREATE INDEX IF NOT EXISTS atlas_kg_fts
     ON atlas_kg_entities USING GIN (to_tsvector('english', name || ' ' || content))
 """
 
+# Remove legacy duplicate rows before the unique index is created (pre-M4.5 plain inserts could
+# leave identical (src_id, dst_id, type) triples). Keeps the lowest ctid row per triple.
+_DEDUPE_RELATIONS = """
+DELETE FROM atlas_kg_relations a
+USING atlas_kg_relations b
+WHERE a.ctid < b.ctid
+  AND a.src_id = b.src_id
+  AND a.dst_id = b.dst_id
+  AND a.type = b.type
+"""
+
+# Dedup edges so re-ingesting the same document is idempotent. ``CREATE TABLE IF NOT EXISTS`` is a
+# no-op on already-deployed tables, so this separate ``CREATE UNIQUE INDEX IF NOT EXISTS`` (run in
+# ``setup()``) is what guarantees existing deployments also get the constraint. It also serves as the
+# ``ON CONFLICT (src_id, dst_id, type)`` arbiter for ``_INSERT_RELATION``.
+_CREATE_RELATIONS_UNIQUE_INDEX = """
+CREATE UNIQUE INDEX IF NOT EXISTS atlas_kg_relations_uniq
+    ON atlas_kg_relations (src_id, dst_id, type)
+"""
+
 _UPSERT_ENTITY = """
 INSERT INTO atlas_kg_entities (id, type, name, content, acl, scope)
 VALUES (%s, %s, %s, %s, %s, %s)
@@ -94,7 +115,17 @@ ON CONFLICT (id) DO UPDATE SET
     embedding = EXCLUDED.embedding
 """
 
-_INSERT_RELATION = "INSERT INTO atlas_kg_relations (src_id, dst_id, type) VALUES (%s, %s, %s)"
+# Idempotent edge insert: re-adding an identical (src_id, dst_id, type) is a silent no-op. The
+# ``ON CONFLICT`` target is the unique index ``atlas_kg_relations_uniq`` created in ``setup()`` (see
+# ``_CREATE_RELATIONS_UNIQUE_INDEX``), so re-ingesting the same document never grows the table.
+_INSERT_RELATION = (
+    "INSERT INTO atlas_kg_relations (src_id, dst_id, type) VALUES (%s, %s, %s) "
+    "ON CONFLICT (src_id, dst_id, type) DO NOTHING"
+)
+_DELETE_RELATIONS_BY_ENTITY_PREFIX = (
+    "DELETE FROM atlas_kg_relations WHERE src_id LIKE %s OR dst_id LIKE %s"
+)
+_DELETE_ENTITIES_BY_PREFIX = "DELETE FROM atlas_kg_entities WHERE id LIKE %s"
 _SELECT_RELATIONS = "SELECT src_id, dst_id, type FROM atlas_kg_relations ORDER BY src_id, dst_id"
 
 # RBAC predicate (shared verbatim by the full-text AND the vector branch — see ``_QUERY`` /
@@ -270,6 +301,8 @@ class PostgresKnowledgeGraph(KnowledgeGraph):
         with self._pool.connection() as conn:
             conn.execute(_CREATE_TABLES)
             conn.execute(_CREATE_FTS_INDEX)
+            conn.execute(_DEDUPE_RELATIONS)
+            conn.execute(_CREATE_RELATIONS_UNIQUE_INDEX)
             if self._embedder is not None:
                 dim = int(self._embedder.dim)
                 conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
@@ -365,6 +398,49 @@ class PostgresKnowledgeGraph(KnowledgeGraph):
     def add_relation(self, relation: Relation) -> None:
         with self._pool.connection() as conn:
             conn.execute(_INSERT_RELATION, (relation.src_id, relation.dst_id, relation.type))
+
+    def persist_extraction(
+        self,
+        *,
+        owner_segment: str,
+        source_id: str,
+        entities: Sequence[Entity],
+        relations: Sequence[Relation],
+    ) -> None:
+        prefix = extraction_entity_prefix(owner_segment, source_id)
+        like_pattern = f"{_like_escape(prefix)}%"
+        entity_vectors: list[tuple[Entity, list[float] | None]] = []
+        for entity in entities:
+            vector: list[float] | None = None
+            if self._embedder is not None:
+                try:
+                    vector = self._embedder.embed_one(
+                        _embedding_text(entity), input_type="document"
+                    )
+                except Exception:
+                    vector = None
+            entity_vectors.append((entity, vector))
+        with self._pool.connection() as conn, conn.transaction():
+            conn.execute(
+                _DELETE_RELATIONS_BY_ENTITY_PREFIX,
+                (like_pattern, like_pattern),
+            )
+            conn.execute(_DELETE_ENTITIES_BY_PREFIX, (like_pattern,))
+            for entity, vector in entity_vectors:
+                base = (
+                    entity.id,
+                    entity.type,
+                    entity.name,
+                    entity.content,
+                    list(entity.acl),
+                    entity.scope,
+                )
+                if vector is None:
+                    conn.execute(_UPSERT_ENTITY, base)
+                else:
+                    conn.execute(_UPSERT_ENTITY_VEC, (*base, _vector_literal(vector)))
+            for relation in relations:
+                conn.execute(_INSERT_RELATION, (relation.src_id, relation.dst_id, relation.type))
 
     def relations(self) -> Sequence[Relation]:
         with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:

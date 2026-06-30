@@ -56,6 +56,11 @@ def identity_acl(user_id: str) -> str:
     return f"{IDENTITY_ACL_PREFIX}{user_id}"
 
 
+def extraction_entity_prefix(owner_segment: str, source_id: str) -> str:
+    """Return the id prefix for extracted concept entities scoped to one source document."""
+    return f"{owner_segment}:{source_id}:entity:"
+
+
 def can_read(
     principal: Principal | None, entity: Entity, policy: PolicyStore | None = None
 ) -> bool:
@@ -104,6 +109,18 @@ class KnowledgeGraph(abc.ABC):
     @abc.abstractmethod
     def add_relation(self, relation: Relation) -> None:
         """Add a directed relation between two entities."""
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def persist_extraction(
+        self,
+        *,
+        owner_segment: str,
+        source_id: str,
+        entities: Sequence[Entity],
+        relations: Sequence[Relation],
+    ) -> None:
+        """Atomically replace prior extraction for source and persist the new set."""
         raise NotImplementedError
 
     @abc.abstractmethod

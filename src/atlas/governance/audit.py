@@ -253,18 +253,35 @@ class AuditLog(abc.ABC):
             )
         )
 
-    def ingested(self, *, source_id: str, scope: str, entity_count: int, actor: str) -> AuditEvent:
-        """Record a knowledge-ingestion side effect (M4.4).
+    def ingested(
+        self,
+        *,
+        source_id: str,
+        scope: str,
+        entity_count: int,
+        actor: str,
+        extracted_entity_count: int | None = None,
+        relation_count: int | None = None,
+    ) -> AuditEvent:
+        """Record a knowledge-ingestion side effect (M4.4 chunks; M4.5 extracted nodes/edges).
 
         Content-agnostic by design: the trail captures *that* a document was ingested (its
-        ``source_id``, ``scope``, chunk/entity count, and the actor) but **never** the document text.
+        ``source_id``, ``scope``, chunk/entity count, optional extracted-entity/relation counts, and
+        the actor) but **never** the document text. M4.5 counts are omitted when ``None`` (extraction
+        disabled — byte-identical to M4.4); when enrichment ran they are always recorded, including
+        explicit zeros for empty or degraded extraction.
         """
+        detail: dict[str, Any] = {"scope": scope, "entity_count": entity_count}
+        if extracted_entity_count is not None:
+            detail["extracted_entity_count"] = extracted_entity_count
+        if relation_count is not None:
+            detail["relation_count"] = relation_count
         return self.record(
             AuditEvent(
                 event_type=AuditEventType.INGESTED,
                 action_id=source_id,
                 actor=actor,
-                detail={"scope": scope, "entity_count": entity_count},
+                detail=detail,
             )
         )
 

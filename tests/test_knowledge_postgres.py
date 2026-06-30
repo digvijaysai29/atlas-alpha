@@ -16,9 +16,16 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 
 from atlas.actions import ProposedAction
-from atlas.governance import InMemoryPolicyStore
+from atlas.governance import InMemoryAuditLog, InMemoryPolicyStore
 from atlas.governance.rbac import Principal
 from atlas.knowledge.embeddings import DeterministicEmbedder
+from atlas.knowledge.extraction import (
+    ExtractedEntity,
+    ExtractedRelation,
+    ExtractionResult,
+    FakeExtractor,
+)
+from atlas.knowledge.ingestion import IngestDocument, IngestionService
 from atlas.knowledge.interfaces import Entity, Relation, identity_acl
 from atlas.orchestration import build_graph
 from atlas.orchestration.serde import atlas_serde
@@ -357,3 +364,150 @@ def test_hybrid_query_paginates_fts_beyond_initial_candidate_window(pg_pool: obj
         conn.execute("UPDATE atlas_kg_entities SET embedding = NULL")
     hits = kg.query(MEMBER, "paginationtoken", limit=45)
     assert len(hits) == 45
+
+
+# --- M4.5: LLM entity/relation extraction over the Postgres ingestion path ---
+def _extraction_result() -> ExtractionResult:
+    return ExtractionResult(
+        entities=(
+            ExtractedEntity(name="Ada Lovelace", type="person"),
+            ExtractedEntity(name="Project Atlas", type="project"),
+        ),
+        relations=(
+            ExtractedRelation(
+                src_name="Ada Lovelace",
+                src_type="person",
+                dst_name="Project Atlas",
+                dst_type="project",
+                type="works_on",
+            ),
+        ),
+    )
+
+
+def _ingestion(pool: object, principal_policy: InMemoryPolicyStore) -> IngestionService:
+    kg = PostgresKnowledgeGraph(pool, policy=principal_policy)  # type: ignore[arg-type]
+    return IngestionService(
+        kg,
+        principal_policy,
+        InMemoryAuditLog(),
+        extractor=FakeExtractor(_extraction_result()),
+    )
+
+
+def test_extracted_entities_and_relations_persist_to_postgres(pg_pool: object) -> None:
+    policy = InMemoryPolicyStore()
+    service = _ingestion(pg_pool, policy)
+    result = service.ingest(
+        MEMBER, IngestDocument(text="Ada works on Atlas", title="memo", scope="personal")
+    )
+    assert result.extracted_entity_count == 2
+    kg = PostgresKnowledgeGraph(pg_pool, policy=policy)  # type: ignore[arg-type]
+    types = {e.type for e in kg.query(MEMBER, "Ada Atlas", limit=50)}
+    assert {"doc", "person", "project"} <= types
+    assert "works_on" in {r.type for r in kg.relations()}
+    assert "mentions" in {r.type for r in kg.relations()}
+
+
+def test_extracted_personal_entities_hidden_from_other_users(pg_pool: object) -> None:
+    # IDOR guard on the *extracted* nodes: a personal ingest stamps the owner's identity ACL, so the
+    # person/project nodes are invisible to another user (and even to admin's wildcard).
+    policy = InMemoryPolicyStore()
+    service = _ingestion(pg_pool, policy)
+    service.ingest(MEMBER, IngestDocument(text="Ada works on Atlas", title="memo"))
+
+    kg = PostgresKnowledgeGraph(pg_pool, policy=policy)  # type: ignore[arg-type]
+    owner_concepts = {e.id for e in kg.query(MEMBER, "Ada Atlas", limit=50) if e.type != "doc"}
+    assert owner_concepts  # owner sees the extracted concepts
+    assert {e.id for e in kg.query(GUEST, "Ada Atlas", limit=50) if e.type != "doc"} == set()
+    assert {e.id for e in kg.query(ADMIN, "Ada Atlas", limit=50) if e.type != "doc"} == set()
+
+
+def test_extracted_org_entities_visible_to_org_readers(pg_pool: object) -> None:
+    policy = InMemoryPolicyStore()
+    service = _ingestion(pg_pool, policy)
+    service.ingest(ADMIN, IngestDocument(text="Ada works on Atlas", title="memo", scope="org"))
+
+    kg = PostgresKnowledgeGraph(pg_pool, policy=policy)  # type: ignore[arg-type]
+    member_concepts = {e.type for e in kg.query(MEMBER, "Ada Atlas", limit=50) if e.type != "doc"}
+    assert {"person", "project"} <= member_concepts  # org reader sees org-scoped concepts
+    assert {e.id for e in kg.query(GUEST, "Ada Atlas", limit=50) if e.type != "doc"} == set()
+
+
+def test_reingest_does_not_duplicate_extracted_nodes(pg_pool: object) -> None:
+    policy = InMemoryPolicyStore()
+    service = _ingestion(pg_pool, policy)
+    doc = IngestDocument(text="Ada works on Atlas", title="memo", source_id="src-1")
+    service.ingest(MEMBER, doc)
+    kg = PostgresKnowledgeGraph(pg_pool, policy=policy)  # type: ignore[arg-type]
+    before = {e.id for e in kg.query(MEMBER, "", limit=200)}
+    before_relations = len(kg.relations())
+    service.ingest(MEMBER, doc)
+    after = {e.id for e in kg.query(MEMBER, "", limit=200)}
+    after_relations = len(kg.relations())
+    assert before == after  # deterministic ids => idempotent upsert, no duplicate growth
+    # Relations are idempotent too: the ON CONFLICT (src_id, dst_id, type) DO NOTHING insert means
+    # re-ingesting the same document re-adds no edges (the table does not grow unbounded).
+    assert before_relations == after_relations
+
+
+def test_reingest_replaces_stale_extracted_entities(pg_pool: object) -> None:
+    policy = InMemoryPolicyStore()
+    kg = PostgresKnowledgeGraph(pg_pool, policy=policy)  # type: ignore[arg-type]
+    doc = IngestDocument(text="first version", title="memo", source_id="src-replace")
+    service_a = IngestionService(
+        kg, policy, InMemoryAuditLog(), extractor=FakeExtractor(_extraction_result())
+    )
+    service_a.ingest(MEMBER, doc)
+
+    concepts_before = {e.name for e in kg.query(MEMBER, "", limit=200) if e.type != "doc"}
+    assert "Ada Lovelace" in concepts_before
+    assert "Project Atlas" in concepts_before
+    before_relations = len(kg.relations())
+
+    bob_result = ExtractionResult(entities=(ExtractedEntity(name="Bob", type="person"),))
+    service_b = IngestionService(
+        kg, policy, InMemoryAuditLog(), extractor=FakeExtractor(bob_result)
+    )
+    service_b.ingest(MEMBER, doc)
+
+    concepts_after = {e.name for e in kg.query(MEMBER, "", limit=200) if e.type != "doc"}
+    assert concepts_after == {"Bob"}
+    after_relations = len(kg.relations())
+    # Stale inter-entity + mentions edges are removed; only Bob's mentions edge remains.
+    assert after_relations < before_relations
+    assert "works_on" not in {r.type for r in kg.relations()}
+    assert len([r for r in kg.relations() if r.type == "mentions"]) == 1
+    assert len([e for e in kg.query(MEMBER, "", limit=200) if e.type == "doc"]) == 1
+
+
+def test_setup_dedupes_legacy_duplicate_relations(pg_pool: object) -> None:
+    from atlas.persistence.knowledge_store import _CREATE_TABLES
+
+    with pg_pool.connection() as conn:  # type: ignore[attr-defined]
+        conn.execute("DROP TABLE IF EXISTS atlas_kg_relations")
+        conn.execute("DROP TABLE IF EXISTS atlas_kg_entities")
+        conn.execute(_CREATE_TABLES)
+        conn.execute(
+            "INSERT INTO atlas_kg_relations (src_id, dst_id, type) VALUES (%s, %s, %s)",
+            ("src-a", "dst-b", "references"),
+        )
+        conn.execute(
+            "INSERT INTO atlas_kg_relations (src_id, dst_id, type) VALUES (%s, %s, %s)",
+            ("src-a", "dst-b", "references"),
+        )
+
+    PostgresKnowledgeGraph(pg_pool, setup=True)  # type: ignore[arg-type]
+
+    with pg_pool.connection() as conn, conn.cursor() as cur:  # type: ignore[attr-defined]
+        cur.execute(
+            "SELECT count(*) AS n FROM atlas_kg_relations "
+            "WHERE src_id = %s AND dst_id = %s AND type = %s",
+            ("src-a", "dst-b", "references"),
+        )
+        assert cur.fetchone()["n"] == 1
+
+    kg = PostgresKnowledgeGraph(pg_pool, setup=False)  # type: ignore[arg-type]
+    before = len(kg.relations())
+    kg.add_relation(Relation(src_id="src-a", dst_id="dst-b", type="references"))
+    assert len(kg.relations()) == before  # idempotent — ON CONFLICT DO NOTHING

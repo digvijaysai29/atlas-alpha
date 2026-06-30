@@ -12,7 +12,13 @@ from collections.abc import Sequence
 
 from atlas.governance.policy import PolicyStore
 from atlas.governance.rbac import Principal
-from atlas.knowledge.interfaces import Entity, KnowledgeGraph, Relation, can_read
+from atlas.knowledge.interfaces import (
+    Entity,
+    KnowledgeGraph,
+    Relation,
+    can_read,
+    extraction_entity_prefix,
+)
 
 
 class InMemoryKnowledgeGraph(KnowledgeGraph):
@@ -25,7 +31,44 @@ class InMemoryKnowledgeGraph(KnowledgeGraph):
         self._entities[entity.id] = entity
 
     def add_relation(self, relation: Relation) -> None:
+        # Dedup on (src_id, dst_id, type) to mirror the Postgres backend's
+        # ``ON CONFLICT (src_id, dst_id, type) DO NOTHING``: re-ingesting the same document must not
+        # grow the edge list. Append-only otherwise, preserving insertion order for ``relations()``.
+        key = (relation.src_id, relation.dst_id, relation.type)
+        if any((r.src_id, r.dst_id, r.type) == key for r in self._relations):
+            return
         self._relations.append(relation)
+
+    def persist_extraction(
+        self,
+        *,
+        owner_segment: str,
+        source_id: str,
+        entities: Sequence[Entity],
+        relations: Sequence[Relation],
+    ) -> None:
+        entities_snapshot = dict(self._entities)
+        relations_snapshot = list(self._relations)
+        try:
+            prefix = extraction_entity_prefix(owner_segment, source_id)
+            self._entities = {
+                entity_id: entity
+                for entity_id, entity in self._entities.items()
+                if not entity_id.startswith(prefix)
+            }
+            self._relations = [
+                relation
+                for relation in self._relations
+                if not relation.src_id.startswith(prefix) and not relation.dst_id.startswith(prefix)
+            ]
+            for entity in entities:
+                self.upsert_entity(entity)
+            for relation in relations:
+                self.add_relation(relation)
+        except Exception:
+            self._entities = entities_snapshot
+            self._relations = relations_snapshot
+            raise
 
     def relations(self) -> Sequence[Relation]:
         return tuple(self._relations)
