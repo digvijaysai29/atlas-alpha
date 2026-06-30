@@ -8,22 +8,42 @@ state durable, so concurrent requests on different ``thread_id``s are isolated.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import uuid
-from collections.abc import Sequence
-from typing import Annotated, Any
+from collections.abc import AsyncIterator, Sequence
+from typing import Annotated, Any, Final
 
+import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command, StateSnapshot
+from sse_starlette import EventSourceResponse, ServerSentEvent
 
 from atlas.governance.rbac import Principal
 from atlas.interface.rate_limit import RateLimited
 from atlas.interface.schemas import AgentResponse, ApproveRequest, ChatRequest
 from atlas.interface.security import RequestPrincipal, thread_owner, verify_thread_owner
+from atlas.interface.sse import (
+    AWAITING_APPROVAL,
+    COMPLETED,
+    DONE,
+    ERROR,
+    NODE,
+    OPEN,
+    run_graph_stream,
+    sse_event,
+)
 from atlas.orchestration.graph import Atlas
 from atlas.orchestration.state import initial_state
 
+logger = logging.getLogger("atlas.interface")
+
 router = APIRouter()
+
+# Cap how long a single SSE write may block on a slow/stuck client before the stream is torn down,
+# so one unresponsive consumer can't hold the connection (and its worker) open indefinitely.
+SSE_SEND_TIMEOUT_SECONDS: Final = 30
 
 
 def get_atlas(request: Request) -> Atlas:
@@ -81,6 +101,8 @@ def _response_from_snapshot(thread_id: str, snapshot: StateSnapshot) -> AgentRes
         return AgentResponse(
             status="awaiting_approval", thread_id=thread_id, pending_actions=_dump(gated)
         )
+    if _is_in_progress(snapshot):
+        return AgentResponse(status="in_progress", thread_id=thread_id)
     return AgentResponse(
         status="completed",
         thread_id=thread_id,
@@ -93,6 +115,10 @@ def _response_from_snapshot(thread_id: str, snapshot: StateSnapshot) -> AgentRes
 
 def _is_awaiting_approval(snapshot: StateSnapshot) -> bool:
     return "approval" in (snapshot.next or ())
+
+
+def _is_in_progress(snapshot: StateSnapshot) -> bool:
+    return bool(snapshot.next) and not _is_awaiting_approval(snapshot)
 
 
 def _decision_payload(
@@ -128,6 +154,101 @@ def chat(body: ChatRequest, principal: RequestPrincipal, atlas: AtlasDep) -> Age
         initial_state(body.message, principal=principal), _config(thread_id)
     )
     return _response_from_invoke(thread_id, result)
+
+
+async def _chat_event_stream(
+    atlas: Atlas, message: str, principal: Principal, thread_id: str
+) -> AsyncIterator[ServerSentEvent]:
+    """Stream one chat turn's lifecycle as SSE: ``open → node* → (awaiting_approval | completed) → done``.
+
+    Identity, authorization, and rate limiting have already been enforced by the route's dependencies
+    before this generator runs, so the body never streams to a rejected caller. Events expose only the
+    fields the existing :class:`AgentResponse` helpers shape (RBAC-filtered sources, etc.); ``node``
+    events carry the node name only — never action payloads. Any failure once the stream is open is
+    logged server-side and surfaced as a single **generic** ``error`` event (no internals leak), mirroring
+    the app's unhandled-error posture. ``done`` is emitted on normal completion or a handled error — but
+    not on client disconnect (a ``GeneratorExit`` skips it), which is correct.
+    """
+    config = _config(thread_id)
+    send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=16)
+    producer_task = asyncio.create_task(
+        run_graph_stream(
+            atlas.graph, initial_state(message, principal=principal), config, send_stream
+        )
+    )
+    try:
+        yield sse_event(OPEN, {"thread_id": thread_id})
+        awaiting = False
+        async with receive_stream:
+            async for chunk in receive_stream:
+                if "__interrupt__" in chunk:
+                    response = _response_from_invoke(thread_id, chunk)
+                    yield sse_event(AWAITING_APPROVAL, response.model_dump(mode="json"))
+                    awaiting = True
+                    break
+                for node_name in chunk:
+                    # updates chunks map node-name -> update, but may also carry internal dunder
+                    # keys (e.g. __metadata__); only surface real node names as progress events.
+                    if not node_name.startswith("__"):
+                        yield sse_event(NODE, {"node": node_name})
+        await producer_task
+        if not awaiting:
+            # get_state hits the (blocking) checkpointer — keep it off the event loop.
+            snapshot = await anyio.to_thread.run_sync(atlas.graph.get_state, config)
+            response = _response_from_snapshot(thread_id, snapshot)
+            yield sse_event(COMPLETED, response.model_dump(mode="json"))
+    except Exception:
+        logger.exception("Error while streaming chat turn")
+        yield sse_event(ERROR, {"code": "internal_error", "message": "Internal server error."})
+    finally:
+        await receive_stream.aclose()
+        if not producer_task.done():
+            try:
+                await producer_task
+            except Exception:  # pragma: no cover - best-effort cleanup; nothing to recover here
+                logger.debug("producer task failed during stream cleanup", exc_info=True)
+    yield sse_event(DONE, {})
+
+
+@router.post(
+    "/chat/stream",
+    response_class=EventSourceResponse,
+    responses={
+        200: {
+            "description": (
+                "SSE stream of the chat turn lifecycle "
+                "(open → node* → awaiting_approval | completed → done)."
+            ),
+            "content": {
+                "text/event-stream": {
+                    "itemSchema": {
+                        "type": "object",
+                        "required": ["data"],
+                        "properties": {
+                            "event": {"type": "string"},
+                            "data": {
+                                "type": "string",
+                                "contentMediaType": "application/json",
+                            },
+                        },
+                    }
+                }
+            },
+        }
+    },
+    dependencies=[RateLimited],
+)
+async def chat_stream(
+    body: ChatRequest, principal: RequestPrincipal, atlas: AtlasDep
+) -> EventSourceResponse:
+    """Streaming sibling of :func:`chat`: same fresh caller-owned thread, delivered as Server-Sent
+    Events. ``X-Accel-Buffering: no`` disables proxy buffering so events flush incrementally."""
+    thread_id = f"thr_{uuid.uuid4().hex}"
+    return EventSourceResponse(
+        _chat_event_stream(atlas, body.message, principal, thread_id),
+        headers={"X-Accel-Buffering": "no"},
+        send_timeout=SSE_SEND_TIMEOUT_SECONDS,
+    )
 
 
 @router.post("/approve", response_model=AgentResponse, dependencies=[RateLimited])

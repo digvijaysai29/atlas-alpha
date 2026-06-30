@@ -245,5 +245,11 @@ executor refuses to run a gated action without a matching, in-scope `ApprovalDec
   server-resolved from the principal** (no model-driven authz; the prompt-injection guard), output is
   schema-validated, capped, and dangling edges dropped; failures degrade to chunks-only. Default is a
   deterministic no-op so CI/the eval gate stay hermetic (1.00). See [`M4.5_PLAN.md`](../plans/M4.5_PLAN.md).
-- **Later (M4.7+):** OAuth-connector ingestion (Gmail/Jira/Calendar) over the same `IngestionService`;
-  resource/argument-aware `ToolPermission`; SSE streaming; Merkle anchoring.
+- **M4.7 (done):** **SSE streaming** — additive `POST /chat/stream` (`text/event-stream`, via
+  `sse-starlette`) streams a turn's lifecycle (`open → node* → (awaiting_approval | completed) → done`).
+  The blocking sync `graph.stream` is advanced off the event loop (worker thread); the OIDC/rate-limit
+  spine runs as dependencies **before** the body (401/429 are normal responses, never mid-stream); a
+  mid-stream failure degrades to a generic `error` event (no internal leak). See
+  [`M4.7_PLAN.md`](../plans/M4.7_PLAN.md).
+- **Later (M4.8+):** OAuth-connector ingestion (Gmail/Jira/Calendar) over the same `IngestionService`;
+  resource/argument-aware `ToolPermission`; `/approve/stream` + token-level streaming; Merkle anchoring.

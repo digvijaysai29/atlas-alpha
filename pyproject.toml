@@ -27,6 +27,7 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "resend>=2.32.2",
     "slack-sdk>=3.42.0",
+    "sse-starlette>=2.1.0",  # managed SSE transport (keep-alive ping + disconnect) for /chat/stream (M4.7)
     "upstash-ratelimit>=1.1.0",  # per-principal HTTP rate limiting (M3.6); pulls in upstash-redis
     "uvicorn>=0.49.0",
 ]
