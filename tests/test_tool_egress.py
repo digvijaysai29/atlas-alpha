@@ -26,7 +26,7 @@ from atlas.tool_egress import (
 _HOST = "slack.com"
 _PATH = "/api/chat.postMessage"
 _URL = f"https://{_HOST}{_PATH}"
-_POLICY = EgressPolicy(frozenset({_HOST}), frozenset({EgressRoute("POST", _HOST, 443, _PATH)}))
+_POLICY = EgressPolicy(allowed_hosts=frozenset({_HOST}), routes=frozenset({EgressRoute("POST", _HOST, 443, _PATH)}))
 
 
 def _getaddrinfo_returning(ip: str) -> Callable[..., list[tuple[Any, ...]]]:
@@ -136,7 +136,7 @@ def test_prepare_pinned_host_header_includes_nonstandard_port(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     url = f"https://{_HOST}:8443{_PATH}"
-    policy = EgressPolicy(frozenset({_HOST}), frozenset({EgressRoute("POST", _HOST, 8443, _PATH)}))
+    policy = EgressPolicy(allowed_hosts=frozenset({_HOST}), routes=frozenset({EgressRoute("POST", _HOST, 8443, _PATH)}))
     monkeypatch.setattr(socket, "getaddrinfo", _getaddrinfo_returning("93.184.216.34"))
     _, headers, _ = HttpxTransport(policy).prepare_pinned(url)
     assert headers["Host"] == f"{_HOST}:8443"
@@ -202,3 +202,35 @@ def test_redirect_not_followed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(httpx.Client, "post", _fake_post)
     with pytest.raises(EgressNotAllowed):
         HttpxTransport(_POLICY).post_json(_URL, json={}, access_token="tok")
+
+def test_client_disables_trust_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HTTP_PROXY", "http://evil:8080")
+    captured: dict[str, Any] = {}
+
+    class _FakeClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+        def __enter__(self) -> _FakeClient:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            pass
+
+        def post(self, *args: Any, **kwargs: Any) -> Any:
+            class _Resp:
+                is_redirect = False
+
+                def raise_for_status(self) -> None:
+                    pass
+
+                def json(self) -> dict[str, Any]:
+                    return {"ok": True}
+
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    monkeypatch.setattr(socket, "getaddrinfo", _getaddrinfo_returning("93.184.216.34"))
+    HttpxTransport(_POLICY).post_json(_URL, json={}, access_token="tok")
+    assert captured.get("trust_env") is False
+

@@ -24,6 +24,7 @@ import socket
 from typing import Any, NamedTuple
 
 import httpx
+from pydantic import BaseModel, ConfigDict, field_validator
 
 # No hidden retries anywhere: a retry after the provider has accepted a side effect can duplicate it
 # within a single guarded execution (the same reasoning the existing senders document).
@@ -31,8 +32,6 @@ DEFAULT_EGRESS_TIMEOUT_SECONDS = 30.0
 # Schema tools are POST-only today; declared so the route allowlist can pin the method too.
 ALLOWED_METHOD = "POST"
 _DEFAULT_HTTPS_PORT = 443
-# RFC 6598 carrier-grade NAT / shared address space — not covered by ipaddress.is_private.
-_SHARED_ADDRESS_SPACE = ipaddress.ip_network("100.64.0.0/10")
 
 
 class EgressNotAllowed(RuntimeError):
@@ -48,24 +47,23 @@ class EgressRoute(NamedTuple):
     path: str
 
 
-class EgressPolicy:
+class EgressPolicy(BaseModel):
     """The egress allowlist: a coarse host allowlist plus exact per-tool ``(method, host, path)`` routes.
 
     A request must satisfy **both** (host on the operator allowlist AND an exact route from a loaded
     schema). The route check is what stops a valid host from being tunneled to arbitrary paths.
+    Immutable after construction.
     """
 
-    def __init__(self, allowed_hosts: frozenset[str], routes: frozenset[EgressRoute]) -> None:
-        self._hosts = frozenset(host.lower() for host in allowed_hosts)
-        self._routes = routes
+    model_config = ConfigDict(frozen=True)
 
-    @property
-    def hosts(self) -> frozenset[str]:
-        return self._hosts
+    allowed_hosts: frozenset[str]
+    routes: frozenset[EgressRoute]
 
-    @property
-    def routes(self) -> frozenset[EgressRoute]:
-        return self._routes
+    @field_validator("allowed_hosts")
+    @classmethod
+    def _normalize_hosts(cls, value: frozenset[str]) -> frozenset[str]:
+        return frozenset(host.lower() for host in value)
 
     def assert_allowed(self, url: httpx.URL) -> None:
         """Reject ``url`` unless it is https, has no userinfo, and matches an allowed host + route."""
@@ -76,11 +74,11 @@ class EgressPolicy:
         host = (url.host or "").lower()
         if not host:
             raise EgressNotAllowed("outbound url has no host")
-        if host not in self._hosts:
+        if host not in self.allowed_hosts:
             raise EgressNotAllowed(f"host not on egress allowlist: {host}")
         port = url.port or _DEFAULT_HTTPS_PORT
         route = EgressRoute(ALLOWED_METHOD, host, port, url.path)
-        if route not in self._routes:
+        if route not in self.routes:
             raise EgressNotAllowed(f"route not allowed: {ALLOWED_METHOD} {host}:{port}{url.path}")
 
 
@@ -103,15 +101,7 @@ def _ip_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     # Unwrap IPv4-mapped IPv6 (e.g. ::ffff:10.0.0.1) so an embedded private IP can't evade the checks.
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         ip = ip.ipv4_mapped
-    return (
-        ip.is_private  # 10/8, 172.16/12, 192.168/16, fc00::/7 (unique-local) ...
-        or ip.is_loopback  # 127/8, ::1
-        or ip.is_link_local  # 169.254/16 (incl. cloud metadata 169.254.169.254), fe80::/10
-        or ip.is_reserved
-        or ip.is_multicast
-        or ip.is_unspecified  # 0.0.0.0, ::
-        or (isinstance(ip, ipaddress.IPv4Address) and ip in _SHARED_ADDRESS_SPACE)
-    )
+    return not ip.is_global or ip.is_multicast or ip.is_unspecified
 
 
 def resolve_safe_ip(host: str, port: int | None) -> str:
@@ -179,7 +169,7 @@ class HttpxTransport(Transport):
     def post_json(self, url: str, *, json: dict[str, Any], access_token: str) -> dict[str, Any]:
         pinned, headers, extensions = self.prepare_pinned(url)
         headers["Authorization"] = f"Bearer {access_token}"
-        with httpx.Client(timeout=self._timeout) as client:
+        with httpx.Client(timeout=self._timeout, trust_env=False) as client:
             response = client.post(
                 pinned,
                 json=json,

@@ -35,7 +35,7 @@ from atlas.governance.credentials import (
 from atlas.governance.rbac import Principal
 from atlas.integrations.oauth import SLACK_USER_CHAT_WRITE, build_credential_resolver
 from atlas.tool_egress import EgressNotAllowed, FakeTransport, Transport
-from atlas.tools import SlackPostAsUserTool, ToolRegistry
+from atlas.tools import BaseTool, SlackPostAsUserTool, ToolRegistry
 
 _ALLOWLIST = frozenset({"slack.com"})
 _PRINCIPAL = Principal(user_id="alice", roles=("member",), org_id="acme")
@@ -302,6 +302,51 @@ def test_adapter_engine_without_database_url_logs_warning(
     assert any("Adapter engine is enabled" in record.message for record in caplog.records)
 
 
+
+
+def test_payload_field_rejects_null_arg() -> None:
+    with pytest.raises(ValidationError):
+        ToolSchema.model_validate(
+            {
+                "name": "x",
+                "provider": "slack",
+                "endpoint": "https://slack.com/x",
+                "required_permission": "tool:x",
+                "args": [{"name": "t", "type": "str"}],
+                "payload": {"t": {"arg": None}},
+            }
+        )
+
+
+def test_response_field_rejects_null_path() -> None:
+    with pytest.raises(ValidationError):
+        ToolSchema.model_validate(
+            {
+                "name": "x",
+                "provider": "slack",
+                "endpoint": "https://slack.com/x",
+                "required_permission": "tool:x",
+                "response": {"ts": {"path": None}},
+            }
+        )
+
+
+def test_shape_response_missing_path_raises() -> None:
+    transport = FakeTransport(_ALLOWLIST, response={"ok": True})
+    tool = _engine(transport, _resolver_with_slack_token()).build_tool(
+        load_schema(_slack_schema_path())
+    )
+    args = tool.ArgsSchema.model_validate({"channel": "C1", "text": "hi"})
+    with pytest.raises(RuntimeError, match="provider response missing required field"):
+        tool.run(args, principal=_PRINCIPAL)
+
+
+def test_audit_tool_context_rejects_forbidden_keys() -> None:
+    from atlas.governance.audit import AuditToolContext
+
+    with pytest.raises(ValidationError):
+        AuditToolContext.model_validate({"access_token": "x"})
+
 # --- reconstructable audit (M4.8b) -----------------------------------------
 
 
@@ -363,7 +408,9 @@ def test_guarded_execution_audit_is_reconstructable_without_secrets() -> None:
     registry.register(tool)
     audit = InMemoryAuditLog()
     action = registry.propose("slack_post_as_user", {"channel": "C1", "text": "hi"})
-    meta = {**tool.audit_metadata(), "principal": _PRINCIPAL.user_id}
+    from atlas.governance.audit import AuditToolContext
+
+    meta = AuditToolContext(**tool.audit_metadata(), principal=_PRINCIPAL.user_id)
 
     GuardedExecutor(registry).execute_guarded(action, audit, _PRINCIPAL, extra=meta)
 
@@ -374,3 +421,88 @@ def test_guarded_execution_audit_is_reconstructable_without_secrets() -> None:
     assert evt.detail["destination_host"] == "slack.com"
     assert evt.detail["provider"] == "slack"
     assert "xoxp-SECRET" not in _json.dumps(evt.model_dump(mode="json"))
+
+def _slack_tool_and_registry(
+    transport: Transport,
+) -> tuple[BaseTool, ToolRegistry]:
+    tool = _engine(transport, _resolver_with_slack_token("xoxp-SECRET")).build_tool(
+        load_schema(_slack_schema_path())
+    )
+    registry = ToolRegistry()
+    registry.register(tool)
+    return tool, registry
+
+
+def _assert_reconstructable_audit_detail(evt: object, *, principal_id: str) -> None:
+    import json as _json
+
+    detail = evt.detail  # type: ignore[attr-defined]
+    assert detail["schema"] == "slack_post_as_user"
+    assert detail["schema_version"] == "1"
+    assert detail["destination_host"] == "slack.com"
+    assert detail["provider"] == "slack"
+    assert detail["principal"] == principal_id
+    assert "xoxp-SECRET" not in _json.dumps(evt.model_dump(mode="json"))  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    ("event_type", "trigger"),
+    [
+        ("skipped", "executor_not_approved"),
+        ("failed", "guarded_fail"),
+        ("replay_skipped", "guarded_replay"),
+    ],
+)
+def test_audit_metadata_on_all_executor_paths(event_type: str, trigger: str) -> None:
+    from typing import cast
+
+    from atlas.execution import GuardedExecutor
+    from atlas.governance import InMemoryAuditLog, InMemoryPolicyStore
+    from atlas.governance.audit import AuditToolContext
+    from atlas.orchestration.nodes import make_executor_node
+    from atlas.orchestration.state import AgentState
+
+    if trigger == "executor_not_approved":
+        tool, registry = _slack_tool_and_registry(FakeTransport(_ALLOWLIST))
+        audit = InMemoryAuditLog()
+        node = make_executor_node(registry, audit, InMemoryPolicyStore())
+        action = registry.propose("slack_post_as_user", {"channel": "C1", "text": "hi"})
+        state = cast(
+            AgentState,
+            {
+                "principal": _PRINCIPAL,
+                "proposed_actions": [action],
+                "approved_action_ids": [],
+            },
+        )
+        node(state)
+        evt = audit.events()[-1]
+        assert evt.event_type.value == event_type
+        _assert_reconstructable_audit_detail(evt, principal_id=_PRINCIPAL.user_id)
+        return
+
+    if trigger == "guarded_fail":
+        transport = FakeTransport(_ALLOWLIST, fail=True)
+        tool, registry = _slack_tool_and_registry(transport)
+        audit = InMemoryAuditLog()
+        action = registry.propose("slack_post_as_user", {"channel": "C1", "text": "hi"})
+        meta = AuditToolContext(**tool.audit_metadata(), principal=_PRINCIPAL.user_id)
+        GuardedExecutor(registry).execute_guarded(action, audit, _PRINCIPAL, extra=meta)
+        evt = audit.events()[-1]
+        assert evt.event_type.value == event_type
+        _assert_reconstructable_audit_detail(evt, principal_id=_PRINCIPAL.user_id)
+        return
+
+    transport = FakeTransport(
+        _ALLOWLIST, response={"ok": True, "ts": "1.1", "channel": "C1"}
+    )
+    tool, registry = _slack_tool_and_registry(transport)
+    audit = InMemoryAuditLog()
+    action = registry.propose("slack_post_as_user", {"channel": "C1", "text": "hi"})
+    meta = AuditToolContext(**tool.audit_metadata(), principal=_PRINCIPAL.user_id)
+    GuardedExecutor(registry).execute_guarded(action, audit, _PRINCIPAL, extra=meta)
+    GuardedExecutor(registry).execute_guarded(action, audit, _PRINCIPAL, extra=meta)
+    evt = audit.events()[-1]
+    assert evt.event_type.value == event_type
+    _assert_reconstructable_audit_detail(evt, principal_id=_PRINCIPAL.user_id)
+

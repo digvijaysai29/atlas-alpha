@@ -97,6 +97,8 @@ class PayloadField(BaseModel):
         has_value = "value" in self.model_fields_set
         if has_arg == has_value:
             raise ToolSchemaError("payload field must set exactly one of 'arg' or 'value'")
+        if has_arg and self.arg is None:
+            raise ToolSchemaError("payload field 'arg' must not be null")
         return self
 
 
@@ -114,6 +116,8 @@ class ResponseField(BaseModel):
         has_value = "value" in self.model_fields_set
         if has_path == has_value:
             raise ToolSchemaError("response field must set exactly one of 'path' or 'value'")
+        if has_path and self.path is None:
+            raise ToolSchemaError("response field 'path' must not be null")
         return self
 
 
@@ -188,7 +192,7 @@ def build_egress_policy(schemas: list[ToolSchema], allowed_hosts: frozenset[str]
         )
         for s in schemas
     )
-    return EgressPolicy(allowed_hosts, routes)
+    return EgressPolicy(allowed_hosts=allowed_hosts, routes=routes)
 
 
 def _build_args_model(schema: ToolSchema) -> type[BaseModel]:
@@ -222,7 +226,12 @@ def _shape_response(schema: ToolSchema, data: dict[str, Any]) -> dict[str, Any]:
     """Shape the provider response into a result dict via the schema's static map (no eval)."""
     shaped: dict[str, Any] = {}
     for key, field in schema.response.items():
-        shaped[key] = data.get(field.path) if field.path is not None else field.value
+        if field.path is not None:
+            if field.path not in data:
+                raise RuntimeError(f"provider response missing required field: {field.path!r}")
+            shaped[key] = data[field.path]
+        else:
+            shaped[key] = field.value
     return shaped
 
 

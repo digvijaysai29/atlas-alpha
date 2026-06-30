@@ -23,6 +23,7 @@ from langgraph.types import interrupt
 from atlas.actions import ApprovalDecision, ProposedAction, requires_approval
 from atlas.config import Settings, get_settings
 from atlas.governance import AuditLog, PolicyStore
+from atlas.governance.audit import AuditToolContext
 from atlas.governance.confidence import collect_sources, score_confidence
 from atlas.governance.rbac import get_current_principal
 from atlas.knowledge.interfaces import Entity, KnowledgeGraph
@@ -224,7 +225,7 @@ def make_executor_node(
             tool = registry.get(action.tool)
             # Non-secret context (schema id/version, destination host, provider, principal) folded into
             # every audit event for this action so the generated tool action is reconstructable later.
-            meta: dict[str, Any] = {**tool.audit_metadata(), "principal": principal.user_id}
+            meta = AuditToolContext(**tool.audit_metadata(), principal=principal.user_id)
             # RBAC re-check (defense-in-depth): never run a tool the principal isn't permitted to use,
             # even if it somehow reached the executor.
             required = tool.required_permission
