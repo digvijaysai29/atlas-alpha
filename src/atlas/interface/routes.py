@@ -205,8 +205,8 @@ async def _chat_event_stream(
         if not producer_task.done():
             try:
                 await producer_task
-            except Exception:
-                pass
+            except Exception:  # pragma: no cover - best-effort cleanup; nothing to recover here
+                logger.debug("producer task failed during stream cleanup", exc_info=True)
     yield sse_event(DONE, {})
 
 
