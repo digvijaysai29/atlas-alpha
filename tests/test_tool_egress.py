@@ -25,7 +25,7 @@ from atlas.tool_egress import (
 _HOST = "slack.com"
 _PATH = "/api/chat.postMessage"
 _URL = f"https://{_HOST}{_PATH}"
-_POLICY = EgressPolicy(frozenset({_HOST}), frozenset({EgressRoute("POST", _HOST, _PATH)}))
+_POLICY = EgressPolicy(frozenset({_HOST}), frozenset({EgressRoute("POST", _HOST, 443, _PATH)}))
 
 
 def _getaddrinfo_returning(ip: str) -> Callable[..., list[tuple[Any, ...]]]:
@@ -61,8 +61,14 @@ def test_route_path_mismatch_rejected() -> None:
         _POLICY.assert_allowed(httpx.URL(f"https://{_HOST}/api/admin.delete"))
 
 
+def test_route_port_mismatch_rejected() -> None:
+    # Right host + path, non-allowlisted port => rejected (route pins port too).
+    with pytest.raises(EgressNotAllowed):
+        _POLICY.assert_allowed(httpx.URL(f"https://{_HOST}:8443{_PATH}"))
+
+
 def test_allowed_route_passes() -> None:
-    _POLICY.assert_allowed(httpx.URL(_URL))  # must not raise
+    _POLICY.assert_allowed(httpx.URL(_URL))  # must not raise (default 443)
 
 
 # --- IP resolution / private + metadata block (fail-closed) ----------------

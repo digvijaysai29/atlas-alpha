@@ -71,6 +71,7 @@ def _base_schema(**overrides: object) -> ToolSchema:
         "name": "x_tool",
         "provider": "slack",
         "endpoint": "https://slack.com/api/chat.postMessage",
+        "required_permission": "tool:test",
         "args": [{"name": "text", "type": "str"}],
         "payload": {"text": {"arg": "text"}},
     }
@@ -153,6 +154,27 @@ def test_schema_cannot_declare_auto_run_read() -> None:
 
 def test_schema_defaults_to_send_tier_when_unspecified() -> None:
     assert _base_schema().risk_tier is RiskTier.SEND
+
+
+def test_side_effecting_schema_without_permission_rejected() -> None:
+    # A SEND tool with no required_permission would bypass the RBAC default-deny layer.
+    schema = _base_schema(required_permission=None)
+    with pytest.raises(ToolSchemaError):
+        _engine(FakeTransport(_ALLOWLIST)).build_tool(schema)
+
+
+@pytest.mark.parametrize("bad_name", ["model_config", "1bad", "__init__", "Channel", "with-dash"])
+def test_arg_name_must_be_safe_identifier(bad_name: str) -> None:
+    with pytest.raises(ValidationError):
+        ToolSchema.model_validate(
+            {
+                "name": "x",
+                "provider": "slack",
+                "endpoint": "https://slack.com/x",
+                "required_permission": "tool:x",
+                "args": [{"name": bad_name, "type": "str"}],
+            }
+        )
 
 
 # --- security: SSRF egress allowlist ---------------------------------------

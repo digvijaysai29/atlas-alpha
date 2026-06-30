@@ -37,10 +37,11 @@ class EgressNotAllowed(RuntimeError):
 
 
 class EgressRoute(NamedTuple):
-    """An exact ``(method, host, path)`` an outbound call must match. Hashable for set membership."""
+    """An exact ``(method, host, port, path)`` an outbound call must match. Hashable for set membership."""
 
     method: str
     host: str
+    port: int
     path: str
 
 
@@ -74,9 +75,10 @@ class EgressPolicy:
             raise EgressNotAllowed("outbound url has no host")
         if host not in self._hosts:
             raise EgressNotAllowed(f"host not on egress allowlist: {host}")
-        route = EgressRoute(ALLOWED_METHOD, host, url.path)
+        port = url.port or _DEFAULT_HTTPS_PORT
+        route = EgressRoute(ALLOWED_METHOD, host, port, url.path)
         if route not in self._routes:
-            raise EgressNotAllowed(f"route not allowed: {ALLOWED_METHOD} {host}{url.path}")
+            raise EgressNotAllowed(f"route not allowed: {ALLOWED_METHOD} {host}:{port}{url.path}")
 
 
 def assert_host_allowed(url: str, allowlist: frozenset[str]) -> None:

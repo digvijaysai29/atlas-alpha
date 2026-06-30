@@ -27,11 +27,12 @@ Security posture (fail-closed; the constraints that make this safe to be data-dr
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Literal
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
+from pydantic import BaseModel, ConfigDict, Field, create_model, field_validator, model_validator
 
 from atlas.actions import RiskTier
 from atlas.governance.credentials import CredentialResolver, OAuthProvider
@@ -50,6 +51,10 @@ from atlas.tools import BaseTool
 # READ therefore requires a code change + review, never a config/JSON edit (anti approval-bypass).
 _READ_TIER_ALLOWLIST: frozenset[str] = frozenset()
 
+# Arg names become Pydantic model fields (via create_model); restrict them to safe lowercase
+# identifiers that cannot collide with Pydantic internals (``model_*``) or dunders.
+_SAFE_ARG_NAME = re.compile(r"[a-z][a-z0-9_]*")
+
 
 class ToolSchemaError(ValueError):
     """Raised when a tool schema is structurally invalid or violates a security constraint."""
@@ -67,6 +72,15 @@ class ArgSpec(BaseModel):
     min_length: int | None = None
     max_length: int | None = None
     description: str = ""
+
+    @field_validator("name")
+    @classmethod
+    def _safe_identifier(cls, value: str) -> str:
+        if not _SAFE_ARG_NAME.fullmatch(value):
+            raise ToolSchemaError(f"arg name must be a lowercase identifier: {value!r}")
+        if value.startswith("model_") or value.startswith("__"):
+            raise ToolSchemaError(f"arg name collides with a reserved namespace: {value!r}")
+        return value
 
 
 class PayloadField(BaseModel):
@@ -158,7 +172,10 @@ def build_egress_policy(schemas: list[ToolSchema], allowed_hosts: frozenset[str]
     """
     routes = frozenset(
         EgressRoute(
-            ALLOWED_METHOD, (httpx.URL(s.endpoint).host or "").lower(), httpx.URL(s.endpoint).path
+            ALLOWED_METHOD,
+            (httpx.URL(s.endpoint).host or "").lower(),
+            httpx.URL(s.endpoint).port or 443,
+            httpx.URL(s.endpoint).path,
         )
         for s in schemas
     )
@@ -289,7 +306,15 @@ class AdapterEngine:
             raise ToolSchemaError(
                 f"schema '{schema.name}' may not declare auto-run READ tier (not code-allowlisted)"
             )
-        # 2. The endpoint host must be on the egress allowlist (transport re-checks at call time).
+        # 2. A side-effecting tool must declare a required_permission: the RBAC re-check is
+        #    default-deny, so an omitted permission would let any authenticated principal invoke it
+        #    (still approval-gated, but the RBAC layer would be bypassed). Fail closed.
+        if schema.risk_tier is not RiskTier.READ and not schema.required_permission:
+            raise ToolSchemaError(
+                f"schema '{schema.name}' is a side-effecting tool ({schema.risk_tier.value}) and "
+                "must declare a required_permission"
+            )
+        # 3. The endpoint host must be on the egress allowlist (transport re-checks at call time).
         assert_host_allowed(schema.endpoint, self._allowlist)
 
 
