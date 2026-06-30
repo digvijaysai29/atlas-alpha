@@ -159,8 +159,17 @@ def load_schema(path: Path) -> ToolSchema:
 
 
 def load_schema_dir(directory: Path) -> list[ToolSchema]:
-    """Load every ``*.json`` schema in ``directory`` (sorted for deterministic order)."""
-    return [load_schema(path) for path in sorted(directory.glob("*.json"))]
+    """Load every ``*.json`` schema in ``directory`` (sorted for deterministic order).
+
+    Fail-closed when the adapter engine is enabled: a missing directory or one with no schemas
+    raises :class:`ToolSchemaError` so startup cannot silently keep hand-written tools on legacy egress.
+    """
+    if not directory.is_dir():
+        raise ToolSchemaError(f"schema directory does not exist: {directory}")
+    paths = sorted(directory.glob("*.json"))
+    if not paths:
+        raise ToolSchemaError(f"schema directory contains no *.json schemas: {directory}")
+    return [load_schema(path) for path in paths]
 
 
 def build_egress_policy(schemas: list[ToolSchema], allowed_hosts: frozenset[str]) -> EgressPolicy:

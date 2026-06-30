@@ -5,8 +5,9 @@ SSRF defense in depth (OWASP). The crux is **single-parse / single-authority**: 
 validation, host + route allowlisting, DNS resolution, and the send — so there is never a
 parser-differential gap (validate one string, fetch another). On top of a coarse host allowlist we
 enforce a per-tool **(method, host, path) route** allowlist (a valid host cannot become a catch-all API
-tunnel), resolve the host and reject any address in a private/loopback/link-local/reserved range
-(blocking cloud-metadata ``169.254.169.254`` and internal ranges), then connect **pinned** to that
+tunnel), resolve the host and reject any address in a private/loopback/link-local/shared/reserved
+range (blocking cloud-metadata ``169.254.169.254``, RFC 6598 shared space ``100.64.0.0/10``, and
+internal ranges), then connect **pinned** to that
 validated IP while preserving TLS via the ``Host`` header + ``sni_hostname`` extension. Redirects are
 never followed (a redirect would fetch a URL that was never validated).
 
@@ -30,6 +31,8 @@ DEFAULT_EGRESS_TIMEOUT_SECONDS = 30.0
 # Schema tools are POST-only today; declared so the route allowlist can pin the method too.
 ALLOWED_METHOD = "POST"
 _DEFAULT_HTTPS_PORT = 443
+# RFC 6598 carrier-grade NAT / shared address space — not covered by ipaddress.is_private.
+_SHARED_ADDRESS_SPACE = ipaddress.ip_network("100.64.0.0/10")
 
 
 class EgressNotAllowed(RuntimeError):
@@ -107,6 +110,7 @@ def _ip_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
         or ip.is_reserved
         or ip.is_multicast
         or ip.is_unspecified  # 0.0.0.0, ::
+        or (isinstance(ip, ipaddress.IPv4Address) and ip in _SHARED_ADDRESS_SPACE)
     )
 
 

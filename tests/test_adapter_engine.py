@@ -22,6 +22,7 @@ from atlas.adapter_engine import (
     ToolSchema,
     ToolSchemaError,
     load_schema,
+    load_schema_dir,
     packaged_schema_dir,
 )
 from atlas.config import Settings
@@ -268,6 +269,27 @@ def test_apply_adapter_engine_replaces_handwritten_tool() -> None:
     assert not isinstance(tool, SlackPostAsUserTool)
     assert type(tool).__name__ == "_SchemaTool"
     assert isinstance(tool.ArgsSchema, type) and issubclass(tool.ArgsSchema, BaseModel)
+
+
+def test_load_schema_dir_raises_when_directory_missing(tmp_path: Path) -> None:
+    with pytest.raises(ToolSchemaError, match="does not exist"):
+        load_schema_dir(tmp_path / "nope")
+
+
+def test_load_schema_dir_raises_when_no_json_files(tmp_path: Path) -> None:
+    with pytest.raises(ToolSchemaError, match="no \\*.json schemas"):
+        load_schema_dir(tmp_path)
+
+
+def test_apply_adapter_engine_fails_when_schema_dir_empty(tmp_path: Path) -> None:
+    from atlas.orchestration.graph import _apply_adapter_engine
+
+    registry = ToolRegistry()
+    registry.register(SlackPostAsUserTool())
+    settings = Settings(ATLAS_ADAPTER_SCHEMA_DIR=str(tmp_path))
+    with pytest.raises(ToolSchemaError, match="no \\*.json schemas"):
+        _apply_adapter_engine(registry, settings, None)
+    assert isinstance(registry.get("slack_post_as_user"), SlackPostAsUserTool)
 
 
 def test_adapter_engine_without_database_url_logs_warning(
