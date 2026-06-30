@@ -136,9 +136,7 @@ def test_prepare_pinned_host_header_includes_nonstandard_port(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     url = f"https://{_HOST}:8443{_PATH}"
-    policy = EgressPolicy(
-        frozenset({_HOST}), frozenset({EgressRoute("POST", _HOST, 8443, _PATH)})
-    )
+    policy = EgressPolicy(frozenset({_HOST}), frozenset({EgressRoute("POST", _HOST, 8443, _PATH)}))
     monkeypatch.setattr(socket, "getaddrinfo", _getaddrinfo_returning("93.184.216.34"))
     _, headers, _ = HttpxTransport(policy).prepare_pinned(url)
     assert headers["Host"] == f"{_HOST}:8443"
