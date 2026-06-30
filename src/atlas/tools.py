@@ -81,8 +81,8 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, BaseTool] = {}
 
-    def register(self, tool: BaseTool) -> None:
-        if tool.name in self._tools:
+    def register(self, tool: BaseTool, *, replace: bool = False) -> None:
+        if tool.name in self._tools and not replace:
             raise ValueError(f"tool already registered: {tool.name}")
         self._tools[tool.name] = tool
 

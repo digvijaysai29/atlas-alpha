@@ -12,6 +12,7 @@ import logging
 import sqlite3
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from langgraph.checkpoint.memory import InMemorySaver
@@ -43,6 +44,8 @@ if TYPE_CHECKING:
     from langgraph.checkpoint.base import BaseCheckpointSaver
     from langgraph.graph.state import CompiledStateGraph
     from psycopg_pool import ConnectionPool
+
+    from atlas.governance.credentials import CredentialResolver
 
 
 logger = logging.getLogger("atlas.orchestration")
@@ -201,6 +204,33 @@ def make_credential_vault(settings: Settings | None = None) -> CredentialVault:
     return InMemoryCredentialVault()
 
 
+def _apply_adapter_engine(
+    registry: ToolRegistry,
+    settings: Settings,
+    credential_resolver: "CredentialResolver | None",
+) -> None:
+    """Register schema-driven tools (M4.8a), replacing their hand-written twins.
+
+    Off unless ``ATLAS_ADAPTER_ENGINE_ENABLED`` is set, so the default graph (and the eval gate) is
+    byte-for-byte unchanged. The schema endpoint hosts are constrained by the egress allowlist; the
+    risk tier of each schema tool is validated (a schema can never make a mutating tool auto-run).
+    """
+    from atlas.adapter_engine import AdapterEngine, packaged_schema_dir
+    from atlas.tool_egress import HttpxTransport
+
+    schema_dir = (
+        Path(settings.adapter_schema_dir) if settings.adapter_schema_dir else packaged_schema_dir()
+    )
+    allowlist = settings.adapter_egress_allowlist_hosts
+    engine = AdapterEngine(
+        credential_resolver=credential_resolver,
+        transport=HttpxTransport(allowlist),
+        allowlist=allowlist,
+    )
+    for tool in engine.build_tools_from_dir(schema_dir):
+        registry.register(tool, replace=True)
+
+
 @dataclass(frozen=True)
 class Atlas:
     """A compiled agent plus the collaborators a caller may want to inspect."""
@@ -255,6 +285,8 @@ def build_graph(
         build_credential_resolver(credential_vault, settings) if settings.database_url else None
     )
     registry = registry or default_registry(settings, credential_resolver=credential_resolver)
+    if settings.adapter_engine_enabled:
+        _apply_adapter_engine(registry, settings, credential_resolver)
     audit = audit or make_audit_log(settings)
     plan_fn = plan_fn or default_plan_fn(settings)
     policy = policy or make_policy_store(settings)

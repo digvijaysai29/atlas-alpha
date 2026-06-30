@@ -1,0 +1,26 @@
+{
+  "name": "slack_post_as_user",
+  "description": "Post a Slack message as the authenticated user. Irreversible external action.",
+  "risk_tier": "send",
+  "required_permission": "tool:slack:post_as_user",
+  "provider": "slack",
+  "required_scopes": ["chat:write"],
+  "endpoint": "https://slack.com/api/chat.postMessage",
+  "method": "POST",
+  "args": [
+    { "name": "channel", "type": "str", "required": true, "min_length": 1, "description": "Slack channel ID or name." },
+    { "name": "text", "type": "str", "required": true, "min_length": 1, "max_length": 40000, "description": "Message text." }
+  ],
+  "payload": {
+    "channel": { "arg": "channel" },
+    "text": { "arg": "text" },
+    "unfurl_links": { "value": false },
+    "unfurl_media": { "value": false }
+  },
+  "response": {
+    "ts": { "path": "ts" },
+    "channel": { "path": "channel" },
+    "provider": { "value": "slack_user" }
+  },
+  "ok_field": "ok"
+}
