@@ -275,6 +275,34 @@ def test_extraction_failure_degrades_to_chunks_only() -> None:
     assert {e.type for e in kg.query(ALICE, "", limit=100)} == {"doc"}
 
 
+class _EnrichmentFailingKnowledgeGraph(InMemoryKnowledgeGraph):
+    """A KG that persists chunk entities but raises when an *extracted* node is written.
+
+    Extracted entity ids contain ``:entity:`` (chunk ids do not), so the core chunk write succeeds
+    while the enrichment persistence fails — exercising the degrade boundary around *persistence*,
+    not just the model call.
+    """
+
+    def upsert_entity(self, entity: object) -> None:
+        if ":entity:" in entity.id:  # type: ignore[attr-defined]
+            raise RuntimeError("store unavailable")
+        super().upsert_entity(entity)  # type: ignore[arg-type]
+
+
+def test_persistence_failure_during_enrichment_degrades_to_chunks_only() -> None:
+    # A transient store error while writing an extracted node must not propagate out of ingest():
+    # the already-committed chunks stay, and the request still succeeds (chunks-only).
+    kg = _EnrichmentFailingKnowledgeGraph()
+    service = IngestionService(
+        kg, InMemoryPolicyStore(), InMemoryAuditLog(), extractor=FakeExtractor(_people_result())
+    )
+    result = service.ingest(ALICE, IngestDocument(text="Ada works on Atlas", title="memo"))
+    assert result.chunk_count == 1  # core chunk write committed
+    assert result.extracted_entity_count == 0  # enrichment degraded, no exception surfaced
+    assert result.relation_count == 0
+    assert {e.type for e in kg.query(ALICE, "", limit=100)} == {"doc"}
+
+
 # --- audit (content-agnostic, counts only) ----------------------------------
 def test_audit_records_extraction_counts_without_content() -> None:
     audit = InMemoryAuditLog()
