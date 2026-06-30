@@ -30,12 +30,19 @@ import json
 from pathlib import Path
 from typing import Any, Literal
 
+import httpx
 from pydantic import BaseModel, ConfigDict, Field, create_model, model_validator
 
 from atlas.actions import RiskTier
 from atlas.governance.credentials import CredentialResolver, OAuthProvider
 from atlas.governance.rbac import Principal
-from atlas.tool_egress import Transport, assert_host_allowed
+from atlas.tool_egress import (
+    ALLOWED_METHOD,
+    EgressPolicy,
+    EgressRoute,
+    Transport,
+    assert_host_allowed,
+)
 from atlas.tools import BaseTool
 
 # Schemas may declare an auto-run ``READ`` tier ONLY for tool names on this code-reviewed allowlist.
@@ -103,6 +110,9 @@ class ToolSchema(BaseModel):
 
     name: str = Field(min_length=1)
     description: str = ""
+    # Schema files are versioned + code-reviewed (schemas-as-code). The version is logged in the audit
+    # trail so a generated tool action can be tied back to the exact schema revision that produced it.
+    schema_version: str = "1"
     # Defaults to the most-restrictive gated tier. A schema cannot make a tool auto-run READ unless it
     # is explicitly code-allowlisted (see _READ_TIER_ALLOWLIST), enforced in AdapterEngine.build_tool.
     risk_tier: RiskTier = RiskTier.SEND
@@ -132,6 +142,27 @@ def load_schema(path: Path) -> ToolSchema:
     """Load and validate a single tool schema from ``path`` (fail-closed on unknown/invalid fields)."""
     raw = json.loads(path.read_text(encoding="utf-8"))
     return ToolSchema.model_validate(raw)
+
+
+def load_schema_dir(directory: Path) -> list[ToolSchema]:
+    """Load every ``*.json`` schema in ``directory`` (sorted for deterministic order)."""
+    return [load_schema(path) for path in sorted(directory.glob("*.json"))]
+
+
+def build_egress_policy(schemas: list[ToolSchema], allowed_hosts: frozenset[str]) -> EgressPolicy:
+    """Derive the runtime egress policy: the host allowlist plus an exact (method, host, path) route
+    per schema, so a permitted host cannot be tunneled to arbitrary paths.
+
+    Endpoints are parsed with ``httpx.URL`` — the same parser the transport connects with — so the
+    route a schema declares is exactly the route the egress layer enforces (no parser differential).
+    """
+    routes = frozenset(
+        EgressRoute(
+            ALLOWED_METHOD, (httpx.URL(s.endpoint).host or "").lower(), httpx.URL(s.endpoint).path
+        )
+        for s in schemas
+    )
+    return EgressPolicy(allowed_hosts, routes)
 
 
 def _build_args_model(schema: ToolSchema) -> type[BaseModel]:
@@ -188,6 +219,21 @@ class _SchemaTool(BaseTool):
         self._schema = schema
         self._resolver = credential_resolver
         self._transport = transport
+        # Destination host derived from the same parser the egress uses (no parser differential).
+        self._destination_host = (httpx.URL(schema.endpoint).host or "").lower()
+
+    def audit_metadata(self) -> dict[str, Any]:
+        """Non-secret context the executor folds into the audit event (reconstructability).
+
+        Deliberately excludes the access token and request body — only the schema identity, its
+        version, the destination host, and the provider (which credential family was used).
+        """
+        return {
+            "schema": self._schema.name,
+            "schema_version": self._schema.schema_version,
+            "destination_host": self._destination_host,
+            "provider": self._schema.provider.value,
+        }
 
     def run(self, args: BaseModel, *, principal: Principal) -> Any:
         if not isinstance(args, self.ArgsSchema):

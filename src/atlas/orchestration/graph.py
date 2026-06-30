@@ -215,20 +215,28 @@ def _apply_adapter_engine(
     byte-for-byte unchanged. The schema endpoint hosts are constrained by the egress allowlist; the
     risk tier of each schema tool is validated (a schema can never make a mutating tool auto-run).
     """
-    from atlas.adapter_engine import AdapterEngine, packaged_schema_dir
+    from atlas.adapter_engine import (
+        AdapterEngine,
+        build_egress_policy,
+        load_schema_dir,
+        packaged_schema_dir,
+    )
     from atlas.tool_egress import HttpxTransport
 
     schema_dir = (
         Path(settings.adapter_schema_dir) if settings.adapter_schema_dir else packaged_schema_dir()
     )
     allowlist = settings.adapter_egress_allowlist_hosts
+    schemas = load_schema_dir(schema_dir)
+    # SSRF-hardened transport: host allowlist + exact per-tool (method, host, path) routes.
+    transport = HttpxTransport(build_egress_policy(schemas, allowlist))
     engine = AdapterEngine(
         credential_resolver=credential_resolver,
-        transport=HttpxTransport(allowlist),
+        transport=transport,
         allowlist=allowlist,
     )
-    for tool in engine.build_tools_from_dir(schema_dir):
-        registry.register(tool, replace=True)
+    for schema in schemas:
+        registry.register(engine.build_tool(schema), replace=True)
 
 
 @dataclass(frozen=True)

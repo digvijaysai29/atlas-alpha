@@ -74,6 +74,14 @@ class BaseTool(abc.ABC):
         """Execute the tool with already-validated arguments and return its output."""
         raise NotImplementedError
 
+    def audit_metadata(self) -> dict[str, Any]:
+        """Non-secret context merged into this tool's audit events (default: none).
+
+        Tools whose actions need to be reconstructable later (e.g. schema-driven egress tools) override
+        this to surface things like schema id/version and destination host. Must never return secrets.
+        """
+        return {}
+
 
 class ToolRegistry:
     """Holds the available tools and mediates proposing/executing them."""

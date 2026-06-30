@@ -8,3 +8,8 @@
 /.github/workflows/ @digvijaysai29
 /.github/actions/ @digvijaysai29
 /.semgrep/ @digvijaysai29
+
+# Schemas-as-code: tool schemas + the adapter engine / egress are security-critical (M4.8a/b).
+/src/atlas/tool_schemas/ @digvijaysai29
+/src/atlas/adapter_engine.py @digvijaysai29
+/src/atlas/tool_egress.py @digvijaysai29

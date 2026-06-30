@@ -239,3 +239,77 @@ def test_apply_adapter_engine_replaces_handwritten_tool() -> None:
     assert not isinstance(tool, SlackPostAsUserTool)
     assert type(tool).__name__ == "_SchemaTool"
     assert isinstance(tool.ArgsSchema, type) and issubclass(tool.ArgsSchema, BaseModel)
+
+
+# --- reconstructable audit (M4.8b) -----------------------------------------
+
+
+def test_schema_tool_audit_metadata_has_no_secret() -> None:
+    tool = _engine(FakeTransport(_ALLOWLIST)).build_tool(load_schema(_slack_schema_path()))
+    meta = tool.audit_metadata()
+    assert meta == {
+        "schema": "slack_post_as_user",
+        "schema_version": "1",
+        "destination_host": "slack.com",
+        "provider": "slack",
+    }
+
+
+def test_executor_audit_includes_schema_metadata_on_denial() -> None:
+    from typing import cast
+
+    from atlas.governance import InMemoryAuditLog, InMemoryPolicyStore
+    from atlas.orchestration.nodes import make_executor_node
+    from atlas.orchestration.state import AgentState
+
+    tool = _engine(FakeTransport(_ALLOWLIST)).build_tool(load_schema(_slack_schema_path()))
+    registry = ToolRegistry()
+    registry.register(tool)
+    audit = InMemoryAuditLog()
+    node = make_executor_node(registry, audit, InMemoryPolicyStore())
+    action = registry.propose("slack_post_as_user", {"channel": "C1", "text": "hi"})
+    state = cast(
+        AgentState,
+        {
+            "principal": Principal.anonymous(),
+            "proposed_actions": [action],
+            "approved_action_ids": [],
+        },
+    )
+    node(state)
+
+    evt = audit.events()[-1]
+    assert evt.event_type.value == "denied"  # policy outcome
+    assert evt.action_id == action.action_id  # correlation id
+    assert evt.detail["schema"] == "slack_post_as_user"
+    assert evt.detail["schema_version"] == "1"
+    assert evt.detail["destination_host"] == "slack.com"
+    assert evt.detail["provider"] == "slack"
+    assert evt.detail["principal"] == "anonymous"
+
+
+def test_guarded_execution_audit_is_reconstructable_without_secrets() -> None:
+    import json as _json
+
+    from atlas.execution import GuardedExecutor
+    from atlas.governance import InMemoryAuditLog
+
+    transport = FakeTransport(_ALLOWLIST, response={"ok": True, "ts": "1.1", "channel": "C1"})
+    tool = _engine(transport, _resolver_with_slack_token("xoxp-SECRET")).build_tool(
+        load_schema(_slack_schema_path())
+    )
+    registry = ToolRegistry()
+    registry.register(tool)
+    audit = InMemoryAuditLog()
+    action = registry.propose("slack_post_as_user", {"channel": "C1", "text": "hi"})
+    meta = {**tool.audit_metadata(), "principal": _PRINCIPAL.user_id}
+
+    GuardedExecutor(registry).execute_guarded(action, audit, _PRINCIPAL, extra=meta)
+
+    evt = audit.events()[-1]
+    assert evt.event_type.value == "executed"  # policy outcome
+    assert evt.action_id == action.action_id  # correlation / approval receipt
+    assert evt.detail["schema_version"] == "1"
+    assert evt.detail["destination_host"] == "slack.com"
+    assert evt.detail["provider"] == "slack"
+    assert "xoxp-SECRET" not in _json.dumps(evt.model_dump(mode="json"))

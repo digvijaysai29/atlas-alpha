@@ -211,7 +211,7 @@ class AuditLog(abc.ABC):
             )
         )
 
-    def executed(self, result: ActionResult) -> AuditEvent:
+    def executed(self, result: ActionResult, *, extra: dict[str, Any] | None = None) -> AuditEvent:
         if not result.ok:
             raise ValueError("executed() is success-only; use failed()")
         return self.record(
@@ -219,37 +219,41 @@ class AuditLog(abc.ABC):
                 event_type=AuditEventType.EXECUTED,
                 action_id=result.action_id,
                 tool=result.tool,
-                detail={"ok": result.ok, "error": result.error},
+                detail=_merge_detail({"ok": result.ok, "error": result.error}, extra),
             )
         )
 
-    def failed(self, result: ActionResult) -> AuditEvent:
+    def failed(self, result: ActionResult, *, extra: dict[str, Any] | None = None) -> AuditEvent:
         return self.record(
             AuditEvent(
                 event_type=AuditEventType.FAILED,
                 action_id=result.action_id,
                 tool=result.tool,
-                detail={"ok": result.ok, "error": result.error},
+                detail=_merge_detail({"ok": result.ok, "error": result.error}, extra),
             )
         )
 
-    def replay_skipped(self, action: ProposedAction, *, reason: str) -> AuditEvent:
+    def replay_skipped(
+        self, action: ProposedAction, *, reason: str, extra: dict[str, Any] | None = None
+    ) -> AuditEvent:
         return self.record(
             AuditEvent(
                 event_type=AuditEventType.REPLAY_SKIPPED,
                 action_id=action.action_id,
                 tool=action.tool,
-                detail={"reason": reason},
+                detail=_merge_detail({"reason": reason}, extra),
             )
         )
 
-    def skipped(self, action: ProposedAction, reason: str) -> AuditEvent:
+    def skipped(
+        self, action: ProposedAction, reason: str, *, extra: dict[str, Any] | None = None
+    ) -> AuditEvent:
         return self.record(
             AuditEvent(
                 event_type=AuditEventType.SKIPPED,
                 action_id=action.action_id,
                 tool=action.tool,
-                detail={"reason": reason},
+                detail=_merge_detail({"reason": reason}, extra),
             )
         )
 
@@ -285,7 +289,14 @@ class AuditLog(abc.ABC):
             )
         )
 
-    def denied(self, action: ProposedAction, principal_id: str, reason: str) -> AuditEvent:
+    def denied(
+        self,
+        action: ProposedAction,
+        principal_id: str,
+        reason: str,
+        *,
+        extra: dict[str, Any] | None = None,
+    ) -> AuditEvent:
         """Record an RBAC denial — the principal lacked the permission a tool required."""
         return self.record(
             AuditEvent(
@@ -293,9 +304,16 @@ class AuditLog(abc.ABC):
                 action_id=action.action_id,
                 tool=action.tool,
                 actor=principal_id,
-                detail={"reason": reason},
+                detail=_merge_detail({"reason": reason}, extra),
             )
         )
+
+
+def _merge_detail(base: dict[str, Any], extra: dict[str, Any] | None) -> dict[str, Any]:
+    """Merge non-secret ``extra`` context onto a base detail dict (extra never overrides base keys)."""
+    if not extra:
+        return base
+    return {**extra, **base}
 
 
 def _counts_as_executed(event: AuditEvent) -> bool:

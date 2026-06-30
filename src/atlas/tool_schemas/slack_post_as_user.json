@@ -1,6 +1,7 @@
 {
   "name": "slack_post_as_user",
   "description": "Post a Slack message as the authenticated user. Irreversible external action.",
+  "schema_version": "1",
   "risk_tier": "send",
   "required_permission": "tool:slack:post_as_user",
   "provider": "slack",
