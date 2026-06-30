@@ -89,7 +89,7 @@ class AgentResponse(BaseModel):
     """The unified successful response for /chat, /approve, and /threads/{id}."""
 
     ok: Literal[True] = True
-    status: Literal["completed", "awaiting_approval"]
+    status: Literal["completed", "awaiting_approval", "in_progress"]
     thread_id: str
     response: str | None = None
     pending_actions: list[dict[str, Any]] = Field(default_factory=list)

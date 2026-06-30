@@ -8,10 +8,10 @@ state durable, so concurrent requests on different ``thread_id``s are isolated.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from collections.abc import AsyncIterator, Sequence
-from contextlib import aclosing
 from typing import Annotated, Any, Final
 
 import anyio
@@ -31,7 +31,7 @@ from atlas.interface.sse import (
     ERROR,
     NODE,
     OPEN,
-    graph_updates,
+    run_graph_stream,
     sse_event,
 )
 from atlas.orchestration.graph import Atlas
@@ -101,6 +101,8 @@ def _response_from_snapshot(thread_id: str, snapshot: StateSnapshot) -> AgentRes
         return AgentResponse(
             status="awaiting_approval", thread_id=thread_id, pending_actions=_dump(gated)
         )
+    if _is_in_progress(snapshot):
+        return AgentResponse(status="in_progress", thread_id=thread_id)
     return AgentResponse(
         status="completed",
         thread_id=thread_id,
@@ -113,6 +115,10 @@ def _response_from_snapshot(thread_id: str, snapshot: StateSnapshot) -> AgentRes
 
 def _is_awaiting_approval(snapshot: StateSnapshot) -> bool:
     return "approval" in (snapshot.next or ())
+
+
+def _is_in_progress(snapshot: StateSnapshot) -> bool:
+    return bool(snapshot.next) and not _is_awaiting_approval(snapshot)
 
 
 def _decision_payload(
@@ -164,15 +170,17 @@ async def _chat_event_stream(
     not on client disconnect (a ``GeneratorExit`` skips it), which is correct.
     """
     config = _config(thread_id)
+    send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=16)
+    producer_task = asyncio.create_task(
+        run_graph_stream(
+            atlas.graph, initial_state(message, principal=principal), config, send_stream
+        )
+    )
     try:
         yield sse_event(OPEN, {"thread_id": thread_id})
         awaiting = False
-        # aclosing() deterministically aclose()s the async generator on break/exception, so its
-        # finally (which closes the blocking LangGraph stream) runs promptly rather than at GC.
-        async with aclosing(
-            graph_updates(atlas.graph, initial_state(message, principal=principal), config)
-        ) as updates:
-            async for chunk in updates:
+        async with receive_stream:
+            async for chunk in receive_stream:
                 if "__interrupt__" in chunk:
                     response = _response_from_invoke(thread_id, chunk)
                     yield sse_event(AWAITING_APPROVAL, response.model_dump(mode="json"))
@@ -183,6 +191,7 @@ async def _chat_event_stream(
                     # keys (e.g. __metadata__); only surface real node names as progress events.
                     if not node_name.startswith("__"):
                         yield sse_event(NODE, {"node": node_name})
+        await producer_task
         if not awaiting:
             # get_state hits the (blocking) checkpointer — keep it off the event loop.
             snapshot = await anyio.to_thread.run_sync(atlas.graph.get_state, config)
@@ -191,10 +200,44 @@ async def _chat_event_stream(
     except Exception:
         logger.exception("Error while streaming chat turn")
         yield sse_event(ERROR, {"code": "internal_error", "message": "Internal server error."})
+    finally:
+        await receive_stream.aclose()
+        if not producer_task.done():
+            try:
+                await producer_task
+            except Exception:
+                pass
     yield sse_event(DONE, {})
 
 
-@router.post("/chat/stream", dependencies=[RateLimited])
+@router.post(
+    "/chat/stream",
+    response_class=EventSourceResponse,
+    responses={
+        200: {
+            "description": (
+                "SSE stream of the chat turn lifecycle "
+                "(open → node* → awaiting_approval | completed → done)."
+            ),
+            "content": {
+                "text/event-stream": {
+                    "itemSchema": {
+                        "type": "object",
+                        "required": ["data"],
+                        "properties": {
+                            "event": {"type": "string"},
+                            "data": {
+                                "type": "string",
+                                "contentMediaType": "application/json",
+                            },
+                        },
+                    }
+                }
+            },
+        }
+    },
+    dependencies=[RateLimited],
+)
 async def chat_stream(
     body: ChatRequest, principal: RequestPrincipal, atlas: AtlasDep
 ) -> EventSourceResponse:

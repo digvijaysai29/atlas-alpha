@@ -9,23 +9,31 @@ scripted plan) so no API key, network, or Postgres is needed. The headline asser
 
 from __future__ import annotations
 
+import asyncio
 import json
+import uuid
 from typing import Any
 
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import StateSnapshot
 
 from atlas.actions import ProposedAction
 from atlas.config import Settings
+from atlas.governance.rbac import Principal
 from atlas.interface import create_app
 from atlas.interface.auth import OidcAuthenticator
 from atlas.interface.rate_limit import RateLimiter, RateLimitDecision
+from atlas.interface.routes import _config, _response_from_snapshot
+from atlas.interface.sse import run_graph_stream
 from atlas.orchestration import build_graph
 from atlas.orchestration.graph import Atlas
 from atlas.orchestration.nodes import PlanFn
 from atlas.orchestration.serde import atlas_serde
+from atlas.orchestration.state import initial_state
 from atlas.tools import ToolRegistry
 from tests.helpers import offline_registry
 
+import anyio
 from fastapi.testclient import TestClient
 
 
@@ -179,3 +187,65 @@ def test_mid_stream_failure_emits_generic_error_without_leaking() -> None:
     assert "completed" not in names
     error = next(data for e, data in events if e == "error")
     assert error == {"code": "internal_error", "message": "Internal server error."}
+
+
+# --- OpenAPI contract --------------------------------------------------------
+def test_chat_stream_openapi_documents_text_event_stream() -> None:
+    client, _ = _build(_search_plan)
+    content = client.get("/openapi.json").json()["paths"]["/chat/stream"]["post"]["responses"][
+        "200"
+    ]["content"]
+    assert "text/event-stream" in content
+    assert "application/json" not in content
+
+
+# --- producer drain on consumer detach -----------------------------------------
+async def test_consumer_detach_drains_graph_to_completion() -> None:
+    client, atlas = _build(_search_plan)
+    thread_id = f"thr_{uuid.uuid4().hex}"
+    config = _config(thread_id)
+    principal = Principal(user_id="alice", roles=("member",))
+
+    send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=16)
+    producer_task = asyncio.create_task(
+        run_graph_stream(
+            atlas.graph,
+            initial_state("find things", principal=principal),
+            config,
+            send_stream,
+        )
+    )
+    try:
+        async with receive_stream:
+            async for _chunk in receive_stream:
+                break
+    finally:
+        await receive_stream.aclose()
+        await producer_task
+
+    snapshot = atlas.graph.get_state(config)
+    assert not snapshot.next
+
+    resp = client.get(f"/threads/{thread_id}", headers=_headers("alice"))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "completed"
+    assert body["response"] is not None
+
+
+# --- in_progress snapshot shaping ----------------------------------------------
+def test_in_progress_snapshot_returns_minimal_response() -> None:
+    snapshot = StateSnapshot(
+        values={"messages": []},
+        next=("responder",),
+        config={},
+        metadata=None,
+        created_at=None,
+        parent_config=None,
+        tasks=(),
+        interrupts=(),
+    )
+    response = _response_from_snapshot("thr_test", snapshot)
+    assert response.status == "in_progress"
+    assert response.thread_id == "thr_test"
+    assert response.response is None

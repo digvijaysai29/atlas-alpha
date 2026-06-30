@@ -6,21 +6,22 @@ rest of the interface layer — none of it goes in the ``atlas_serde()`` allowli
 1. :func:`sse_event` — frame a typed event as an :class:`sse_starlette.ServerSentEvent` with a JSON
    ``data`` payload. The managed ``sse-starlette`` transport handles the wire format, keep-alive ping,
    and client-disconnect detection so we don't hand-roll any of it.
-2. :func:`graph_updates` — bridge the **blocking, synchronous** ``graph.stream(...)`` onto the async
-   event loop. The persistence stack is synchronous (psycopg pool + ``PostgresSaver``), so LangGraph's
-   ``astream`` is not a safe drop-in; instead the blocking iterator is drained in a worker thread that
-   pushes each chunk through an ``anyio`` memory-object stream (backpressured), keeping the event loop
-   free — the same "blocking graph runs off the event loop" rationale as the sync handlers.
+2. :func:`run_graph_stream` — bridge the **blocking, synchronous** ``graph.stream(...)`` onto the async
+   event loop as a background producer. The persistence stack is synchronous (psycopg pool +
+   ``PostgresSaver``), so LangGraph's ``astream`` is not a safe drop-in; instead the blocking iterator
+   is drained in a worker thread that pushes each chunk through an ``anyio`` memory-object send stream.
+   If the consumer disconnects (``BrokenResourceError``), the producer keeps draining silently so the
+   graph reaches a terminal checkpoint before ``iterator.close()`` runs in ``finally``.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncGenerator
 from typing import Any, Final
 
 import anyio
+from anyio.streams.memory import MemoryObjectSendStream
 from sse_starlette import ServerSentEvent
 
 logger = logging.getLogger("atlas.interface")
@@ -43,18 +44,19 @@ def sse_event(event: str, data: dict[str, Any]) -> ServerSentEvent:
 _DONE = object()  # sentinel: the blocking iterator is exhausted
 
 
-async def graph_updates(
-    graph: Any, state: Any, config: Any
-) -> AsyncGenerator[dict[str, Any], None]:
-    """Yield each ``stream_mode="updates"`` chunk from the blocking graph, off the event loop.
+async def run_graph_stream(
+    graph: Any,
+    state: Any,
+    config: Any,
+    send_stream: MemoryObjectSendStream[dict[str, Any]],
+) -> None:
+    """Run ``graph.stream(..., stream_mode="updates")`` to completion, pushing chunks to *send_stream*.
 
-    The synchronous ``graph.stream`` iterator is advanced one ``next()`` at a time inside a worker
-    thread (``anyio.to_thread``), so the blocking checkpointer/pool work never runs on the event loop.
-    Stepping (never concurrent) keeps it simple — no task group spanning ``yield`` (which would trip
-    anyio's "exit cancel scope in a different task" on early break / client disconnect). If the
-    consumer stops early the iterator is closed in ``finally``, best-effort.
+    The synchronous iterator is advanced one ``next()`` at a time inside a worker thread. If the
+    consumer is gone (``anyio.BrokenResourceError`` on send), the producer continues draining the
+    iterator silently so the graph reaches a terminal checkpoint. ``iterator.close()`` runs only in
+    ``finally`` after the iterator is exhausted.
     """
-    # A LangGraph stream is a generator (has .close()); typed Any so mypy sees the close() in finally.
     iterator: Any = await anyio.to_thread.run_sync(
         lambda: iter(graph.stream(state, config, stream_mode="updates"))
     )
@@ -70,8 +72,15 @@ async def graph_updates(
             chunk = await anyio.to_thread.run_sync(_next)
             if chunk is _DONE:
                 return
-            yield chunk
+            try:
+                await send_stream.send(chunk)
+            except anyio.BrokenResourceError:
+                while True:
+                    chunk = await anyio.to_thread.run_sync(_next)
+                    if chunk is _DONE:
+                        return
     finally:
+        await send_stream.aclose()
         with anyio.CancelScope(shield=True):
             try:
                 await anyio.to_thread.run_sync(iterator.close)
