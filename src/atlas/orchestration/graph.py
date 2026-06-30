@@ -137,16 +137,17 @@ def make_ingestion_service(
     Sharing the live KG/policy/audit instances keeps a single source of truth: a document ingested
     via ``/kg/ingest`` is immediately visible to the planner's RBAC-scoped ``query`` (M4.4).
 
-    M4.5: an :class:`EntityExtractor` is injected — an OpenRouter-backed LLM extractor when
-    ``ATLAS_KG_EXTRACTION_ENABLED`` + ``OPENROUTER_API_KEY`` are set, else a deterministic no-op that
-    leaves the write path byte-for-byte M4.4. Caps come from settings.
+    M4.5: an :class:`EntityExtractor` is injected only when extraction is enabled (OpenRouter key +
+    flag); otherwise ``extractor=None`` so the write path and audit trail stay byte-for-byte M4.4.
+    Caps come from settings.
     """
     settings = settings or get_settings()
+    extractor = make_extractor(settings) if settings.extraction_enabled else None
     return IngestionService(
         knowledge,
         policy,
         audit,
-        extractor=make_extractor(settings),
+        extractor=extractor,
         max_extracted_entities=settings.extraction_max_entities,
         max_extracted_relations=settings.extraction_max_relations,
     )

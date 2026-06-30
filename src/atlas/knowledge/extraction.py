@@ -10,10 +10,10 @@ navigable.
 The extractor sits behind a small interface so the ingestion service never depends on a concrete
 provider — mirroring :mod:`atlas.knowledge.embeddings`:
 
-- :class:`LLMExtractor` — the production extractor. It calls **OpenRouter** (OpenAI-compatible) so a
-  primary model can fall back to alternates, via LangChain ``ChatOpenAI`` composed with
-  ``.with_fallbacks([...])`` and ``.with_structured_output(...)``. The SDK is imported lazily so the
-  offline path never touches it. Used only when extraction is configured + enabled.
+- :class:`LLMExtractor` — the production extractor. It calls **OpenRouter** via LangChain
+  ``ChatOpenRouter`` composed with ``.with_fallbacks([...])`` and ``.with_structured_output(...)``.
+  The SDK is imported lazily so the offline path never touches it. Used only when extraction is
+  configured + enabled.
 - :class:`DeterministicExtractor` — a pure, offline no-op returning an empty
   :class:`ExtractionResult`. It is the default, so CI and the deterministic eval gate stay hermetic
   (ingestion behaves exactly as M4.4) at zero cost.
@@ -42,9 +42,6 @@ from atlas.config import Settings, get_settings
 # The closed set of concept-entity kinds the extractor may emit. A closed Literal keeps the graph's
 # node vocabulary stable and lets schema validation reject anything the model hallucinates outside it.
 EntityKind = Literal["person", "project", "org", "concept"]
-
-# OpenRouter speaks the OpenAI Chat Completions API at this base URL.
-OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 # Trimmed, non-empty short strings for names/relation labels (validated at the boundary).
 _Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)]
@@ -136,10 +133,10 @@ class FakeExtractor(EntityExtractor):
 class LLMExtractor(EntityExtractor):
     """Production extractor backed by OpenRouter (primary model + fallback chain).
 
-    Uses LangChain ``ChatOpenAI`` pointed at OpenRouter's OpenAI-compatible endpoint, composed with
-    ``.with_structured_output(ExtractionResult)`` (the model returns schema-validated JSON) and
-    ``.with_fallbacks([...])`` so a primary-model outage transparently retries the next model. The
-    SDK is imported lazily; the API key comes only from settings and is never logged.
+    Uses LangChain ``ChatOpenRouter`` composed with ``.with_structured_output(ExtractionResult)``
+    (the model returns schema-validated JSON) and ``.with_fallbacks([...])`` so a primary-model outage
+    transparently retries the next model. The SDK is imported lazily; the API key comes only from
+    settings and is never logged.
     """
 
     def __init__(
@@ -148,7 +145,6 @@ class LLMExtractor(EntityExtractor):
         model: str,
         *,
         fallback_models: tuple[str, ...] = (),
-        base_url: str = OPENROUTER_BASE_URL,
     ) -> None:
         if not api_key.strip():
             raise ValueError("LLMExtractor requires a non-empty OpenRouter API key")
@@ -157,11 +153,10 @@ class LLMExtractor(EntityExtractor):
         self._api_key = api_key
         self._model = model
         self._fallback_models = fallback_models
-        self._base_url = base_url
         # The composed runnable (primary + fallbacks) is expensive to build — it instantiates a
-        # ChatOpenAI client (and its tokenizer/encoder) per model. Build it once on first use and
-        # memoize it here; extract() is on the per-document hot path. None until the first non-blank
-        # extract() call so the offline/blank-text path never constructs a client.
+        # ChatOpenRouter client per model. Build it once on first use and memoize it here;
+        # extract() is on the per-document hot path. None until the first non-blank extract() call
+        # so the offline/blank-text path never constructs a client.
         self._runnable: Any | None = None
 
     def _structured_model(self, model: str) -> Any:
@@ -170,11 +165,10 @@ class LLMExtractor(EntityExtractor):
         Returns a LangChain ``Runnable`` (typed ``Any`` — LangChain's runnable generics don't add
         value here and would force ignores at every call site).
         """
-        from langchain_openai import ChatOpenAI
+        from langchain_openrouter import ChatOpenRouter
 
-        client = ChatOpenAI(
+        client = ChatOpenRouter(
             model=model,
-            base_url=self._base_url,
             api_key=SecretStr(self._api_key),
             temperature=0,
         )

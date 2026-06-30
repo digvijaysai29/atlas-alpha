@@ -386,7 +386,7 @@ def _extraction_result() -> ExtractionResult:
 
 
 def _ingestion(pool: object, principal_policy: InMemoryPolicyStore) -> IngestionService:
-    kg = PostgresKnowledgeGraph(pool)  # type: ignore[arg-type]
+    kg = PostgresKnowledgeGraph(pool, policy=principal_policy)  # type: ignore[arg-type]
     return IngestionService(
         kg,
         principal_policy,
@@ -396,12 +396,13 @@ def _ingestion(pool: object, principal_policy: InMemoryPolicyStore) -> Ingestion
 
 
 def test_extracted_entities_and_relations_persist_to_postgres(pg_pool: object) -> None:
-    service = _ingestion(pg_pool, InMemoryPolicyStore())
+    policy = InMemoryPolicyStore()
+    service = _ingestion(pg_pool, policy)
     result = service.ingest(
         MEMBER, IngestDocument(text="Ada works on Atlas", title="memo", scope="personal")
     )
     assert result.extracted_entity_count == 2
-    kg = PostgresKnowledgeGraph(pg_pool)  # type: ignore[arg-type]  # fresh instance — durability check
+    kg = PostgresKnowledgeGraph(pg_pool, policy=policy)  # type: ignore[arg-type]
     types = {e.type for e in kg.query(MEMBER, "Ada Atlas", limit=50)}
     assert {"doc", "person", "project"} <= types
     assert "works_on" in {r.type for r in kg.relations()}
@@ -411,10 +412,11 @@ def test_extracted_entities_and_relations_persist_to_postgres(pg_pool: object) -
 def test_extracted_personal_entities_hidden_from_other_users(pg_pool: object) -> None:
     # IDOR guard on the *extracted* nodes: a personal ingest stamps the owner's identity ACL, so the
     # person/project nodes are invisible to another user (and even to admin's wildcard).
-    service = _ingestion(pg_pool, InMemoryPolicyStore())
+    policy = InMemoryPolicyStore()
+    service = _ingestion(pg_pool, policy)
     service.ingest(MEMBER, IngestDocument(text="Ada works on Atlas", title="memo"))
 
-    kg = PostgresKnowledgeGraph(pg_pool)  # type: ignore[arg-type]
+    kg = PostgresKnowledgeGraph(pg_pool, policy=policy)  # type: ignore[arg-type]
     owner_concepts = {e.id for e in kg.query(MEMBER, "Ada Atlas", limit=50) if e.type != "doc"}
     assert owner_concepts  # owner sees the extracted concepts
     assert {e.id for e in kg.query(GUEST, "Ada Atlas", limit=50) if e.type != "doc"} == set()
@@ -422,20 +424,22 @@ def test_extracted_personal_entities_hidden_from_other_users(pg_pool: object) ->
 
 
 def test_extracted_org_entities_visible_to_org_readers(pg_pool: object) -> None:
-    service = _ingestion(pg_pool, InMemoryPolicyStore())
+    policy = InMemoryPolicyStore()
+    service = _ingestion(pg_pool, policy)
     service.ingest(ADMIN, IngestDocument(text="Ada works on Atlas", title="memo", scope="org"))
 
-    kg = PostgresKnowledgeGraph(pg_pool)  # type: ignore[arg-type]
+    kg = PostgresKnowledgeGraph(pg_pool, policy=policy)  # type: ignore[arg-type]
     member_concepts = {e.type for e in kg.query(MEMBER, "Ada Atlas", limit=50) if e.type != "doc"}
     assert {"person", "project"} <= member_concepts  # org reader sees org-scoped concepts
     assert {e.id for e in kg.query(GUEST, "Ada Atlas", limit=50) if e.type != "doc"} == set()
 
 
 def test_reingest_does_not_duplicate_extracted_nodes(pg_pool: object) -> None:
-    service = _ingestion(pg_pool, InMemoryPolicyStore())
+    policy = InMemoryPolicyStore()
+    service = _ingestion(pg_pool, policy)
     doc = IngestDocument(text="Ada works on Atlas", title="memo", source_id="src-1")
     service.ingest(MEMBER, doc)
-    kg = PostgresKnowledgeGraph(pg_pool)  # type: ignore[arg-type]
+    kg = PostgresKnowledgeGraph(pg_pool, policy=policy)  # type: ignore[arg-type]
     before = {e.id for e in kg.query(MEMBER, "", limit=200)}
     before_relations = len(kg.relations())
     service.ingest(MEMBER, doc)

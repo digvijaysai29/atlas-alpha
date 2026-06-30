@@ -425,9 +425,7 @@ class PostgresKnowledgeGraph(KnowledgeGraph):
                 else:
                     conn.execute(_UPSERT_ENTITY_VEC, (*base, _vector_literal(vector)))
             for relation in relations:
-                conn.execute(
-                    _INSERT_RELATION, (relation.src_id, relation.dst_id, relation.type)
-                )
+                conn.execute(_INSERT_RELATION, (relation.src_id, relation.dst_id, relation.type))
 
     def relations(self) -> Sequence[Relation]:
         with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:

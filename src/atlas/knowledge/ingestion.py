@@ -94,9 +94,10 @@ class IngestionResult(BaseModel):
     chunk_count: int
     scope: str
     source_id: str
-    # M4.5 enrichment counts (0 with the deterministic no-op extractor — i.e. plain M4.4 behavior).
-    extracted_entity_count: int = 0
-    relation_count: int = 0
+    # M4.5 enrichment counts: None when extraction is disabled (M4.4); 0 when enrichment ran but
+    # found nothing or degraded to chunks-only.
+    extracted_entity_count: int | None = None
+    relation_count: int | None = None
 
 
 class IngestionDenied(Exception):
@@ -166,8 +167,8 @@ class IngestionService:
         self._audit = audit
         self._chunk_size = chunk_size
         self._chunk_overlap = chunk_overlap
-        # ``extractor=None`` => no enrichment (pure M4.4). The graph factory injects a deterministic
-        # no-op by default and an OpenRouter-backed extractor only when extraction is enabled.
+        # ``extractor=None`` => no enrichment (pure M4.4). The graph factory injects an OpenRouter-
+        # backed extractor only when extraction is enabled.
         self._extractor = extractor
         if max_extracted_entities <= 0 or max_extracted_relations <= 0:
             raise ValueError("extraction caps must be positive")
@@ -212,6 +213,12 @@ class IngestionService:
             source_id=source_id,
             chunk_entity_ids=entity_ids,
         )
+        if self._extractor is None:
+            extracted_count: int | None = None
+            relation_count_out: int | None = None
+        else:
+            extracted_count = len(extracted_ids)
+            relation_count_out = relation_count
 
         if self._audit is not None:
             self._audit.ingested(
@@ -219,25 +226,25 @@ class IngestionService:
                 scope=scope,
                 entity_count=len(entity_ids),
                 actor=principal.user_id,
-                extracted_entity_count=len(extracted_ids),
-                relation_count=relation_count,
+                extracted_entity_count=extracted_count,
+                relation_count=relation_count_out,
             )
         logger.info(
-            "ingested %d chunk(s) scope=%s source=%s actor=%s extracted=%d relations=%d",
+            "ingested %d chunk(s) scope=%s source=%s actor=%s extracted=%s relations=%s",
             len(entity_ids),
             scope,
             source_id,
             principal.user_id,
-            len(extracted_ids),
-            relation_count,
+            extracted_count,
+            relation_count_out,
         )
         return IngestionResult(
             entity_ids=tuple(entity_ids),
             chunk_count=len(entity_ids),
             scope=scope,
             source_id=source_id,
-            extracted_entity_count=len(extracted_ids),
-            relation_count=relation_count,
+            extracted_entity_count=extracted_count,
+            relation_count=relation_count_out,
         )
 
     def _resolve_scope_acl(
@@ -392,9 +399,7 @@ class IngestionService:
             edge = (doc_anchor, entity_id, MENTIONS_RELATION)
             if edge in seen:
                 continue
-            collected.append(
-                Relation(src_id=doc_anchor, dst_id=entity_id, type=MENTIONS_RELATION)
-            )
+            collected.append(Relation(src_id=doc_anchor, dst_id=entity_id, type=MENTIONS_RELATION))
             seen.add(edge)
         return collected
 

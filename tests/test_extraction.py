@@ -338,8 +338,26 @@ def test_audit_records_extraction_counts_without_content() -> None:
 
 
 def test_audit_omits_extraction_counts_when_no_extraction() -> None:
-    # Deterministic default => the M4.4 audit event is byte-identical (no extra keys).
+    # extractor=None => the M4.4 audit event is byte-identical (no extra keys).
     audit = InMemoryAuditLog()
-    service, _ = _service(DeterministicExtractor(), audit=audit)
+    service, _ = _service(None, audit=audit)
     service.ingest(ALICE, IngestDocument(text="plain note", title="memo"))
     assert audit.events()[0].detail == {"scope": "personal", "entity_count": 1}
+
+
+def test_audit_records_explicit_zero_counts_on_empty_extraction() -> None:
+    audit = InMemoryAuditLog()
+    service, _ = _service(FakeExtractor(ExtractionResult()), audit=audit)
+    service.ingest(ALICE, IngestDocument(text="plain note", title="memo"))
+    detail = audit.events()[0].detail
+    assert detail["extracted_entity_count"] == 0
+    assert detail["relation_count"] == 0
+
+
+def test_audit_records_explicit_zero_counts_on_degrade() -> None:
+    audit = InMemoryAuditLog()
+    service, _ = _service(_BoomExtractor(), audit=audit)
+    service.ingest(ALICE, IngestDocument(text="plain note", title="memo"))
+    detail = audit.events()[0].detail
+    assert detail["extracted_entity_count"] == 0
+    assert detail["relation_count"] == 0
