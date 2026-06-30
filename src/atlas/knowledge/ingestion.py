@@ -358,7 +358,12 @@ class IngestionService:
             extracted_ids=extracted_ids,
             chunk_entity_ids=chunk_entity_ids,
         )
-        self._knowledge.persist_extraction(entities, relations)
+        self._knowledge.persist_extraction(
+            owner_segment=owner_segment,
+            source_id=source_id,
+            entities=entities,
+            relations=relations,
+        )
         return tuple(extracted_ids), len(relations)
 
     def _collect_relations(

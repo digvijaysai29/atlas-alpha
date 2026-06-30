@@ -12,7 +12,13 @@ from collections.abc import Sequence
 
 from atlas.governance.policy import PolicyStore
 from atlas.governance.rbac import Principal
-from atlas.knowledge.interfaces import Entity, KnowledgeGraph, Relation, can_read
+from atlas.knowledge.interfaces import (
+    Entity,
+    KnowledgeGraph,
+    Relation,
+    can_read,
+    extraction_entity_prefix,
+)
 
 
 class InMemoryKnowledgeGraph(KnowledgeGraph):
@@ -35,12 +41,26 @@ class InMemoryKnowledgeGraph(KnowledgeGraph):
 
     def persist_extraction(
         self,
+        *,
+        owner_segment: str,
+        source_id: str,
         entities: Sequence[Entity],
         relations: Sequence[Relation],
     ) -> None:
         entities_snapshot = dict(self._entities)
         relations_snapshot = list(self._relations)
         try:
+            prefix = extraction_entity_prefix(owner_segment, source_id)
+            self._entities = {
+                entity_id: entity
+                for entity_id, entity in self._entities.items()
+                if not entity_id.startswith(prefix)
+            }
+            self._relations = [
+                relation
+                for relation in self._relations
+                if not relation.src_id.startswith(prefix) and not relation.dst_id.startswith(prefix)
+            ]
             for entity in entities:
                 self.upsert_entity(entity)
             for relation in relations:

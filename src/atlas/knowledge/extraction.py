@@ -172,7 +172,7 @@ class LLMExtractor(EntityExtractor):
             api_key=SecretStr(self._api_key),
             temperature=0,
         )
-        return client.with_structured_output(ExtractionResult)
+        return client.with_structured_output(ExtractionResult, method="function_calling")
 
     def _build_runnable(self) -> Any:
         """Build the composed runnable once: primary model + fallback chain (lazy SDK import).

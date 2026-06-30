@@ -84,9 +84,7 @@ class Settings(BaseSettings):
     # resolved server-side. Caps bound how much untrusted model output is persisted per document.
     openrouter_api_key: SecretStr | None = Field(default=None, alias="OPENROUTER_API_KEY")
     kg_extraction_enabled: bool = Field(default=False, alias="ATLAS_KG_EXTRACTION_ENABLED")
-    extraction_model: str = Field(
-        default="anthropic/claude-3.5-haiku", alias="ATLAS_EXTRACTION_MODEL"
-    )
+    extraction_model: str = Field(default="openai/gpt-4o-mini", alias="ATLAS_EXTRACTION_MODEL")
     # Comma-separated OpenRouter model ids tried in order when the primary fails (e.g.
     # "openai/gpt-4o-mini,google/gemini-flash-1.5"). Blank => no fallbacks.
     extraction_fallback_models: str = Field(default="", alias="ATLAS_EXTRACTION_FALLBACK_MODELS")

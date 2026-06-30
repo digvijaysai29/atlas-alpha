@@ -33,6 +33,7 @@ from atlas.knowledge.interfaces import (
     KnowledgeGraph,
     Relation,
     can_read,
+    extraction_entity_prefix,
     identity_acl,
 )
 
@@ -121,6 +122,10 @@ _INSERT_RELATION = (
     "INSERT INTO atlas_kg_relations (src_id, dst_id, type) VALUES (%s, %s, %s) "
     "ON CONFLICT (src_id, dst_id, type) DO NOTHING"
 )
+_DELETE_RELATIONS_BY_ENTITY_PREFIX = (
+    "DELETE FROM atlas_kg_relations WHERE src_id LIKE %s OR dst_id LIKE %s"
+)
+_DELETE_ENTITIES_BY_PREFIX = "DELETE FROM atlas_kg_entities WHERE id LIKE %s"
 _SELECT_RELATIONS = "SELECT src_id, dst_id, type FROM atlas_kg_relations ORDER BY src_id, dst_id"
 
 # RBAC predicate (shared verbatim by the full-text AND the vector branch — see ``_QUERY`` /
@@ -396,9 +401,14 @@ class PostgresKnowledgeGraph(KnowledgeGraph):
 
     def persist_extraction(
         self,
+        *,
+        owner_segment: str,
+        source_id: str,
         entities: Sequence[Entity],
         relations: Sequence[Relation],
     ) -> None:
+        prefix = extraction_entity_prefix(owner_segment, source_id)
+        like_pattern = f"{_like_escape(prefix)}%"
         entity_vectors: list[tuple[Entity, list[float] | None]] = []
         for entity in entities:
             vector: list[float] | None = None
@@ -411,6 +421,11 @@ class PostgresKnowledgeGraph(KnowledgeGraph):
                     vector = None
             entity_vectors.append((entity, vector))
         with self._pool.connection() as conn, conn.transaction():
+            conn.execute(
+                _DELETE_RELATIONS_BY_ENTITY_PREFIX,
+                (like_pattern, like_pattern),
+            )
+            conn.execute(_DELETE_ENTITIES_BY_PREFIX, (like_pattern,))
             for entity, vector in entity_vectors:
                 base = (
                     entity.id,

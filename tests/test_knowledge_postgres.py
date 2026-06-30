@@ -451,6 +451,36 @@ def test_reingest_does_not_duplicate_extracted_nodes(pg_pool: object) -> None:
     assert before_relations == after_relations
 
 
+def test_reingest_replaces_stale_extracted_entities(pg_pool: object) -> None:
+    policy = InMemoryPolicyStore()
+    kg = PostgresKnowledgeGraph(pg_pool, policy=policy)  # type: ignore[arg-type]
+    doc = IngestDocument(text="first version", title="memo", source_id="src-replace")
+    service_a = IngestionService(
+        kg, policy, InMemoryAuditLog(), extractor=FakeExtractor(_extraction_result())
+    )
+    service_a.ingest(MEMBER, doc)
+
+    concepts_before = {e.name for e in kg.query(MEMBER, "", limit=200) if e.type != "doc"}
+    assert "Ada Lovelace" in concepts_before
+    assert "Project Atlas" in concepts_before
+    before_relations = len(kg.relations())
+
+    bob_result = ExtractionResult(entities=(ExtractedEntity(name="Bob", type="person"),))
+    service_b = IngestionService(
+        kg, policy, InMemoryAuditLog(), extractor=FakeExtractor(bob_result)
+    )
+    service_b.ingest(MEMBER, doc)
+
+    concepts_after = {e.name for e in kg.query(MEMBER, "", limit=200) if e.type != "doc"}
+    assert concepts_after == {"Bob"}
+    after_relations = len(kg.relations())
+    # Stale inter-entity + mentions edges are removed; only Bob's mentions edge remains.
+    assert after_relations < before_relations
+    assert "works_on" not in {r.type for r in kg.relations()}
+    assert len([r for r in kg.relations() if r.type == "mentions"]) == 1
+    assert len([e for e in kg.query(MEMBER, "", limit=200) if e.type == "doc"]) == 1
+
+
 def test_setup_dedupes_legacy_duplicate_relations(pg_pool: object) -> None:
     from atlas.persistence.knowledge_store import _CREATE_TABLES
 

@@ -124,6 +124,23 @@ def test_llm_extractor_returns_empty_for_blank_text_without_network() -> None:
     assert extractor.extract("   ") == ExtractionResult()
 
 
+def test_llm_extractor_uses_function_calling_structured_output() -> None:
+    from unittest.mock import MagicMock, patch
+
+    mock_client = MagicMock()
+    mock_structured = MagicMock()
+    mock_structured.invoke.return_value = ExtractionResult()
+    mock_client.with_structured_output.return_value = mock_structured
+
+    with patch("langchain_openrouter.ChatOpenRouter", return_value=mock_client):
+        extractor = LLMExtractor("sk-or-test", "openai/gpt-4o-mini")
+        extractor.extract("Ada works on Atlas")
+
+    mock_client.with_structured_output.assert_called_once_with(
+        ExtractionResult, method="function_calling"
+    )
+
+
 # --- deterministic default => byte-for-byte M4.4 -----------------------------
 def test_deterministic_extractor_writes_no_extra_nodes() -> None:
     service, kg = _service(DeterministicExtractor())
@@ -203,6 +220,28 @@ def test_extraction_is_idempotent_on_reingest() -> None:
     assert first.extracted_entity_count == second.extracted_entity_count
 
 
+def test_reingest_replaces_stale_extracted_entities() -> None:
+    kg = InMemoryKnowledgeGraph()
+    policy = InMemoryPolicyStore()
+    doc = IngestDocument(text="first version", title="note", source_id="src-1")
+    service_a = IngestionService(kg, policy, extractor=FakeExtractor(_people_result()))
+    service_a.ingest(ALICE, doc)
+
+    concepts_before = {e.name for e in kg.query(ALICE, "", limit=100) if e.type != "doc"}
+    assert "Ada Lovelace" in concepts_before
+    assert "Atlas" in concepts_before
+
+    bob_result = ExtractionResult(entities=(ExtractedEntity(name="Bob", type="person"),))
+    service_b = IngestionService(kg, policy, extractor=FakeExtractor(bob_result))
+    result = service_b.ingest(ALICE, doc)
+
+    concepts_after = {e.name for e in kg.query(ALICE, "", limit=100) if e.type != "doc"}
+    assert concepts_after == {"Bob"}
+    assert result.extracted_entity_count == 1
+    assert result.chunk_count == 1
+    assert len([e for e in kg.query(ALICE, "", limit=100) if e.type == "doc"]) == 1
+
+
 def test_duplicate_extracted_entities_are_deduped() -> None:
     dupes = ExtractionResult(
         entities=(
@@ -278,7 +317,14 @@ def test_extraction_failure_degrades_to_chunks_only() -> None:
 class _EnrichmentFailingKnowledgeGraph(InMemoryKnowledgeGraph):
     """A KG that persists chunk entities but raises when enrichment is persisted atomically."""
 
-    def persist_extraction(self, entities: object, relations: object) -> None:
+    def persist_extraction(
+        self,
+        *,
+        owner_segment: str,
+        source_id: str,
+        entities: object,
+        relations: object,
+    ) -> None:
         raise RuntimeError("store unavailable")
 
 
