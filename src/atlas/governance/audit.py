@@ -223,7 +223,9 @@ class AuditLog(abc.ABC):
             )
         )
 
-    def executed(self, result: ActionResult, *, extra: AuditToolContext | None = None) -> AuditEvent:
+    def executed(
+        self, result: ActionResult, *, extra: AuditToolContext | None = None
+    ) -> AuditEvent:
         if not result.ok:
             raise ValueError("executed() is success-only; use failed()")
         return self.record(

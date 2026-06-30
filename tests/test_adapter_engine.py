@@ -302,8 +302,6 @@ def test_adapter_engine_without_database_url_logs_warning(
     assert any("Adapter engine is enabled" in record.message for record in caplog.records)
 
 
-
-
 def test_payload_field_rejects_null_arg() -> None:
     with pytest.raises(ValidationError):
         ToolSchema.model_validate(
@@ -346,6 +344,7 @@ def test_audit_tool_context_rejects_forbidden_keys() -> None:
 
     with pytest.raises(ValidationError):
         AuditToolContext.model_validate({"access_token": "x"})
+
 
 # --- reconstructable audit (M4.8b) -----------------------------------------
 
@@ -422,6 +421,7 @@ def test_guarded_execution_audit_is_reconstructable_without_secrets() -> None:
     assert evt.detail["provider"] == "slack"
     assert "xoxp-SECRET" not in _json.dumps(evt.model_dump(mode="json"))
 
+
 def _slack_tool_and_registry(
     transport: Transport,
 ) -> tuple[BaseTool, ToolRegistry]:
@@ -493,9 +493,7 @@ def test_audit_metadata_on_all_executor_paths(event_type: str, trigger: str) -> 
         _assert_reconstructable_audit_detail(evt, principal_id=_PRINCIPAL.user_id)
         return
 
-    transport = FakeTransport(
-        _ALLOWLIST, response={"ok": True, "ts": "1.1", "channel": "C1"}
-    )
+    transport = FakeTransport(_ALLOWLIST, response={"ok": True, "ts": "1.1", "channel": "C1"})
     tool, registry = _slack_tool_and_registry(transport)
     audit = InMemoryAuditLog()
     action = registry.propose("slack_post_as_user", {"channel": "C1", "text": "hi"})
@@ -505,4 +503,3 @@ def test_audit_metadata_on_all_executor_paths(event_type: str, trigger: str) -> 
     evt = audit.events()[-1]
     assert evt.event_type.value == event_type
     _assert_reconstructable_audit_detail(evt, principal_id=_PRINCIPAL.user_id)
-

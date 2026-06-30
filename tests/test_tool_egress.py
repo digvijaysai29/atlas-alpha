@@ -26,7 +26,9 @@ from atlas.tool_egress import (
 _HOST = "slack.com"
 _PATH = "/api/chat.postMessage"
 _URL = f"https://{_HOST}{_PATH}"
-_POLICY = EgressPolicy(allowed_hosts=frozenset({_HOST}), routes=frozenset({EgressRoute("POST", _HOST, 443, _PATH)}))
+_POLICY = EgressPolicy(
+    allowed_hosts=frozenset({_HOST}), routes=frozenset({EgressRoute("POST", _HOST, 443, _PATH)})
+)
 
 
 def _getaddrinfo_returning(ip: str) -> Callable[..., list[tuple[Any, ...]]]:
@@ -136,7 +138,10 @@ def test_prepare_pinned_host_header_includes_nonstandard_port(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     url = f"https://{_HOST}:8443{_PATH}"
-    policy = EgressPolicy(allowed_hosts=frozenset({_HOST}), routes=frozenset({EgressRoute("POST", _HOST, 8443, _PATH)}))
+    policy = EgressPolicy(
+        allowed_hosts=frozenset({_HOST}),
+        routes=frozenset({EgressRoute("POST", _HOST, 8443, _PATH)}),
+    )
     monkeypatch.setattr(socket, "getaddrinfo", _getaddrinfo_returning("93.184.216.34"))
     _, headers, _ = HttpxTransport(policy).prepare_pinned(url)
     assert headers["Host"] == f"{_HOST}:8443"
@@ -203,6 +208,7 @@ def test_redirect_not_followed(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(EgressNotAllowed):
         HttpxTransport(_POLICY).post_json(_URL, json={}, access_token="tok")
 
+
 def test_client_disables_trust_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HTTP_PROXY", "http://evil:8080")
     captured: dict[str, Any] = {}
@@ -233,4 +239,3 @@ def test_client_disables_trust_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(socket, "getaddrinfo", _getaddrinfo_returning("93.184.216.34"))
     HttpxTransport(_POLICY).post_json(_URL, json={}, access_token="tok")
     assert captured.get("trust_env") is False
-
