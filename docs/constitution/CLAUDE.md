@@ -38,7 +38,8 @@ sub-phase is its own branch → PR into `main` → CI must be green.
 | **M4.4** | **Knowledge Ingestion Core** — deterministic `IngestionService` + `POST /kg/ingest`; PKG per-user isolation via identity ACLs; fail-closed OKG write gate (`kg:write:org`); 3 new eval oracles. See [`M4.4_PLAN.md`](../plans/M4.4_PLAN.md) | ✅ **branch `feat/m4.4-knowledge-ingestion`** |
 | **M4.6** | **pgvector semantic retrieval** — Postgres KG embeds entities on upsert + **hybrid** (FTS + vector cosine, RRF) retrieval on Neon; pluggable Voyage/deterministic embedder; identical RBAC predicate on both branches (no IDOR via embeddings). See [`M4.6_PLAN.md`](../plans/M4.6_PLAN.md) | ✅ **branch `feat/m4.6-pgvector-semantic-retrieval`** |
 | **M4.5** | **LLM entity/relation extraction** — optional enrichment of the ingestion pipeline: an OpenRouter-backed LLM (primary + fallback chain) extracts typed concept entities + relations, written alongside the chunks with **server-resolved** scope/ACL (no model-driven authz); hermetic deterministic no-op by default (eval gate stays 1.00). See [`M4.5_PLAN.md`](../plans/M4.5_PLAN.md) | 🚧 **branch `feat/m4.5-llm-entity-relation-extraction`** |
-| **M4.7+** | OAuth-connector ingestion (Gmail/Jira/Calendar) over the same `IngestionService`; resource/argument-aware `ToolPermission`; SSE streaming | future |
+| **M4.7** | **SSE streaming** — additive `POST /chat/stream` (`text/event-stream`, via `sse-starlette`) streams a turn's lifecycle (`open → node* → (awaiting_approval \| completed) → done`); same OIDC/rate-limit/identity spine enforced **before** the body; mid-stream failures degrade to a generic `error` event. See [`M4.7_PLAN.md`](../plans/M4.7_PLAN.md) | ✅ **branch `feat/m4.7-sse-streaming`** |
+| **M4.8+** | OAuth-connector ingestion (Gmail/Jira/Calendar) over the same `IngestionService`; resource/argument-aware `ToolPermission`; `/approve/stream` + token-level streaming | future |
 
 ## 3. Tech Stack
 
