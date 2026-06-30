@@ -33,6 +33,23 @@ class InMemoryKnowledgeGraph(KnowledgeGraph):
             return
         self._relations.append(relation)
 
+    def persist_extraction(
+        self,
+        entities: Sequence[Entity],
+        relations: Sequence[Relation],
+    ) -> None:
+        entities_snapshot = dict(self._entities)
+        relations_snapshot = list(self._relations)
+        try:
+            for entity in entities:
+                self.upsert_entity(entity)
+            for relation in relations:
+                self.add_relation(relation)
+        except Exception:
+            self._entities = entities_snapshot
+            self._relations = relations_snapshot
+            raise
+
     def relations(self) -> Sequence[Relation]:
         return tuple(self._relations)
 

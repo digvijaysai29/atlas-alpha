@@ -69,6 +69,17 @@ CREATE INDEX IF NOT EXISTS atlas_kg_fts
     ON atlas_kg_entities USING GIN (to_tsvector('english', name || ' ' || content))
 """
 
+# Remove legacy duplicate rows before the unique index is created (pre-M4.5 plain inserts could
+# leave identical (src_id, dst_id, type) triples). Keeps the lowest ctid row per triple.
+_DEDUPE_RELATIONS = """
+DELETE FROM atlas_kg_relations a
+USING atlas_kg_relations b
+WHERE a.ctid < b.ctid
+  AND a.src_id = b.src_id
+  AND a.dst_id = b.dst_id
+  AND a.type = b.type
+"""
+
 # Dedup edges so re-ingesting the same document is idempotent. ``CREATE TABLE IF NOT EXISTS`` is a
 # no-op on already-deployed tables, so this separate ``CREATE UNIQUE INDEX IF NOT EXISTS`` (run in
 # ``setup()``) is what guarantees existing deployments also get the constraint. It also serves as the
@@ -285,6 +296,7 @@ class PostgresKnowledgeGraph(KnowledgeGraph):
         with self._pool.connection() as conn:
             conn.execute(_CREATE_TABLES)
             conn.execute(_CREATE_FTS_INDEX)
+            conn.execute(_DEDUPE_RELATIONS)
             conn.execute(_CREATE_RELATIONS_UNIQUE_INDEX)
             if self._embedder is not None:
                 dim = int(self._embedder.dim)
@@ -381,6 +393,41 @@ class PostgresKnowledgeGraph(KnowledgeGraph):
     def add_relation(self, relation: Relation) -> None:
         with self._pool.connection() as conn:
             conn.execute(_INSERT_RELATION, (relation.src_id, relation.dst_id, relation.type))
+
+    def persist_extraction(
+        self,
+        entities: Sequence[Entity],
+        relations: Sequence[Relation],
+    ) -> None:
+        entity_vectors: list[tuple[Entity, list[float] | None]] = []
+        for entity in entities:
+            vector: list[float] | None = None
+            if self._embedder is not None:
+                try:
+                    vector = self._embedder.embed_one(
+                        _embedding_text(entity), input_type="document"
+                    )
+                except Exception:
+                    vector = None
+            entity_vectors.append((entity, vector))
+        with self._pool.connection() as conn, conn.transaction():
+            for entity, vector in entity_vectors:
+                base = (
+                    entity.id,
+                    entity.type,
+                    entity.name,
+                    entity.content,
+                    list(entity.acl),
+                    entity.scope,
+                )
+                if vector is None:
+                    conn.execute(_UPSERT_ENTITY, base)
+                else:
+                    conn.execute(_UPSERT_ENTITY_VEC, (*base, _vector_literal(vector)))
+            for relation in relations:
+                conn.execute(
+                    _INSERT_RELATION, (relation.src_id, relation.dst_id, relation.type)
+                )
 
     def relations(self) -> Sequence[Relation]:
         with self._pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:

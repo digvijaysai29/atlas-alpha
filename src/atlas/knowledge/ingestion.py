@@ -324,6 +324,7 @@ class IngestionService:
         # (kind, normalized name) so the same concept never produces two nodes.
         entity_id_by_key: dict[tuple[str, str], str] = {}
         extracted_ids: list[str] = []
+        entities: list[Entity] = []
         for proposed in result.entities:
             if len(extracted_ids) >= self._max_extracted_entities:
                 break
@@ -331,7 +332,7 @@ class IngestionService:
             if key in entity_id_by_key:
                 continue
             entity_id = _extracted_entity_id(owner_segment, source_id, proposed.type, key[1])
-            self._knowledge.upsert_entity(
+            entities.append(
                 Entity(
                     id=entity_id,
                     type=proposed.type,
@@ -344,32 +345,33 @@ class IngestionService:
             entity_id_by_key[key] = entity_id
             extracted_ids.append(entity_id)
 
-        relation_count = self._write_relations(
+        relations = self._collect_relations(
             relations=result.relations,
             entity_id_by_key=entity_id_by_key,
             extracted_ids=extracted_ids,
             chunk_entity_ids=chunk_entity_ids,
         )
-        return tuple(extracted_ids), relation_count
+        self._knowledge.persist_extraction(entities, relations)
+        return tuple(extracted_ids), len(relations)
 
-    def _write_relations(
+    def _collect_relations(
         self,
         *,
         relations: tuple[ExtractedRelation, ...],
         entity_id_by_key: dict[tuple[str, str], str],
         extracted_ids: list[str],
         chunk_entity_ids: list[str],
-    ) -> int:
-        """Persist inter-entity relations then doc->concept ``mentions`` edges, within the cap.
+    ) -> list[Relation]:
+        """Collect inter-entity relations then doc->concept ``mentions`` edges, within the cap.
 
-        Inter-entity relations are written first (higher value) so the cap never starves them in
+        Inter-entity relations are collected first (higher value) so the cap never starves them in
         favor of mentions. A relation is dropped (fail-closed) unless *both* endpoints resolve to an
         entity we actually extracted — hallucinated/dangling edges are never persisted.
         """
         seen: set[tuple[str, str, str]] = set()
-        count = 0
+        collected: list[Relation] = []
         for relation in relations:
-            if count >= self._max_extracted_relations:
+            if len(collected) >= self._max_extracted_relations:
                 break
             src_id = entity_id_by_key.get((relation.src_type, _normalize_name(relation.src_name)))
             dst_id = entity_id_by_key.get((relation.dst_type, _normalize_name(relation.dst_name)))
@@ -378,25 +380,23 @@ class IngestionService:
             edge = (src_id, dst_id, relation.type)
             if edge in seen:
                 continue
-            self._knowledge.add_relation(Relation(src_id=src_id, dst_id=dst_id, type=relation.type))
+            collected.append(Relation(src_id=src_id, dst_id=dst_id, type=relation.type))
             seen.add(edge)
-            count += 1
 
         # Anchor each concept back to the document via a ``mentions`` edge from the first chunk
         # (always present — ``chunks`` is non-empty by the time we get here).
         doc_anchor = chunk_entity_ids[0]
         for entity_id in extracted_ids:
-            if count >= self._max_extracted_relations:
+            if len(collected) >= self._max_extracted_relations:
                 break
             edge = (doc_anchor, entity_id, MENTIONS_RELATION)
             if edge in seen:
                 continue
-            self._knowledge.add_relation(
+            collected.append(
                 Relation(src_id=doc_anchor, dst_id=entity_id, type=MENTIONS_RELATION)
             )
             seen.add(edge)
-            count += 1
-        return count
+        return collected
 
 
 def _normalize_name(name: str) -> str:

@@ -445,3 +445,35 @@ def test_reingest_does_not_duplicate_extracted_nodes(pg_pool: object) -> None:
     # Relations are idempotent too: the ON CONFLICT (src_id, dst_id, type) DO NOTHING insert means
     # re-ingesting the same document re-adds no edges (the table does not grow unbounded).
     assert before_relations == after_relations
+
+
+def test_setup_dedupes_legacy_duplicate_relations(pg_pool: object) -> None:
+    from atlas.persistence.knowledge_store import _CREATE_TABLES
+
+    with pg_pool.connection() as conn:  # type: ignore[attr-defined]
+        conn.execute("DROP TABLE IF EXISTS atlas_kg_relations")
+        conn.execute("DROP TABLE IF EXISTS atlas_kg_entities")
+        conn.execute(_CREATE_TABLES)
+        conn.execute(
+            "INSERT INTO atlas_kg_relations (src_id, dst_id, type) VALUES (%s, %s, %s)",
+            ("src-a", "dst-b", "references"),
+        )
+        conn.execute(
+            "INSERT INTO atlas_kg_relations (src_id, dst_id, type) VALUES (%s, %s, %s)",
+            ("src-a", "dst-b", "references"),
+        )
+
+    PostgresKnowledgeGraph(pg_pool, setup=True)  # type: ignore[arg-type]
+
+    with pg_pool.connection() as conn, conn.cursor() as cur:  # type: ignore[attr-defined]
+        cur.execute(
+            "SELECT count(*) AS n FROM atlas_kg_relations "
+            "WHERE src_id = %s AND dst_id = %s AND type = %s",
+            ("src-a", "dst-b", "references"),
+        )
+        assert cur.fetchone()["n"] == 1
+
+    kg = PostgresKnowledgeGraph(pg_pool, setup=False)  # type: ignore[arg-type]
+    before = len(kg.relations())
+    kg.add_relation(Relation(src_id="src-a", dst_id="dst-b", type="references"))
+    assert len(kg.relations()) == before  # idempotent — ON CONFLICT DO NOTHING

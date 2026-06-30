@@ -107,6 +107,15 @@ class KnowledgeGraph(abc.ABC):
         raise NotImplementedError
 
     @abc.abstractmethod
+    def persist_extraction(
+        self,
+        entities: Sequence[Entity],
+        relations: Sequence[Relation],
+    ) -> None:
+        """Atomically persist extracted entities and relations; rollback all on any failure."""
+        raise NotImplementedError
+
+    @abc.abstractmethod
     def relations(self) -> Sequence[Relation]:
         """Return all relations (used by tests/inspection)."""
         raise NotImplementedError

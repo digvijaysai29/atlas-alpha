@@ -276,17 +276,10 @@ def test_extraction_failure_degrades_to_chunks_only() -> None:
 
 
 class _EnrichmentFailingKnowledgeGraph(InMemoryKnowledgeGraph):
-    """A KG that persists chunk entities but raises when an *extracted* node is written.
+    """A KG that persists chunk entities but raises when enrichment is persisted atomically."""
 
-    Extracted entity ids contain ``:entity:`` (chunk ids do not), so the core chunk write succeeds
-    while the enrichment persistence fails — exercising the degrade boundary around *persistence*,
-    not just the model call.
-    """
-
-    def upsert_entity(self, entity: object) -> None:
-        if ":entity:" in entity.id:  # type: ignore[attr-defined]
-            raise RuntimeError("store unavailable")
-        super().upsert_entity(entity)  # type: ignore[arg-type]
+    def persist_extraction(self, entities: object, relations: object) -> None:
+        raise RuntimeError("store unavailable")
 
 
 def test_persistence_failure_during_enrichment_degrades_to_chunks_only() -> None:
@@ -299,6 +292,32 @@ def test_persistence_failure_during_enrichment_degrades_to_chunks_only() -> None
     result = service.ingest(ALICE, IngestDocument(text="Ada works on Atlas", title="memo"))
     assert result.chunk_count == 1  # core chunk write committed
     assert result.extracted_entity_count == 0  # enrichment degraded, no exception surfaced
+    assert result.relation_count == 0
+    assert {e.type for e in kg.query(ALICE, "", limit=100)} == {"doc"}
+
+
+class _MidBatchFailingKG(InMemoryKnowledgeGraph):
+    """Fails on the second extracted-entity upsert inside atomic ``persist_extraction``."""
+
+    def upsert_entity(self, entity: object) -> None:
+        entity_id = entity.id  # type: ignore[attr-defined]
+        if ":entity:" in entity_id:
+            existing = sum(1 for eid in self._entities if ":entity:" in eid)
+            if existing >= 1:
+                raise RuntimeError("store unavailable")
+        super().upsert_entity(entity)  # type: ignore[arg-type]
+
+
+def test_mid_batch_persistence_failure_leaves_no_orphan_entities() -> None:
+    # Regression: a failure after the first extracted entity must roll back the whole batch so
+    # chunks-only degradation is accurate (no orphan person/project nodes with zero counts).
+    kg = _MidBatchFailingKG()
+    service = IngestionService(
+        kg, InMemoryPolicyStore(), InMemoryAuditLog(), extractor=FakeExtractor(_people_result())
+    )
+    result = service.ingest(ALICE, IngestDocument(text="Ada works on Atlas", title="memo"))
+    assert result.chunk_count == 1
+    assert result.extracted_entity_count == 0
     assert result.relation_count == 0
     assert {e.type for e in kg.query(ALICE, "", limit=100)} == {"doc"}
 
