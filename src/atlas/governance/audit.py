@@ -49,6 +49,18 @@ def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+class AuditToolContext(BaseModel):
+    """Allowlisted, non-secret tool context folded into executor audit events."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", populate_by_name=True)
+
+    tool_schema: str | None = Field(default=None, alias="schema")
+    schema_version: str | None = None
+    destination_host: str | None = None
+    provider: str | None = None
+    principal: str | None = None
+
+
 class AuditEvent(BaseModel):
     """One immutable entry in the audit trail (the pure domain object — carries no hash)."""
 
@@ -211,7 +223,9 @@ class AuditLog(abc.ABC):
             )
         )
 
-    def executed(self, result: ActionResult) -> AuditEvent:
+    def executed(
+        self, result: ActionResult, *, extra: AuditToolContext | None = None
+    ) -> AuditEvent:
         if not result.ok:
             raise ValueError("executed() is success-only; use failed()")
         return self.record(
@@ -219,37 +233,41 @@ class AuditLog(abc.ABC):
                 event_type=AuditEventType.EXECUTED,
                 action_id=result.action_id,
                 tool=result.tool,
-                detail={"ok": result.ok, "error": result.error},
+                detail=_merge_detail({"ok": result.ok, "error": result.error}, extra),
             )
         )
 
-    def failed(self, result: ActionResult) -> AuditEvent:
+    def failed(self, result: ActionResult, *, extra: AuditToolContext | None = None) -> AuditEvent:
         return self.record(
             AuditEvent(
                 event_type=AuditEventType.FAILED,
                 action_id=result.action_id,
                 tool=result.tool,
-                detail={"ok": result.ok, "error": result.error},
+                detail=_merge_detail({"ok": result.ok, "error": result.error}, extra),
             )
         )
 
-    def replay_skipped(self, action: ProposedAction, *, reason: str) -> AuditEvent:
+    def replay_skipped(
+        self, action: ProposedAction, *, reason: str, extra: AuditToolContext | None = None
+    ) -> AuditEvent:
         return self.record(
             AuditEvent(
                 event_type=AuditEventType.REPLAY_SKIPPED,
                 action_id=action.action_id,
                 tool=action.tool,
-                detail={"reason": reason},
+                detail=_merge_detail({"reason": reason}, extra),
             )
         )
 
-    def skipped(self, action: ProposedAction, reason: str) -> AuditEvent:
+    def skipped(
+        self, action: ProposedAction, reason: str, *, extra: AuditToolContext | None = None
+    ) -> AuditEvent:
         return self.record(
             AuditEvent(
                 event_type=AuditEventType.SKIPPED,
                 action_id=action.action_id,
                 tool=action.tool,
-                detail={"reason": reason},
+                detail=_merge_detail({"reason": reason}, extra),
             )
         )
 
@@ -285,7 +303,14 @@ class AuditLog(abc.ABC):
             )
         )
 
-    def denied(self, action: ProposedAction, principal_id: str, reason: str) -> AuditEvent:
+    def denied(
+        self,
+        action: ProposedAction,
+        principal_id: str,
+        reason: str,
+        *,
+        extra: AuditToolContext | None = None,
+    ) -> AuditEvent:
         """Record an RBAC denial — the principal lacked the permission a tool required."""
         return self.record(
             AuditEvent(
@@ -293,9 +318,16 @@ class AuditLog(abc.ABC):
                 action_id=action.action_id,
                 tool=action.tool,
                 actor=principal_id,
-                detail={"reason": reason},
+                detail=_merge_detail({"reason": reason}, extra),
             )
         )
+
+
+def _merge_detail(base: dict[str, Any], extra: AuditToolContext | None) -> dict[str, Any]:
+    """Merge non-secret ``extra`` context onto a base detail dict (extra never overrides base keys)."""
+    if extra is None:
+        return base
+    return {**extra.model_dump(exclude_none=True, by_alias=True), **base}
 
 
 def _counts_as_executed(event: AuditEvent) -> bool:

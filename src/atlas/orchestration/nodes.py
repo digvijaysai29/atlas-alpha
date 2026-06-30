@@ -23,6 +23,7 @@ from langgraph.types import interrupt
 from atlas.actions import ApprovalDecision, ProposedAction, requires_approval
 from atlas.config import Settings, get_settings
 from atlas.governance import AuditLog, PolicyStore
+from atlas.governance.audit import AuditToolContext
 from atlas.governance.confidence import collect_sources, score_confidence
 from atlas.governance.rbac import get_current_principal
 from atlas.knowledge.interfaces import Entity, KnowledgeGraph
@@ -221,17 +222,23 @@ def make_executor_node(
         approved = set(state.get("approved_action_ids") or [])
         results = []
         for action in state.get("proposed_actions") or []:
+            tool = registry.get(action.tool)
+            # Non-secret context (schema id/version, destination host, provider, principal) folded into
+            # every audit event for this action so the generated tool action is reconstructable later.
+            meta = AuditToolContext(**tool.audit_metadata(), principal=principal.user_id)
             # RBAC re-check (defense-in-depth): never run a tool the principal isn't permitted to use,
             # even if it somehow reached the executor.
-            required = registry.get(action.tool).required_permission
+            required = tool.required_permission
             if not policy.can(principal, required):
-                audit.denied(action, principal.user_id, reason=f"missing permission: {required}")
+                audit.denied(
+                    action, principal.user_id, reason=f"missing permission: {required}", extra=meta
+                )
                 continue
             # The gate, enforced in code: a gated action runs only with a matching approval.
             if requires_approval(action.risk_tier) and action.action_id not in approved:
-                audit.skipped(action, reason="not approved")
+                audit.skipped(action, reason="not approved", extra=meta)
                 continue
-            results.append(guarded.execute_guarded(action, audit, principal))
+            results.append(guarded.execute_guarded(action, audit, principal, extra=meta))
         return {"action_results": results}
 
     return executor_node

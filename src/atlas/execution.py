@@ -10,8 +10,7 @@ pre-claim ledger row. Concurrent executors on the same ``action_id`` are likewis
 from __future__ import annotations
 
 from atlas.actions import ActionResult, ProposedAction, requires_approval
-from atlas.governance import AuditLog
-from atlas.governance.audit import _counts_as_executed
+from atlas.governance.audit import AuditLog, AuditToolContext, _counts_as_executed
 from atlas.governance.rbac import Principal
 from atlas.tools import ToolRegistry
 
@@ -23,16 +22,21 @@ class GuardedExecutor:
         self._registry = registry
 
     def execute_guarded(
-        self, action: ProposedAction, audit: AuditLog, principal: Principal
+        self,
+        action: ProposedAction,
+        audit: AuditLog,
+        principal: Principal,
+        *,
+        extra: AuditToolContext | None = None,
     ) -> ActionResult:
         if requires_approval(action.risk_tier) and audit.has_executed(action.action_id):
-            audit.replay_skipped(action, reason="already executed")
+            audit.replay_skipped(action, reason="already executed", extra=extra)
             return self._replay_result(action, audit)
         result = self._registry.execute(action, principal)
         if result.ok:
-            audit.executed(result)
+            audit.executed(result, extra=extra)
         else:
-            audit.failed(result)
+            audit.failed(result, extra=extra)
         return result
 
     def _replay_result(self, action: ProposedAction, audit: AuditLog) -> ActionResult:

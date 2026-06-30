@@ -91,6 +91,21 @@ class Settings(BaseSettings):
     extraction_max_entities: int = Field(default=64, alias="ATLAS_EXTRACTION_MAX_ENTITIES")
     extraction_max_relations: int = Field(default=128, alias="ATLAS_EXTRACTION_MAX_RELATIONS")
 
+    # --- Adapter engine (M4.8a — metadata-driven tools) --------------------
+    # When ATLAS_ADAPTER_ENGINE_ENABLED is true, trusted, version-controlled JSON tool schemas are
+    # loaded at startup and registered as tools (replacing their hand-written twins). The schema files
+    # are a code-reviewed build artifact — never user/network/LLM-supplied. Every schema endpoint host
+    # must appear in the egress allowlist (SSRF defense); a schema can never mark a mutating tool as an
+    # auto-run READ. Flag defaults off so CI and the deterministic eval gate stay byte-for-byte M4.7.
+    adapter_engine_enabled: bool = Field(default=False, alias="ATLAS_ADAPTER_ENGINE_ENABLED")
+    # Comma-separated hostnames schema-driven tools may call. Defaults to the hosts the bundled schemas
+    # use; an operator widens it only as connectors are added.
+    adapter_egress_allowlist: str = Field(
+        default="slack.com", alias="ATLAS_ADAPTER_EGRESS_ALLOWLIST"
+    )
+    # Override the bundled schema directory (blank => the packaged ``atlas/tool_schemas`` dir).
+    adapter_schema_dir: str = Field(default="", alias="ATLAS_ADAPTER_SCHEMA_DIR")
+
     # --- Interface (M3.2 FastAPI) ------------------------------------------
     # Bind address for the dev server (scripts/run_api.py).
     api_host: str = Field(default="127.0.0.1", alias="ATLAS_API_HOST")
@@ -408,6 +423,15 @@ class Settings(BaseSettings):
         """The configured fallback model ids, in order (comma-separated; blanks dropped)."""
         return tuple(
             model.strip() for model in self.extraction_fallback_models.split(",") if model.strip()
+        )
+
+    @property
+    def adapter_egress_allowlist_hosts(self) -> frozenset[str]:
+        """The lowercased hostnames schema-driven tools may call (comma-separated; blanks dropped)."""
+        return frozenset(
+            host.strip().lower()
+            for host in self.adapter_egress_allowlist.split(",")
+            if host.strip()
         )
 
     @property
