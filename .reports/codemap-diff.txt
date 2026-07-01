@@ -1,0 +1,23 @@
+atlas-alpha — codemap generation report
+Generated: 2026-07-01
+
+STATUS: fresh generation — no prior docs/CODEMAPS/*.md existed (confirmed via glob before writing).
+All 6 files written as new (INDEX.md, architecture.md, backend.md, frontend.md, data.md, dependencies.md).
+Diff-and-skip rule (overwrite only if change <=30%) does not apply on this run.
+
+Files created:
+  docs/CODEMAPS/INDEX.md          (~350 tokens)
+  docs/CODEMAPS/architecture.md   (~950 tokens)
+  docs/CODEMAPS/backend.md        (~980 tokens)
+  docs/CODEMAPS/frontend.md       (~120 tokens; no frontend exists)
+  docs/CODEMAPS/data.md           (~900 tokens)
+  docs/CODEMAPS/dependencies.md   (~850 tokens)
+
+Source files scanned (representative, not exhaustive): 50 files under src/atlas/**/*.py,
+43 files under tests/*.py, 8 files under scripts/*.py, plus pyproject.toml, .env.example,
+docker-compose.yml, .github/workflows/ci.yml, docs/constitution/CLAUDE.md,
+docs/guides/HANDOFF.md, docs/architecture/ARCHITECTURE.md.
+
+Next run: diff against these files; overwrite only if the underlying code changed the facts
+in that codemap (route added/removed, table added, dependency added/removed) by more than ~30%
+of its content, otherwise leave as-is and note "no material change" here.

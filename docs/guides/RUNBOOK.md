@@ -38,10 +38,14 @@ idempotency (`has_executed(action_id)`) must survive restarts.
 |---|---|---|---|
 | `GET /healthz` | Liveness probe → `{"ok": true}` | none | no |
 | `POST /chat` | Run the agent on a message | principal | yes (per principal) |
+| `POST /chat/stream` | SSE stream of a turn's lifecycle (M4.7) | principal | yes |
 | `POST /approve` | Resume a thread paused at the approval gate | principal + thread owner | yes |
 | `GET /threads/{id}` | Read a thread's current state | principal + thread owner | no |
 | `POST /kg/ingest` | Write a document into the PKG/OKG (M4.4) | principal; `org` needs `kg:write:org` | yes |
-| `/oauth/{provider}/connect`,`/callback`,`/oauth/connections` | Per-user OAuth binding (M4.3) | principal | no |
+| `GET /oauth/connections` | List a principal's connected OAuth providers (M4.3) | principal | no |
+| `GET /oauth/{provider}/connect` | Start the OAuth authorization-code flow | principal | yes |
+| `GET`/`POST /oauth/{provider}/callback` | Complete OAuth (IdP redirect / SPA exchange) | signed state (+ principal for POST) | yes |
+| `DELETE /oauth/{provider}` | Revoke a connected provider's stored credential | principal | yes |
 
 **Health check:** `GET /healthz` for liveness. Readiness is implied by a successful boot (DB pool
 opens + checkpointer `setup()` runs at startup); a failed DB connection fails startup loudly.
