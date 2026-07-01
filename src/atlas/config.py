@@ -10,6 +10,7 @@ from functools import lru_cache
 from typing import Self
 from urllib.parse import urlparse
 
+import httpx
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -105,6 +106,14 @@ class Settings(BaseSettings):
     )
     # Override the bundled schema directory (blank => the packaged ``atlas/tool_schemas`` dir).
     adapter_schema_dir: str = Field(default="", alias="ATLAS_ADAPTER_SCHEMA_DIR")
+    # Optional forward proxy for schema-tool egress (M4.8b). Blank => direct IP-pinned mode (M4.8a).
+    adapter_egress_proxy_url: str = Field(default="", alias="ATLAS_ADAPTER_EGRESS_PROXY_URL")
+    adapter_egress_proxy_username: str = Field(
+        default="", alias="ATLAS_ADAPTER_EGRESS_PROXY_USERNAME"
+    )
+    adapter_egress_proxy_password: SecretStr | None = Field(
+        default=None, alias="ATLAS_ADAPTER_EGRESS_PROXY_PASSWORD"
+    )
 
     # --- Interface (M3.2 FastAPI) ------------------------------------------
     # Bind address for the dev server (scripts/run_api.py).
@@ -196,6 +205,47 @@ class Settings(BaseSettings):
             raise ValueError(
                 "VAULT_ADDR is set but neither VAULT_TOKEN nor AppRole credentials are configured."
             )
+        return self
+
+    @model_validator(mode="after")
+    def validate_adapter_egress_proxy(self) -> Self:
+        """Proxy URL and auth must be complete when set — no userinfo in the URL string."""
+        has_user = _nonempty_str(self.adapter_egress_proxy_username)
+        has_pass = _nonempty_secret(self.adapter_egress_proxy_password)
+        proxy_url = self.adapter_egress_proxy_url.strip()
+        if has_user != has_pass:
+            raise ValueError(
+                "Partial proxy auth: set ATLAS_ADAPTER_EGRESS_PROXY_URL, "
+                "ATLAS_ADAPTER_EGRESS_PROXY_USERNAME, and ATLAS_ADAPTER_EGRESS_PROXY_PASSWORD "
+                "together or leave all blank."
+            )
+        if (has_user or has_pass) and not proxy_url:
+            raise ValueError(
+                "Proxy egress credentials require ATLAS_ADAPTER_EGRESS_PROXY_URL; set URL, "
+                "username, and password together or leave all blank."
+            )
+        if not proxy_url:
+            return self
+        parsed = httpx.URL(proxy_url)
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError(
+                f"ATLAS_ADAPTER_EGRESS_PROXY_URL must use http or https scheme, got {parsed.scheme!r}."
+            )
+        if not parsed.host:
+            raise ValueError("ATLAS_ADAPTER_EGRESS_PROXY_URL must include a host.")
+        if parsed.userinfo:
+            raise ValueError(
+                "ATLAS_ADAPTER_EGRESS_PROXY_URL must not contain userinfo; use "
+                "ATLAS_ADAPTER_EGRESS_PROXY_USERNAME and ATLAS_ADAPTER_EGRESS_PROXY_PASSWORD."
+            )
+        if has_user and has_pass and parsed.scheme != "https":
+            raise ValueError(
+                "Authenticated proxy egress requires ATLAS_ADAPTER_EGRESS_PROXY_URL with "
+                "https:// scheme (credentials must not be sent over plaintext proxy transport)."
+            )
+        from atlas.tool_egress import assert_proxy_host_not_blocked
+
+        assert_proxy_host_not_blocked(parsed.host or "")
         return self
 
     @model_validator(mode="after")
@@ -433,6 +483,25 @@ class Settings(BaseSettings):
             for host in self.adapter_egress_allowlist.split(",")
             if host.strip()
         )
+
+    @property
+    def adapter_egress_proxy_enabled(self) -> bool:
+        """True when schema-tool egress should route through a configured forward proxy."""
+        return bool(self.adapter_egress_proxy_url.strip())
+
+    @property
+    def adapter_egress_proxy_auth(self) -> tuple[str, str] | None:
+        """Proxy ``(username, password)`` when both are configured; else ``None``."""
+        user = self.adapter_egress_proxy_username.strip()
+        password = self.adapter_egress_proxy_password
+        if not user and password is None:
+            return None
+        if password is None:
+            return None
+        secret = password.get_secret_value()
+        if not secret.strip():
+            return None
+        return (user, secret)
 
     @property
     def vault_configured(self) -> bool:

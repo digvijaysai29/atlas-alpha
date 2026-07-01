@@ -46,6 +46,7 @@ API key or network.
 | `uv run pip-audit -l` | Dependency vulnerability audit (CI `security`) |
 | `uv run python evals/run_gate.py` | Deterministic agent-eval gate (CI `agent-eval`; must score ≥ 0.90) |
 | `uv run python scripts/manage_policy.py seed` | Seed the Postgres role→permission table (deny-all until seeded) |
+| `uv run python scripts/manage_credentials.py list\|revoke` | List/revoke a principal's connected OAuth providers in the credential vault |
 | `uv run python scripts/demo_*.py` | Hermetic demos (approval, RBAC, knowledge, persistence) |
 
 ## Testing

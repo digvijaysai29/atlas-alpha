@@ -38,10 +38,14 @@ idempotency (`has_executed(action_id)`) must survive restarts.
 |---|---|---|---|
 | `GET /healthz` | Liveness probe → `{"ok": true}` | none | no |
 | `POST /chat` | Run the agent on a message | principal | yes (per principal) |
+| `POST /chat/stream` | SSE stream of a turn's lifecycle (M4.7) | principal | yes |
 | `POST /approve` | Resume a thread paused at the approval gate | principal + thread owner | yes |
 | `GET /threads/{id}` | Read a thread's current state | principal + thread owner | no |
 | `POST /kg/ingest` | Write a document into the PKG/OKG (M4.4) | principal; `org` needs `kg:write:org` | yes |
-| `/oauth/{provider}/connect`,`/callback`,`/oauth/connections` | Per-user OAuth binding (M4.3) | principal | no |
+| `GET /oauth/connections` | List a principal's connected OAuth providers (M4.3) | principal | no |
+| `GET /oauth/{provider}/connect` | Start the OAuth authorization-code flow | principal | yes |
+| `GET`/`POST /oauth/{provider}/callback` | Complete OAuth (IdP redirect / SPA exchange) | signed state (+ principal for POST) | yes |
+| `DELETE /oauth/{provider}` | Revoke a connected provider's stored credential | principal | yes |
 
 **Health check:** `GET /healthz` for liveness. Readiness is implied by a successful boot (DB pool
 opens + checkpointer `setup()` runs at startup); a failed DB connection fails startup loudly.
@@ -62,8 +66,34 @@ full credential set is present. Key groups:
 | KG embeddings (M4.6) | `VOYAGE_API_KEY`, `ATLAS_EMBEDDING_MODEL`/`DIM` | deterministic offline embedder (hybrid vector search still works on Postgres) |
 | Email / Slack | `RESEND_API_KEY`+`ATLAS_EMAIL_FROM` / `SLACK_BOT_TOKEN` | tool fail-closed after approval |
 | Vault / OAuth | `VAULT_ADDR`+auth, `GOOGLE_*`/`SLACK_OAUTH_*`, `ATLAS_OAUTH_STATE_SECRET` | per-user integrations disabled |
+| Adapter engine | `ATLAS_ADAPTER_ENGINE_ENABLED`, `ATLAS_ADAPTER_EGRESS_*` | schema tools off / direct IP-pinned egress | See [Adapter engine / egress proxy](#adapter-engine--egress-proxy-m48a--m48b) |
 
 **Secrets** are `SecretStr`, sourced only from env, never logged. `.env.example` documents names only.
+
+## Adapter engine / egress proxy (M4.8a / M4.8b)
+
+Schema-driven tools (`ATLAS_ADAPTER_ENGINE_ENABLED=true`) call outbound APIs through a pluggable
+transport selected at startup:
+
+| Mode | When | Behavior |
+|---|---|---|
+| **Direct** (default) | `ATLAS_ADAPTER_EGRESS_PROXY_URL` blank | IP-pinned `HttpxTransport` — DNS resolve + block private/metadata ranges |
+| **Proxy** | Proxy URL set | `ProxyTransport` — forward proxy tunnel; destination `EgressPolicy` still enforced in-app |
+
+**When to enable proxy:** corporate egress requires a central forward proxy (Squid/Envoy/gateway).
+Set `ATLAS_ADAPTER_EGRESS_PROXY_URL` (plaintext `http://` is fine for unauthenticated proxies; use
+`https://` when static proxy auth is configured). Optional credentials via
+`ATLAS_ADAPTER_EGRESS_PROXY_USERNAME` + `ATLAS_ADAPTER_EGRESS_PROXY_PASSWORD` — never embed them in
+the proxy URL. Per-user OAuth Bearer tokens stay on the **destination** API request (app layer);
+proxy auth is deployment-static only.
+
+**Trade-off:** proxy mode skips destination IP pinning (the proxy resolves/reaches the target). The
+app-layer host + route allowlist still applies before any network I/O. `HTTP_PROXY`/`HTTPS_PROXY`
+process env vars are **never** honored (`trust_env=False`).
+
+Hand-written tools (`send_email`, `slack_post`) are unchanged — proxy applies only to the adapter
+engine path.
+
 
 ## Observability
 

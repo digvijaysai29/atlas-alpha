@@ -91,6 +91,12 @@ Every schema-built tool runs through the **unchanged** execution gate:
 5. **Test it:** `uv run pytest -k adapter` and the eval gate (`uv run python evals/run_gate.py`).
 6. **Open a PR.** `tool_schemas/**` is CODEOWNERS-gated — schemas are reviewed like code.
 
+## Enterprise features (optional)
+
+- **Forward-proxy egress** — set `ATLAS_ADAPTER_EGRESS_PROXY_URL` (and optional static proxy auth) when
+  corporate policy requires a central gateway. Direct IP-pinned egress remains the default. See
+  [`RUNBOOK.md`](./RUNBOOK.md#adapter-engine--egress-proxy-m48a--m48b).
+
 ## Limits today (M4.8a)
 
 - `POST` + JSON bodies only; payload/response mapping is top-level field copy or constants (no nested
