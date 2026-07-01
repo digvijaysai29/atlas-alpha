@@ -114,20 +114,3 @@ offending merge commit (`git revert <sha>`) and re-running the gate. Run the ful
 (`pytest` + `ruff` + `mypy` + `bandit` + `pip-audit` + `evals/run_gate.py`) before any release —
 see [`RELEASE.md`](./RELEASE.md) for the validation checklist. This is an alpha; there is no on-call
 escalation path yet.
-
-## Adapter engine egress proxy (M4.8b)
-
-When `ATLAS_ADAPTER_ENGINE_ENABLED=true`, schema-tool outbound calls use the SSRF-hardened transport in
-`tool_egress.py`. By default they connect **directly** with destination IP pinning (`HttpxTransport`).
-
-Set `ATLAS_ADAPTER_EGRESS_PROXY_URL` to route through a corporate forward proxy instead (`ProxyTransport`).
-The app still validates every destination URL against `ATLAS_ADAPTER_EGRESS_ALLOWLIST` and the per-schema
-route allowlist **before** any network I/O. Per-user OAuth Bearer tokens are injected by atlas; optional
-`ATLAS_ADAPTER_EGRESS_PROXY_USERNAME` / `ATLAS_ADAPTER_EGRESS_PROXY_PASSWORD` authenticate to the proxy itself.
-Process env vars like `HTTP_PROXY` are **never** honored (`trust_env=False`).
-
-| Mode | When | Trade-off |
-|---|---|---|
-| Direct (default) | `ATLAS_ADAPTER_EGRESS_PROXY_URL` blank | Full IP pinning to public destination IPs |
-| Proxy | Proxy URL set | Destination pinning skipped; network perimeter + proxy policy are operator responsibilities |
-

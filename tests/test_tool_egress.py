@@ -431,6 +431,19 @@ def test_proxy_url_with_userinfo_rejected_at_settings() -> None:
         )
 
 
+def test_proxy_url_with_invalid_scheme_rejected_at_settings() -> None:
+    with pytest.raises(ValidationError, match="http or https"):
+        Settings(
+            ANTHROPIC_API_KEY=None,
+            ATLAS_ADAPTER_EGRESS_PROXY_URL="socks5://proxy.corp:1080",
+        )
+
+
 def test_proxy_url_with_userinfo_rejected_at_transport_init() -> None:
     with pytest.raises(EgressNotAllowed, match="userinfo"):
         ProxyTransport(_POLICY, proxy_url="http://user:pass@proxy.corp:8080")
+
+
+def test_proxy_url_with_invalid_scheme_rejected_at_transport_init() -> None:
+    with pytest.raises(EgressNotAllowed, match="proxy url scheme not allowed"):
+        ProxyTransport(_POLICY, proxy_url="socks5://proxy.corp:1080")

@@ -231,6 +231,10 @@ class ProxyTransport(Transport):
         timeout: float = DEFAULT_EGRESS_TIMEOUT_SECONDS,
     ) -> None:
         parsed = httpx.URL(proxy_url.strip())
+        if parsed.scheme not in ("http", "https"):
+            raise EgressNotAllowed(
+                f"proxy url scheme not allowed: {parsed.scheme!r} (http or https required)"
+            )
         if parsed.userinfo:
             raise EgressNotAllowed("proxy url must not contain userinfo")
         self._policy = policy
