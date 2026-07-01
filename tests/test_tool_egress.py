@@ -13,7 +13,7 @@ from typing import Any
 
 import httpx
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from atlas.config import Settings
 from atlas.tool_egress import (
@@ -444,14 +444,12 @@ def test_proxy_url_with_userinfo_rejected_at_transport_init() -> None:
         ProxyTransport(_POLICY, proxy_url="http://user:pass@proxy.corp:8080")
 
 
-
-
 def test_proxy_credentials_without_url_rejected_at_settings() -> None:
     with pytest.raises(ValidationError, match="require ATLAS_ADAPTER_EGRESS_PROXY_URL"):
         Settings(
             ANTHROPIC_API_KEY=None,
             ATLAS_ADAPTER_EGRESS_PROXY_USERNAME="proxy-user",
-            ATLAS_ADAPTER_EGRESS_PROXY_PASSWORD="proxy-pass",
+            ATLAS_ADAPTER_EGRESS_PROXY_PASSWORD=SecretStr("proxy-pass"),
         )
 
 
@@ -461,7 +459,7 @@ def test_proxy_http_url_with_auth_rejected_at_settings() -> None:
             ANTHROPIC_API_KEY=None,
             ATLAS_ADAPTER_EGRESS_PROXY_URL="http://proxy.corp:8080",
             ATLAS_ADAPTER_EGRESS_PROXY_USERNAME="proxy-user",
-            ATLAS_ADAPTER_EGRESS_PROXY_PASSWORD="proxy-pass",
+            ATLAS_ADAPTER_EGRESS_PROXY_PASSWORD=SecretStr("proxy-pass"),
         )
 
 
@@ -482,6 +480,7 @@ def test_proxy_url_without_host_rejected_at_transport_init() -> None:
 def test_proxy_url_blocked_host_rejected_at_transport_init() -> None:
     with pytest.raises(EgressNotAllowed, match="blocked address range"):
         ProxyTransport(_POLICY, proxy_url="http://127.0.0.1:8080")
+
 
 def test_proxy_url_with_invalid_scheme_rejected_at_transport_init() -> None:
     with pytest.raises(EgressNotAllowed, match="proxy url scheme not allowed"):
