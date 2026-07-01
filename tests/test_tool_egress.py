@@ -337,13 +337,13 @@ def test_proxy_transport_passes_proxy_auth_when_configured(
     monkeypatch.setattr(httpx, "Client", _FakeClient)
     transport = ProxyTransport(
         _POLICY,
-        proxy_url="http://proxy.corp:8080",
+        proxy_url="https://proxy.corp:8443",
         proxy_auth=("proxy-user", "proxy-pass"),
     )
     transport.post_json(_URL, json={}, access_token="tok")
     proxy = captured.get("proxy")
     assert isinstance(proxy, httpx.Proxy)
-    assert str(proxy.url) == "http://proxy.corp:8080"
+    assert str(proxy.url) == "https://proxy.corp:8443"
     assert proxy.auth == ("proxy-user", "proxy-pass")
 
 
@@ -443,6 +443,45 @@ def test_proxy_url_with_userinfo_rejected_at_transport_init() -> None:
     with pytest.raises(EgressNotAllowed, match="userinfo"):
         ProxyTransport(_POLICY, proxy_url="http://user:pass@proxy.corp:8080")
 
+
+
+
+def test_proxy_credentials_without_url_rejected_at_settings() -> None:
+    with pytest.raises(ValidationError, match="require ATLAS_ADAPTER_EGRESS_PROXY_URL"):
+        Settings(
+            ANTHROPIC_API_KEY=None,
+            ATLAS_ADAPTER_EGRESS_PROXY_USERNAME="proxy-user",
+            ATLAS_ADAPTER_EGRESS_PROXY_PASSWORD="proxy-pass",
+        )
+
+
+def test_proxy_http_url_with_auth_rejected_at_settings() -> None:
+    with pytest.raises(ValidationError, match="https://"):
+        Settings(
+            ANTHROPIC_API_KEY=None,
+            ATLAS_ADAPTER_EGRESS_PROXY_URL="http://proxy.corp:8080",
+            ATLAS_ADAPTER_EGRESS_PROXY_USERNAME="proxy-user",
+            ATLAS_ADAPTER_EGRESS_PROXY_PASSWORD="proxy-pass",
+        )
+
+
+def test_proxy_auth_with_http_url_rejected_at_transport_init() -> None:
+    with pytest.raises(EgressNotAllowed, match="https://"):
+        ProxyTransport(
+            _POLICY,
+            proxy_url="http://proxy.corp:8080",
+            proxy_auth=("proxy-user", "proxy-pass"),
+        )
+
+
+def test_proxy_url_without_host_rejected_at_transport_init() -> None:
+    with pytest.raises(EgressNotAllowed, match="host"):
+        ProxyTransport(_POLICY, proxy_url="http://")
+
+
+def test_proxy_url_blocked_host_rejected_at_transport_init() -> None:
+    with pytest.raises(EgressNotAllowed, match="blocked address range"):
+        ProxyTransport(_POLICY, proxy_url="http://127.0.0.1:8080")
 
 def test_proxy_url_with_invalid_scheme_rejected_at_transport_init() -> None:
     with pytest.raises(EgressNotAllowed, match="proxy url scheme not allowed"):

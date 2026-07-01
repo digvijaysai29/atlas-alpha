@@ -235,8 +235,19 @@ class ProxyTransport(Transport):
             raise EgressNotAllowed(
                 f"proxy url scheme not allowed: {parsed.scheme!r} (http or https required)"
             )
+        if not parsed.host:
+            raise EgressNotAllowed("proxy url must include a host")
+        try:
+            assert_proxy_host_not_blocked(parsed.host)
+        except ValueError as exc:
+            raise EgressNotAllowed(str(exc)) from exc
         if parsed.userinfo:
             raise EgressNotAllowed("proxy url must not contain userinfo")
+        if proxy_auth is not None and parsed.scheme != "https":
+            raise EgressNotAllowed(
+                "proxy auth requires an https:// proxy url "
+                "(credentials must not be sent over plaintext proxy transport)"
+            )
         self._policy = policy
         self._timeout = timeout
         proxy_kwargs: dict[str, Any] = {"url": proxy_url.strip()}

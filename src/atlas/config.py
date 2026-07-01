@@ -212,12 +212,18 @@ class Settings(BaseSettings):
         """Proxy URL and auth must be complete when set — no userinfo in the URL string."""
         has_user = _nonempty_str(self.adapter_egress_proxy_username)
         has_pass = _nonempty_secret(self.adapter_egress_proxy_password)
+        proxy_url = self.adapter_egress_proxy_url.strip()
         if has_user != has_pass:
             raise ValueError(
-                "Partial proxy auth: set both ATLAS_ADAPTER_EGRESS_PROXY_USERNAME and "
-                "ATLAS_ADAPTER_EGRESS_PROXY_PASSWORD or leave both blank."
+                "Partial proxy auth: set ATLAS_ADAPTER_EGRESS_PROXY_URL, "
+                "ATLAS_ADAPTER_EGRESS_PROXY_USERNAME, and ATLAS_ADAPTER_EGRESS_PROXY_PASSWORD "
+                "together or leave all blank."
             )
-        proxy_url = self.adapter_egress_proxy_url.strip()
+        if (has_user or has_pass) and not proxy_url:
+            raise ValueError(
+                "Proxy egress credentials require ATLAS_ADAPTER_EGRESS_PROXY_URL; set URL, "
+                "username, and password together or leave all blank."
+            )
         if not proxy_url:
             return self
         parsed = httpx.URL(proxy_url)
@@ -231,6 +237,11 @@ class Settings(BaseSettings):
             raise ValueError(
                 "ATLAS_ADAPTER_EGRESS_PROXY_URL must not contain userinfo; use "
                 "ATLAS_ADAPTER_EGRESS_PROXY_USERNAME and ATLAS_ADAPTER_EGRESS_PROXY_PASSWORD."
+            )
+        if has_user and has_pass and parsed.scheme != "https":
+            raise ValueError(
+                "Authenticated proxy egress requires ATLAS_ADAPTER_EGRESS_PROXY_URL with "
+                "https:// scheme (credentials must not be sent over plaintext proxy transport)."
             )
         from atlas.tool_egress import assert_proxy_host_not_blocked
 

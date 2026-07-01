@@ -62,6 +62,7 @@ full credential set is present. Key groups:
 | KG embeddings (M4.6) | `VOYAGE_API_KEY`, `ATLAS_EMBEDDING_MODEL`/`DIM` | deterministic offline embedder (hybrid vector search still works on Postgres) |
 | Email / Slack | `RESEND_API_KEY`+`ATLAS_EMAIL_FROM` / `SLACK_BOT_TOKEN` | tool fail-closed after approval |
 | Vault / OAuth | `VAULT_ADDR`+auth, `GOOGLE_*`/`SLACK_OAUTH_*`, `ATLAS_OAUTH_STATE_SECRET` | per-user integrations disabled |
+| Adapter engine | `ATLAS_ADAPTER_ENGINE_ENABLED`, `ATLAS_ADAPTER_EGRESS_*` | schema tools off / direct IP-pinned egress | See [Adapter engine / egress proxy](#adapter-engine--egress-proxy-m48a--m48b) |
 
 **Secrets** are `SecretStr`, sourced only from env, never logged. `.env.example` documents names only.
 
@@ -76,10 +77,11 @@ transport selected at startup:
 | **Proxy** | Proxy URL set | `ProxyTransport` — forward proxy tunnel; destination `EgressPolicy` still enforced in-app |
 
 **When to enable proxy:** corporate egress requires a central forward proxy (Squid/Envoy/gateway).
-Set `ATLAS_ADAPTER_EGRESS_PROXY_URL` (e.g. `http://egress.internal:8080`). Optional static proxy
-auth via `ATLAS_ADAPTER_EGRESS_PROXY_USERNAME` + `ATLAS_ADAPTER_EGRESS_PROXY_PASSWORD` — never embed
-credentials in the proxy URL. Per-user OAuth Bearer tokens remain on the **destination** API request
-(app layer); proxy auth is deployment-static only.
+Set `ATLAS_ADAPTER_EGRESS_PROXY_URL` (plaintext `http://` is fine for unauthenticated proxies; use
+`https://` when static proxy auth is configured). Optional credentials via
+`ATLAS_ADAPTER_EGRESS_PROXY_USERNAME` + `ATLAS_ADAPTER_EGRESS_PROXY_PASSWORD` — never embed them in
+the proxy URL. Per-user OAuth Bearer tokens stay on the **destination** API request (app layer);
+proxy auth is deployment-static only.
 
 **Trade-off:** proxy mode skips destination IP pinning (the proxy resolves/reaches the target). The
 app-layer host + route allowlist still applies before any network I/O. `HTTP_PROXY`/`HTTPS_PROXY`
