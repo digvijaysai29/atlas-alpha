@@ -251,5 +251,24 @@ executor refuses to run a gated action without a matching, in-scope `ApprovalDec
   spine runs as dependencies **before** the body (401/429 are normal responses, never mid-stream); a
   mid-stream failure degrades to a generic `error` event (no internal leak). See
   [`M4.7_PLAN.md`](../plans/M4.7_PLAN.md).
-- **Later (M4.8+):** OAuth-connector ingestion (Gmail/Jira/Calendar) over the same `IngestionService`;
-  resource/argument-aware `ToolPermission`; `/approve/stream` + token-level streaming; Merkle anchoring.
+- **M4.8c (done):** **Resource/argument-aware `ToolPermission`** — `BaseTool.resource_permission(args)`
+  appends a segment (channel for `slack_post`, recipient domain for `send_email`/`gmail_send`) to a
+  tool's `required_permission`, computed once in `ToolRegistry.propose()` and stamped onto the
+  immutable `ProposedAction` so the planner and executor's re-check always agree. The RBAC matcher
+  (`permission_satisfied`) is unchanged — a resource-scoped string is just a longer colon-segmented
+  string, matched by the same hierarchical `:*` wildcard rule. See
+  [`M4.8c_PLAN.md`](../plans/M4.8c_PLAN.md).
+- **M4.8d (done):** **`slack_delete_message`** — a second connector added purely via schema
+  (`tool_schemas/`), reusing the Slack `chat:write` scope already granted for `slack_post_as_user`
+  (no new OAuth wiring) and exercising the `DELETE` risk tier through the adapter engine for the first
+  time. **`POST /approve/stream`** mirrors `/chat/stream` for resuming a paused thread — owner
+  verification (`verify_thread_owner`, 403) happens **before** the awaiting-approval check (409) and
+  before any byte streams, closing the reason M4.7 deferred it. An OpenRouter-backed responder
+  (`orchestration/responder_llm.py`, primary model + `.with_fallbacks` chain, mirroring M4.5's
+  extraction pattern) narrates the turn's already-computed, already-RBAC-filtered facts into prose;
+  `graph.stream(stream_mode=["updates","messages"])` surfaces its tokens as a new `token` SSE event.
+  Off by default (deterministic `_summarize()` responder unchanged when disabled), so the eval gate
+  stays hermetic. See [`M4.8d_PLAN.md`](../plans/M4.8d_PLAN.md).
+- **Later (M4.9+):** OAuth-connector ingestion (Gmail/Jira/Calendar) over the same `IngestionService`;
+  migrating the planner's direct `ChatAnthropic` call to the same OpenRouter + fallback pattern;
+  Merkle anchoring.

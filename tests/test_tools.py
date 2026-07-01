@@ -54,3 +54,56 @@ def test_execute_send_email_unconfigured_returns_failure() -> None:
     action = registry.propose("send_email", {"to": "a@b.com", "subject": "x", "body": "y"})
     result = registry.execute(action, Principal(user_id="test", roles=("member",), org_id="org1"))
     assert result.ok is False
+
+
+# --- resource-scoped permission stamping (M4.8c) ----------------------------
+def test_send_email_permission_is_scoped_by_recipient_domain() -> None:
+    registry = default_registry()
+    action = registry.propose(
+        "send_email", {"to": "alice@Company.COM", "subject": "x", "body": "y"}
+    )
+    assert action.required_permission == "tool:send:domain:company.com"
+
+
+def test_gmail_send_permission_is_scoped_by_recipient_domain() -> None:
+    registry = default_registry()
+    action = registry.propose("gmail_send", {"to": "bob@example.org", "subject": "x", "body": "y"})
+    assert action.required_permission == "tool:gmail:send:domain:example.org"
+
+
+def test_slack_post_permission_is_scoped_by_channel() -> None:
+    registry = default_registry()
+    action = registry.propose("slack_post", {"channel": "#General", "text": "hi"})
+    assert action.required_permission == "tool:slack:post:channel:General"
+
+
+def test_slack_post_permission_uses_raw_channel_id_unchanged() -> None:
+    registry = default_registry()
+    action = registry.propose("slack_post", {"channel": "C123ABC", "text": "hi"})
+    assert action.required_permission == "tool:slack:post:channel:C123ABC"
+
+
+def test_search_permission_is_not_resource_scoped() -> None:
+    # search has no required_permission at all; combining with a resource segment is a no-op.
+    registry = default_registry()
+    action = registry.propose("search", {"query": "hello"})
+    assert action.required_permission is None
+
+
+def test_slack_post_as_user_permission_is_not_resource_scoped() -> None:
+    # Deliberately unscoped (M4.8c): it has a schema-driven twin in the adapter engine, and scoping
+    # only the hand-written side would break the M4.8a hand-written/schema equivalence guarantee.
+    registry = default_registry()
+    action = registry.propose("slack_post_as_user", {"channel": "#general", "text": "hi"})
+    assert action.required_permission == "tool:slack:post_as_user"
+
+
+def test_permission_scope_cannot_be_injected_via_args() -> None:
+    # A caller (or a compromised LLM) cannot smuggle a different resource scope by passing extra
+    # fields — only the tool's own ArgsSchema-validated fields feed resource_permission().
+    registry = default_registry()
+    action = registry.propose(
+        "send_email",
+        {"to": "a@b.com", "subject": "x", "body": "y", "required_permission": "tool:admin:*"},
+    )
+    assert action.required_permission == "tool:send:domain:b.com"

@@ -13,8 +13,10 @@ from atlas.actions import ProposedAction
 from atlas.governance.rbac import (
     Principal,
     can,
+    expand_roles,
     get_current_principal,
     get_effective_permissions,
+    permission_satisfied,
 )
 from atlas.orchestration import build_graph
 from atlas.orchestration.graph import Atlas
@@ -25,7 +27,8 @@ from atlas.tools import ToolRegistry
 from tests.helpers import offline_registry
 
 THREAD: RunnableConfig = {"configurable": {"thread_id": "rbac-test"}}
-MEMBER = Principal(user_id="alice", roles=("member",))  # has tool:send + tool:slack:post
+# has tool:send:* + tool:slack:post:* (M4.8c: resource-scoped wildcards) + tool:calendar:write
+MEMBER = Principal(user_id="alice", roles=("member",))
 GUEST = Principal(user_id="bob", roles=("guest",))  # no tool:send / tool:slack:post
 
 
@@ -52,7 +55,30 @@ def test_default_deny_for_anonymous_and_guest() -> None:
 
 
 def test_role_grant_allows() -> None:
-    assert can(MEMBER, "tool:send") is True
+    assert can(MEMBER, "tool:calendar:write") is True
+
+
+def test_wildcard_grant_satisfies_resource_scoped_permission() -> None:
+    """M4.8c: a member's tool:send:* / tool:slack:post:* wildcard covers any resource segment."""
+    assert can(MEMBER, "tool:send:domain:example.com") is True
+    assert can(MEMBER, "tool:slack:post:channel:general") is True
+
+
+def test_wildcard_grant_does_not_satisfy_bare_unscoped_string() -> None:
+    """A granted "tool:send:*" does not cover the bare "tool:send" itself (no partial-prefix
+    collapse — only the explicit ":*" suffix expands, and it always requires at least one more
+    segment after the colon, per permission_satisfied's documented contract)."""
+    assert can(MEMBER, "tool:send") is False
+
+
+def test_narrowed_grant_restricts_to_one_domain() -> None:
+    """M4.8c real-world example: an operator can grant a single recipient domain instead of the
+    default wildcard, e.g. to stop a role from emailing outside the company — a genuine
+    data-exfiltration control, not just a demo of the string format."""
+    restricted = {"member": frozenset({"tool:gmail:send:domain:company.com"})}
+    granted = expand_roles(("member",), restricted)
+    assert permission_satisfied(granted, "tool:gmail:send:domain:company.com") is True
+    assert permission_satisfied(granted, "tool:gmail:send:domain:evil.example") is False
 
 
 def test_admin_wildcard_grants_everything() -> None:
@@ -78,11 +104,12 @@ def test_effective_permissions_none_principal_is_empty() -> None:
 def test_effective_permissions_expands_role_grants() -> None:
     assert get_effective_permissions(MEMBER) == frozenset(
         {
-            "tool:send",
-            "tool:slack:post",
-            "tool:gmail:send",
+            "tool:send:*",
+            "tool:slack:post:*",
+            "tool:gmail:send:*",
             "tool:calendar:write",
             "tool:slack:post_as_user",
+            "tool:slack:delete_message",
             "kg:read:org",
             "kg:read:personal",
         }
@@ -154,3 +181,43 @@ def test_member_reaches_approval_for_slack_post() -> None:
     assert "__interrupt__" in result
     event_types = [e.event_type.value for e in atlas.audit.events()]
     assert "denied" not in event_types
+
+
+def _other_channel_plan(
+    _request: str, registry: ToolRegistry, _context: object
+) -> list[ProposedAction]:
+    return [registry.propose("slack_post", {"channel": "#other", "text": "hi"})]
+
+
+def test_channel_scoped_grant_denies_a_different_channel_before_approval() -> None:
+    """M4.8c end-to-end: a role granted only "tool:slack:post:channel:general" (no wildcard) may
+    post to #general but is denied — before ever reaching human approval — for any other channel."""
+    from atlas.governance.policy import InMemoryPolicyStore
+
+    narrow_policy = InMemoryPolicyStore({"member": frozenset({"tool:slack:post:channel:general"})})
+    atlas = build_graph(
+        plan_fn=_slack_plan,
+        registry=offline_registry(),
+        policy=narrow_policy,
+        checkpointer=InMemorySaver(serde=atlas_serde()),
+    )
+    result = atlas.graph.invoke(
+        initial_state("post to slack", principal=MEMBER),
+        config={"configurable": {"thread_id": "t1"}},
+    )
+    assert "__interrupt__" in result  # #general is granted -> normal approval flow
+
+    atlas_denied = build_graph(
+        plan_fn=_other_channel_plan,
+        registry=offline_registry(),
+        policy=narrow_policy,
+        checkpointer=InMemorySaver(serde=atlas_serde()),
+    )
+    denied_result = atlas_denied.graph.invoke(
+        initial_state("post to slack", principal=MEMBER),
+        config={"configurable": {"thread_id": "t2"}},
+    )
+    assert "__interrupt__" not in denied_result  # #other is not granted -> denied at planning
+    assert denied_result.get("action_results") == []
+    event_types = [e.event_type.value for e in atlas_denied.audit.events()]
+    assert "denied" in event_types

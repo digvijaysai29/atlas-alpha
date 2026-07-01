@@ -47,11 +47,19 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
     "admin": frozenset({"*"}),
     "member": frozenset(
         {
-            "tool:send",
-            "tool:slack:post",
-            "tool:gmail:send",
+            # M4.8c: slack_post / send_email / gmail_send now stamp a resource-scoped permission
+            # (e.g. "tool:slack:post:channel:general", "tool:send:domain:company.com" — see
+            # tools.py:resource_permission). The trailing ":*" preserves today's "any channel / any
+            # recipient" default via the hierarchical wildcard match (permission_satisfied below),
+            # unchanged. A deployment can narrow this (e.g. grant
+            # "tool:gmail:send:domain:company.com" instead of the wildcard) to restrict which
+            # channels/recipients a role may target.
+            "tool:send:*",
+            "tool:slack:post:*",
+            "tool:gmail:send:*",
             "tool:calendar:write",
             "tool:slack:post_as_user",
+            "tool:slack:delete_message",
             "kg:read:org",
             "kg:read:personal",
         }

@@ -1,11 +1,12 @@
 {
   "admin": ["*"],
   "member": [
-    "tool:send",
-    "tool:slack:post",
-    "tool:gmail:send",
+    "tool:send:*",
+    "tool:slack:post:*",
+    "tool:gmail:send:*",
     "tool:calendar:write",
     "tool:slack:post_as_user",
+    "tool:slack:delete_message",
     "kg:read:org",
     "kg:read:personal"
   ],

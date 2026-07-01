@@ -135,6 +135,41 @@ the CLI:
 uv run python scripts/manage_policy.py grant member kg:read:*   # one grant covers org + personal
 ```
 
+### Resource-scoped permissions (M4.8c)
+
+Some tools scope `required_permission` by one of their own arguments, not just the tool name:
+`slack_post` by **channel**, `send_email`/`gmail_send` by **recipient domain**. A tool declares this by
+overriding `BaseTool.resource_permission(args)` (default `None` = no scoping); `ToolRegistry.propose`
+computes the combined string **once**, at proposal time, and stamps it onto the immutable
+`ProposedAction` — the planner and the executor's re-check both read that same stamped value, so they
+can never disagree. Matching is the **same** hierarchical wildcard rule above; nothing in
+`permission_satisfied` changed.
+
+| Tool | Resource segment | Example required permission |
+|---|---|---|
+| `slack_post` | `channel:<name-or-id>` | `tool:slack:post:channel:general` |
+| `send_email` | `domain:<lowercased recipient domain>` | `tool:send:domain:company.com` |
+| `gmail_send` | `domain:<lowercased recipient domain>` | `tool:gmail:send:domain:company.com` |
+
+The default policy grants the **wildcard** form (`tool:slack:post:*`, etc.) — today's "any
+channel/any recipient" behavior, unchanged. An operator can instead grant a **narrower** permission to
+restrict a role, e.g. to stop `member` from emailing outside the company:
+
+```bash
+uv run python scripts/manage_policy.py revoke member tool:gmail:send:*
+uv run python scripts/manage_policy.py grant  member tool:gmail:send:domain:company.com
+```
+
+**Upgrade note:** a Postgres `atlas_role_permissions` table seeded *before* M4.8c still holds the old
+bare grants (`tool:slack:post`, `tool:send`, `tool:gmail:send`) — those no longer satisfy the now
+resource-scoped required permissions (a bare grant has no trailing `:*`). The existing
+`missing_default_grants` startup warning will report this; re-run `manage_policy.py seed` (additive,
+safe to run repeatedly) after upgrading.
+
+**Not yet resource-scoped:** `slack_post_as_user` (it has a schema-driven twin built by the adapter
+engine, and scoping only the hand-written side would break their equivalence guarantee) and all
+schema-driven tools (`tool_schemas/*.json` — `required_permission` there stays a flat string).
+
 ## Rate limiting (M3.6)
 
 The state-changing endpoints — **`/chat`**, **`/approve`**, and **`/kg/ingest`** (M4.4) — are rate
@@ -168,7 +203,7 @@ forgotten:
 | Item | Why deferred | Suggested milestone |
 |---|---|---|
 | **Hierarchical wildcard permissions** (`kg:read:*` ⇒ `kg:read:org`) | usability of the string policy without a new data model | ✅ **done (M3.5)** — see *Wildcard permissions* above |
-| **Resource/argument-aware RBAC** (richer `ToolPermission`, "only send to internal domains") | current string permissions are a deliberate placeholder; needs design | M4 |
+| **Resource/argument-aware RBAC** (richer `ToolPermission`, "only send to internal domains") | current string permissions are a deliberate placeholder; needs design | ✅ **done (M4.8c)** — see *Resource-scoped permissions* below |
 | **Per-principal rate limiting** | Upstash-backed throttle on `/chat` + `/approve` | ✅ **done (M3.6)** — see *Rate limiting* above |
 | **Per-route rate-limit tiers / anti-brute-force IP limiting on 401s** | finer-grained policy beyond a single per-principal budget | M4+ |
 | **Policy versioning / history / admin UI / caching layer** | a runtime-editable store exists (M3.4); these are larger follow-ons | M4+ |

@@ -177,7 +177,10 @@ def make_planner_node(
         authorized: list[ProposedAction] = []
         for action in proposed:
             audit.proposed(action)
-            required = registry.get(action.tool).required_permission
+            # M4.8c: the (optionally resource-scoped) permission was stamped once at proposal time
+            # (ToolRegistry.propose) — read it here rather than re-deriving from the tool, so the
+            # planner and the executor's re-check always agree.
+            required = action.required_permission
             if not policy.can(principal, required):
                 audit.denied(action, principal.user_id, reason=f"missing permission: {required}")
                 continue
@@ -227,8 +230,10 @@ def make_executor_node(
             # every audit event for this action so the generated tool action is reconstructable later.
             meta = AuditToolContext(**tool.audit_metadata(), principal=principal.user_id)
             # RBAC re-check (defense-in-depth): never run a tool the principal isn't permitted to use,
-            # even if it somehow reached the executor.
-            required = tool.required_permission
+            # even if it somehow reached the executor. Reads the same stamped, possibly
+            # resource-scoped permission the planner already checked (M4.8c) — never re-derived from
+            # the tool here, so this can't silently diverge from the planner's decision.
+            required = action.required_permission
             if not policy.can(principal, required):
                 audit.denied(
                     action, principal.user_id, reason=f"missing permission: {required}", extra=meta

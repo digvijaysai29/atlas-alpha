@@ -68,6 +68,16 @@ class ProposedAction(BaseModel):
     args: dict[str, Any] = Field(default_factory=dict, description="Validated tool arguments.")
     risk_tier: RiskTier = Field(description="Declared by the tool — not by the LLM.")
     rationale: str = Field(default="", description="Why the agent proposes this action.")
+    required_permission: str | None = Field(
+        default=None,
+        description=(
+            "RBAC permission for this exact action, stamped once at proposal time (M4.8c). May carry "
+            "a resource-scoped suffix (e.g. 'tool:slack:post:channel:general') derived from the "
+            "tool's declared base permission + BaseTool.resource_permission(args) — never from the "
+            "LLM. Planner and executor both read this field rather than re-deriving it, so the two "
+            "checks can never disagree."
+        ),
+    )
 
     @property
     def needs_approval(self) -> bool:
