@@ -1,19 +1,19 @@
-"""Outbound HTTP transport for schema-driven tools (M4.8a; SSRF-hardened M4.8b).
+"""Outbound HTTP transport for schema-driven tools (M4.8a direct; M4.8b proxy).
 
 SSRF defense in depth (OWASP). The crux is **single-parse / single-authority**: a request is parsed
 **once** into an :class:`httpx.URL`, and that one object is threaded through every stage — scheme/userinfo
-validation, host + route allowlisting, DNS resolution, and the send — so there is never a
+validation, host + route allowlisting, DNS resolution (direct mode), and the send — so there is never a
 parser-differential gap (validate one string, fetch another). On top of a coarse host allowlist we
 enforce a per-tool **(method, host, path) route** allowlist (a valid host cannot become a catch-all API
-tunnel), resolve the host and reject any address in a private/loopback/link-local/shared/reserved
-range (blocking cloud-metadata ``169.254.169.254``, RFC 6598 shared space ``100.64.0.0/10``, and
-internal ranges), then connect **pinned** to that
-validated IP while preserving TLS via the ``Host`` header + ``sni_hostname`` extension. Redirects are
-never followed (a redirect would fetch a URL that was never validated).
+tunnel). **Direct mode** (:class:`HttpxTransport`) resolves the destination host and rejects any address
+in a private/loopback/link-local/shared/reserved range, then connects **pinned** to that validated IP
+while preserving TLS via the ``Host`` header + ``sni_hostname`` extension. **Proxy mode**
+(:class:`ProxyTransport`, M4.8b) validates the destination URL the same way but tunnels via an
+operator-configured forward proxy (destination IP pinning is intentionally skipped). Redirects are never
+followed in either mode.
 
 The transport is injectable so the deterministic eval gate and unit tests stay hermetic — the
-:class:`FakeTransport` never touches the network. Proxy mode is intentionally **not** here yet (a
-misconfigured proxy is itself an egress risk; it gets its own isolated, tested slice).
+:class:`FakeTransport` never touches the network.
 """
 
 from __future__ import annotations
@@ -21,10 +21,13 @@ from __future__ import annotations
 import abc
 import ipaddress
 import socket
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import httpx
 from pydantic import BaseModel, ConfigDict, field_validator
+
+if TYPE_CHECKING:
+    from atlas.config import Settings
 
 # No hidden retries anywhere: a retry after the provider has accepted a side effect can duplicate it
 # within a single guarded execution (the same reasoning the existing senders document).
@@ -96,6 +99,27 @@ def assert_host_allowed(url: str, allowlist: frozenset[str]) -> None:
         raise EgressNotAllowed(f"host not on egress allowlist: {host}")
 
 
+def prepare_validated(policy: EgressPolicy, url: str) -> httpx.URL:
+    """Parse ``url`` once and validate it against ``policy`` (shared by direct and proxy transports)."""
+    parsed = httpx.URL(url)
+    policy.assert_allowed(parsed)
+    return parsed
+
+
+def assert_proxy_host_not_blocked(host: str) -> None:
+    """Reject a literal-IP proxy host that points at metadata/loopback/link-local space."""
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified:
+        raise ValueError(
+            f"ATLAS_ADAPTER_EGRESS_PROXY_URL host {host!r} resolves to a blocked address range."
+        )
+
+
 def _ip_is_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """True for any address an outbound tool must never reach (SSRF: internal/metadata ranges)."""
     # Unwrap IPv4-mapped IPv6 (e.g. ::ffff:10.0.0.1) so an embedded private IP can't evade the checks.
@@ -137,6 +161,17 @@ class Transport(abc.ABC):
         raise NotImplementedError
 
 
+def _decode_json_response(response: httpx.Response) -> dict[str, Any]:
+    """Raise on redirect; return the decoded JSON object or fail closed."""
+    if response.is_redirect:
+        raise EgressNotAllowed(f"redirect not allowed (status {response.status_code})")
+    response.raise_for_status()
+    data = response.json()
+    if not isinstance(data, dict):
+        raise RuntimeError("provider response was not a JSON object")
+    return data
+
+
 class HttpxTransport(Transport):
     """SSRF-hardened sync httpx POST. One parsed URL drives validation, resolution, and the send."""
 
@@ -153,8 +188,7 @@ class HttpxTransport(Transport):
         preserve the original hostname for routing + TLS verification (connect under the same
         interpretation that was validated). Pure except for the single DNS resolution.
         """
-        parsed = httpx.URL(url)  # parse ONCE — the single authority for every stage below
-        self._policy.assert_allowed(parsed)
+        parsed = prepare_validated(self._policy, url)
         ip = resolve_safe_ip(parsed.host, parsed.port)
         pinned = parsed.copy_with(host=ip)
         host_header = parsed.host
@@ -177,13 +211,61 @@ class HttpxTransport(Transport):
                 extensions=extensions,
                 follow_redirects=False,  # never auto-follow to a URL that was never validated
             )
-        if response.is_redirect:
-            raise EgressNotAllowed(f"redirect not allowed (status {response.status_code})")
-        response.raise_for_status()
-        data = response.json()
-        if not isinstance(data, dict):
-            raise RuntimeError("provider response was not a JSON object")
-        return data
+        return _decode_json_response(response)
+
+
+class ProxyTransport(Transport):
+    """Forward-proxy egress for schema tools (M4.8b).
+
+    Validates the destination URL against :class:`EgressPolicy` before any network I/O, then POSTs
+    through an operator-configured proxy. Per-user OAuth Bearer tokens are injected by the app on the
+    destination request; proxy credentials (if any) are deployment-static.
+    """
+
+    def __init__(
+        self,
+        policy: EgressPolicy,
+        *,
+        proxy_url: str,
+        proxy_auth: tuple[str, str] | None = None,
+        timeout: float = DEFAULT_EGRESS_TIMEOUT_SECONDS,
+    ) -> None:
+        parsed = httpx.URL(proxy_url.strip())
+        if parsed.userinfo:
+            raise EgressNotAllowed("proxy url must not contain userinfo")
+        self._policy = policy
+        self._timeout = timeout
+        proxy_kwargs: dict[str, Any] = {"url": proxy_url.strip()}
+        if proxy_auth is not None:
+            proxy_kwargs["auth"] = proxy_auth
+        self._proxy = httpx.Proxy(**proxy_kwargs)
+
+    def post_json(self, url: str, *, json: dict[str, Any], access_token: str) -> dict[str, Any]:
+        validated = prepare_validated(self._policy, url)
+        headers = {"Authorization": f"Bearer {access_token}"}
+        with httpx.Client(
+            timeout=self._timeout,
+            trust_env=False,
+            proxy=self._proxy,
+        ) as client:
+            response = client.post(
+                validated,
+                json=json,
+                headers=headers,
+                follow_redirects=False,
+            )
+        return _decode_json_response(response)
+
+
+def make_adapter_transport(settings: "Settings", policy: EgressPolicy) -> Transport:
+    """Select direct (IP-pinned) or proxy-bound transport from ``Settings``."""
+    if settings.adapter_egress_proxy_enabled:
+        return ProxyTransport(
+            policy,
+            proxy_url=settings.adapter_egress_proxy_url.strip(),
+            proxy_auth=settings.adapter_egress_proxy_auth,
+        )
+    return HttpxTransport(policy)
 
 
 class FakeTransport(Transport):

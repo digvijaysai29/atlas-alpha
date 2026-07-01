@@ -221,7 +221,7 @@ def _apply_adapter_engine(
         load_schema_dir,
         packaged_schema_dir,
     )
-    from atlas.tool_egress import HttpxTransport
+    from atlas.tool_egress import make_adapter_transport
 
     if credential_resolver is None:
         logger.warning(
@@ -235,7 +235,8 @@ def _apply_adapter_engine(
     allowlist = settings.adapter_egress_allowlist_hosts
     schemas = load_schema_dir(schema_dir)
     # SSRF-hardened transport: host allowlist + exact per-tool (method, host, path) routes.
-    transport = HttpxTransport(build_egress_policy(schemas, allowlist))
+    policy = build_egress_policy(schemas, allowlist)
+    transport = make_adapter_transport(settings, policy)
     engine = AdapterEngine(
         credential_resolver=credential_resolver,
         transport=transport,

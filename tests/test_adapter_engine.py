@@ -34,7 +34,7 @@ from atlas.governance.credentials import (
 )
 from atlas.governance.rbac import Principal
 from atlas.integrations.oauth import SLACK_USER_CHAT_WRITE, build_credential_resolver
-from atlas.tool_egress import EgressNotAllowed, FakeTransport, Transport
+from atlas.tool_egress import EgressNotAllowed, FakeTransport, ProxyTransport, Transport
 from atlas.tools import BaseTool, SlackPostAsUserTool, ToolRegistry
 
 _ALLOWLIST = frozenset({"slack.com"})
@@ -269,6 +269,18 @@ def test_apply_adapter_engine_replaces_handwritten_tool() -> None:
     assert not isinstance(tool, SlackPostAsUserTool)
     assert type(tool).__name__ == "_SchemaTool"
     assert isinstance(tool.ArgsSchema, type) and issubclass(tool.ArgsSchema, BaseModel)
+
+
+def test_apply_adapter_engine_uses_proxy_transport_when_configured() -> None:
+    from atlas.orchestration.graph import _apply_adapter_engine
+
+    registry = ToolRegistry()
+    settings = Settings(ATLAS_ADAPTER_EGRESS_PROXY_URL="http://egress.internal:8080")
+    _apply_adapter_engine(registry, settings, None)
+    tool = registry.get("slack_post_as_user")
+    assert type(tool).__name__ == "_SchemaTool"
+    transport = getattr(tool, "_transport")
+    assert isinstance(transport, ProxyTransport)
 
 
 def test_load_schema_dir_raises_when_directory_missing(tmp_path: Path) -> None:

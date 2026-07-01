@@ -13,13 +13,17 @@ from typing import Any
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
+from atlas.config import Settings
 from atlas.tool_egress import (
     EgressNotAllowed,
     EgressPolicy,
     EgressRoute,
     HttpxTransport,
+    ProxyTransport,
     assert_host_allowed,
+    make_adapter_transport,
     resolve_safe_ip,
 )
 
@@ -239,3 +243,194 @@ def test_client_disables_trust_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(socket, "getaddrinfo", _getaddrinfo_returning("93.184.216.34"))
     HttpxTransport(_POLICY).post_json(_URL, json={}, access_token="tok")
     assert captured.get("trust_env") is False
+
+
+# --- proxy mode (M4.8b) ----------------------------------------------------
+
+
+def test_make_adapter_transport_blank_proxy_returns_httpx_transport() -> None:
+    settings = Settings(ANTHROPIC_API_KEY=None)
+    transport = make_adapter_transport(settings, _POLICY)
+    assert isinstance(transport, HttpxTransport)
+    assert not isinstance(transport, ProxyTransport)
+
+
+def test_make_adapter_transport_proxy_url_returns_proxy_transport() -> None:
+    settings = Settings(
+        ANTHROPIC_API_KEY=None,
+        ATLAS_ADAPTER_EGRESS_PROXY_URL="http://proxy.corp:8080",
+    )
+    transport = make_adapter_transport(settings, _POLICY)
+    assert isinstance(transport, ProxyTransport)
+
+
+def test_proxy_transport_passes_proxy_kwarg_and_disables_trust_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class _FakeClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+        def __enter__(self) -> _FakeClient:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            pass
+
+        def post(self, *args: Any, **kwargs: Any) -> Any:
+            captured["post_headers"] = kwargs.get("headers")
+            captured["follow_redirects"] = kwargs.get("follow_redirects")
+
+            class _Resp:
+                is_redirect = False
+
+                def raise_for_status(self) -> None:
+                    pass
+
+                def json(self) -> dict[str, Any]:
+                    return {"ok": True}
+
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    monkeypatch.setenv("HTTP_PROXY", "http://evil:8080")
+    transport = ProxyTransport(_POLICY, proxy_url="http://proxy.corp:8080")
+    transport.post_json(_URL, json={"text": "hi"}, access_token="tok")
+    proxy = captured.get("proxy")
+    assert isinstance(proxy, httpx.Proxy)
+    assert str(proxy.url) == "http://proxy.corp:8080"
+    assert proxy.auth is None
+    assert captured.get("trust_env") is False
+    assert captured.get("post_headers") == {"Authorization": "Bearer tok"}
+    assert captured.get("follow_redirects") is False
+
+
+def test_proxy_transport_passes_proxy_auth_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class _FakeClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+        def __enter__(self) -> _FakeClient:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            pass
+
+        def post(self, *args: Any, **kwargs: Any) -> Any:
+            class _Resp:
+                is_redirect = False
+
+                def raise_for_status(self) -> None:
+                    pass
+
+                def json(self) -> dict[str, Any]:
+                    return {"ok": True}
+
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    transport = ProxyTransport(
+        _POLICY,
+        proxy_url="http://proxy.corp:8080",
+        proxy_auth=("proxy-user", "proxy-pass"),
+    )
+    transport.post_json(_URL, json={}, access_token="tok")
+    proxy = captured.get("proxy")
+    assert isinstance(proxy, httpx.Proxy)
+    assert str(proxy.url) == "http://proxy.corp:8080"
+    assert proxy.auth == ("proxy-user", "proxy-pass")
+
+
+def test_proxy_transport_rejects_off_allowlist_before_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called = False
+
+    class _FakeClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            nonlocal called
+            called = True
+
+        def __enter__(self) -> _FakeClient:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            pass
+
+        def post(self, *args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("should not post")
+
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    transport = ProxyTransport(_POLICY, proxy_url="http://proxy.corp:8080")
+    with pytest.raises(EgressNotAllowed):
+        transport.post_json(f"https://evil.example.com{_PATH}", json={}, access_token="tok")
+    assert not called
+
+
+def test_proxy_transport_rejects_wrong_route_before_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called = False
+
+    class _FakeClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            nonlocal called
+            called = True
+
+        def __enter__(self) -> _FakeClient:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            pass
+
+        def post(self, *args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("should not post")
+
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    transport = ProxyTransport(_POLICY, proxy_url="http://proxy.corp:8080")
+    with pytest.raises(EgressNotAllowed):
+        transport.post_json(f"https://{_HOST}/api/admin.delete", json={}, access_token="tok")
+    assert not called
+
+
+def test_proxy_transport_redirect_not_followed(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Resp:
+        is_redirect = True
+        status_code = 302
+
+    class _FakeClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def __enter__(self) -> _FakeClient:
+            return self
+
+        def __exit__(self, *args: Any) -> None:
+            pass
+
+        def post(self, *args: Any, **kwargs: Any) -> _Resp:
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "Client", _FakeClient)
+    transport = ProxyTransport(_POLICY, proxy_url="http://proxy.corp:8080")
+    with pytest.raises(EgressNotAllowed):
+        transport.post_json(_URL, json={}, access_token="tok")
+
+
+def test_proxy_url_with_userinfo_rejected_at_settings() -> None:
+    with pytest.raises(ValidationError, match="userinfo"):
+        Settings(
+            ANTHROPIC_API_KEY=None,
+            ATLAS_ADAPTER_EGRESS_PROXY_URL="http://user:pass@proxy.corp:8080",
+        )
+
+
+def test_proxy_url_with_userinfo_rejected_at_transport_init() -> None:
+    with pytest.raises(EgressNotAllowed, match="userinfo"):
+        ProxyTransport(_POLICY, proxy_url="http://user:pass@proxy.corp:8080")

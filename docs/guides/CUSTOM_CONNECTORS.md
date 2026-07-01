@@ -98,5 +98,6 @@ Every schema-built tool runs through the **unchanged** execution gate:
 - The schema directory is a trusted, in-repo build artifact — it is **never** loaded from user input,
   the network, or the model.
 - New OAuth providers (beyond Google/Slack) still need a one-time client/Vault wiring in code.
+- Optional forward-proxy egress (`ATLAS_ADAPTER_EGRESS_PROXY_URL`) for enterprise deployments; direct IP-pinned mode remains the default.
 
 See [`docs/plans/M4.8a_PLAN.md`](../plans/M4.8a_PLAN.md) for the design and the upcoming phases.
