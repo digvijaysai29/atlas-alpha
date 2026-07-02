@@ -95,7 +95,8 @@ async def run_graph_stream(
         iterator = await anyio.to_thread.run_sync(_start)
 
         def _next() -> Any:
-            assert iterator is not None
+            if iterator is None:  # unreachable: _start assigned it; explicit so -O can't strip it
+                raise RuntimeError("graph stream iterator not initialized")
             try:
                 return next(iterator)
             except StopIteration:
