@@ -238,6 +238,22 @@ def make_executor_node(
             # resource-scoped permission the planner already checked (M4.8c) — never re-derived from
             # the tool here, so this can't silently diverge from the planner's decision.
             required = action.required_permission
+            if required is None:
+                # Pre-M4.8c checkpoint: the action predates permission stamping, so None means
+                # "unknown", not "nothing required" (policy.can would treat it as the latter and
+                # always allow). Re-derive from the tool via the same combination propose() uses,
+                # so a policy tightened while the thread was paused at approval still applies on
+                # resume. Any derivation failure denies — fail-closed.
+                try:
+                    required = tool.permission_for(tool.ArgsSchema.model_validate(action.args))
+                except Exception:  # noqa: BLE001 - security gate: any failure must deny, not crash
+                    audit.denied(
+                        action,
+                        principal.user_id,
+                        reason="could not derive required permission",
+                        extra=meta,
+                    )
+                    continue
             if not policy.can(principal, required):
                 audit.denied(
                     action, principal.user_id, reason=f"missing permission: {required}", extra=meta

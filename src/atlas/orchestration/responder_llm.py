@@ -28,6 +28,7 @@ Security posture (mirrors ``extraction.py``):
 from __future__ import annotations
 
 import abc
+import threading
 from typing import Any
 
 from pydantic import SecretStr
@@ -80,6 +81,9 @@ class ResponderLLM(ResponderNarrator):
         self._model = model
         self._fallback_models = fallback_models
         self._runnable: Any | None = None
+        # One narrator instance is shared across concurrent request threads (the graph is built
+        # once per app); the lock makes the lazy build below happen exactly once.
+        self._build_lock = threading.Lock()
 
     def _chat_model(self, model: str) -> Any:
         """Build one streaming-enabled chat model for ``model`` (lazy SDK import).
@@ -101,7 +105,9 @@ class ResponderLLM(ResponderNarrator):
 
     def respond(self, request: str, facts: str) -> str:
         if self._runnable is None:
-            self._runnable = self._build_runnable()
+            with self._build_lock:  # double-checked: build once even under concurrent first calls
+                if self._runnable is None:
+                    self._runnable = self._build_runnable()
         messages = [
             ("system", _SYSTEM_PROMPT),
             ("human", f"<request>\n{request}\n</request>\n<facts>\n{facts}\n</facts>"),

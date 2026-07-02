@@ -161,6 +161,59 @@ def test_principal_survives_checkpoint_resume() -> None:
     assert final["principal"] == MEMBER
 
 
+def _legacy_executor_state(registry: ToolRegistry) -> tuple[ProposedAction, dict]:
+    """An approved send_email action whose ``required_permission`` deserialized to ``None`` —
+    exactly what a checkpoint written before M4.8c looks like after resume."""
+    stamped = registry.propose("send_email", {"to": "a@b.com", "subject": "hi", "body": "x"})
+    legacy = stamped.model_copy(update={"required_permission": None})
+    state = {
+        "principal": MEMBER,
+        "proposed_actions": [legacy],
+        "approved_action_ids": [legacy.action_id],
+    }
+    return legacy, state
+
+
+def test_executor_rederives_permission_for_pre_m48c_actions() -> None:
+    """A policy tightened while a thread was paused at approval must still apply on resume: the
+    executor may not treat a legacy action's ``required_permission=None`` as "nothing required"."""
+    from typing import cast
+
+    from atlas.governance import InMemoryAuditLog, InMemoryPolicyStore
+    from atlas.orchestration.nodes import make_executor_node
+    from atlas.orchestration.state import AgentState
+
+    registry = offline_registry()
+    _, state = _legacy_executor_state(registry)
+    audit = InMemoryAuditLog()
+    # Tightened while paused: members may now only email company.com — b.com must be denied.
+    tightened = InMemoryPolicyStore({"member": frozenset({"tool:send:domain:company.com"})})
+    node = make_executor_node(registry, audit, tightened)
+
+    result = node(cast(AgentState, state))
+
+    assert result["action_results"] == []
+    assert audit.events()[-1].event_type.value == "denied"
+
+
+def test_executor_rederived_permission_still_allows_authorized_legacy_action() -> None:
+    """The fallback must not over-deny: under the default policy the same legacy action runs."""
+    from typing import cast
+
+    from atlas.governance import InMemoryAuditLog, InMemoryPolicyStore
+    from atlas.orchestration.nodes import make_executor_node
+    from atlas.orchestration.state import AgentState
+
+    registry = offline_registry()
+    _, state = _legacy_executor_state(registry)
+    node = make_executor_node(registry, InMemoryAuditLog(), InMemoryPolicyStore())
+
+    result = node(cast(AgentState, state))
+
+    assert len(result["action_results"]) == 1
+    assert result["action_results"][0].ok is True
+
+
 def _slack_plan(_request: str, registry: ToolRegistry, _context: object) -> list[ProposedAction]:
     return [registry.propose("slack_post", {"channel": "#general", "text": "hi"})]
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import abc
 import logging
+import re
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
@@ -86,6 +87,16 @@ class BaseTool(abc.ABC):
         """
         return None
 
+    def permission_for(self, args: BaseModel) -> str | None:
+        """The full RBAC permission for validated ``args``: base + optional resource segment.
+
+        The single place base and resource permissions are combined. :meth:`ToolRegistry.propose`
+        stamps this onto every new action; the executor re-derives via this same method for legacy
+        (pre-M4.8c) checkpointed actions whose ``required_permission`` deserialized to ``None`` —
+        so the two paths can never disagree.
+        """
+        return _combine_permission(self.required_permission, self.resource_permission(args))
+
     def audit_metadata(self) -> dict[str, Any]:
         """Non-secret context merged into this tool's audit events (default: none).
 
@@ -130,9 +141,7 @@ class ToolRegistry:
             args=validated.model_dump(),
             risk_tier=tool.risk_tier,
             rationale=rationale,
-            required_permission=_combine_permission(
-                tool.required_permission, tool.resource_permission(validated)
-            ),
+            required_permission=tool.permission_for(validated),
         )
 
     def execute(self, action: ProposedAction, principal: Principal) -> ActionResult:
@@ -171,13 +180,30 @@ def _combine_permission(base: str | None, resource: str | None) -> str | None:
     return f"{base}:{resource}"
 
 
+# Minimal well-formedness for a recipient: non-empty local part, "@", non-empty domain. Malformed
+# addresses are rejected at the schema boundary so they can never reach resource_permission().
+_EMAIL_RECIPIENT_RE = re.compile(r"[^@\s]+@[^@\s]+")
+
+
+def _validated_recipient(value: str) -> str:
+    """Shared ``to``-field validator for email tools — rejects addresses with a missing local part
+    or domain (e.g. ``"ab@"``), which would otherwise produce an empty ``domain:`` resource segment
+    that a ``domain:*`` wildcard grant still matches."""
+    if not _EMAIL_RECIPIENT_RE.fullmatch(value):
+        raise ValueError("recipient must be a plain email address (local@domain)")
+    return value
+
+
 def _recipient_domain(recipient: str) -> str:
     """Lowercased domain portion of an email address (or the whole value, lowercased, if malformed).
 
-    A malformed address (no ``@``) falls back to the full lowercased string, which will simply not
-    match any admin-configured ``domain:...`` grant — fail-closed, not fail-open.
+    Args reaching this are already validated by :func:`_validated_recipient`, so the fallbacks are
+    defense-in-depth: a value with no ``@`` — or an empty domain like ``"ab@"`` — maps to the full
+    lowercased string, never to an empty segment (which a ``domain:*`` wildcard grant would match).
+    Fail-closed, not fail-open.
     """
-    return recipient.rpartition("@")[2].lower()
+    domain = recipient.rpartition("@")[2].lower()
+    return domain if domain else recipient.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +238,11 @@ class _SendEmailArgs(BaseModel):
     to: str = Field(min_length=3, description="Recipient address.")
     subject: str = Field(default="", description="Email subject.")
     body: str = Field(default="", description="Email body.")
+
+    @field_validator("to")
+    @classmethod
+    def require_well_formed_address(cls, value: str) -> str:
+        return _validated_recipient(value)
 
 
 class SendEmailTool(BaseTool):
@@ -281,8 +312,13 @@ class SlackPostTool(BaseTool):
     def resource_permission(self, args: BaseModel) -> str | None:
         if not isinstance(args, _SlackPostArgs):
             raise TypeError(f"expected _SlackPostArgs, got {type(args).__name__}")
-        channel = args.channel[1:] if args.channel.startswith("#") else args.channel
-        return f"channel:{channel}"
+        # A "#name" form is unambiguously a channel *name*, and Slack forces names to lowercase —
+        # normalize so "#General" matches a "channel:general" grant (mirrors the email tools'
+        # lowercased domain segment). Bare values may be channel IDs (case-sensitive, e.g.
+        # "C123ABC") and are kept verbatim.
+        if args.channel.startswith("#"):
+            return f"channel:{args.channel[1:].lower()}"
+        return f"channel:{args.channel}"
 
     def run(self, args: BaseModel, *, principal: Principal) -> Any:
         del principal
@@ -298,6 +334,11 @@ class _GmailSendArgs(BaseModel):
     to: str = Field(min_length=3, description="Recipient address.")
     subject: str = Field(default="", description="Email subject.")
     body: str = Field(default="", description="Email body.")
+
+    @field_validator("to")
+    @classmethod
+    def require_well_formed_address(cls, value: str) -> str:
+        return _validated_recipient(value)
 
 
 class GmailSendTool(BaseTool):

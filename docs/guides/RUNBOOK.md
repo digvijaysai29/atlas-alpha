@@ -133,6 +133,7 @@ The **audit log** is the system of record: append-only, hash-chained; verify int
 | All roles denied / empty KG-policy | Fresh Postgres `atlas_role_permissions` is **deny-all** (no auto-seed) | `uv run python scripts/manage_policy.py seed` |
 | `slack_post`/`send_email`/`gmail_send` start being denied after upgrading to M4.8c | Postgres was seeded **before** M4.8c with the old bare grants (`tool:slack:post`, etc.); those don't satisfy the now resource-scoped required permissions | `uv run python scripts/manage_policy.py seed` (additive/idempotent — safe to re-run) |
 | `send_email`/`slack_post` fail after approval | Creds set but `DATABASE_URL` unset (no durable audit) | configure Postgres; both are required |
+| Thread resumed after a policy change executes/denies unexpectedly | Grants were edited while threads sat paused at approval; the executor re-checks the **current** policy at resume time (pre-M4.8c checkpoints re-derive the permission from the tool, fail-closed) | intended behavior — drain or complete in-flight approval threads before tightening grants if you need the old policy to apply |
 | `POST /kg/ingest` → 403 on `scope=org` | Principal lacks `kg:write:org` (admin-only by default) | grant via policy store, or use `scope=personal` |
 | Anyone can spoof identity | Dev header shim exposed without a trusted proxy | configure OIDC (`ATLAS_OIDC_*`) for any real deployment |
 | Rate limits not enforced | Upstash creds unset ⇒ fail-open by design | set `UPSTASH_REDIS_REST_URL`/`TOKEN` |

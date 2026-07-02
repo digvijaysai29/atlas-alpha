@@ -72,9 +72,12 @@ def test_gmail_send_permission_is_scoped_by_recipient_domain() -> None:
 
 
 def test_slack_post_permission_is_scoped_by_channel() -> None:
+    # "#name" is unambiguously a channel *name* and Slack names are lowercase-only, so the segment
+    # is normalized — "#General" matches a "channel:general" grant (parity with lowercased email
+    # domains). Channel IDs stay verbatim (see the raw-ID test below).
     registry = default_registry()
     action = registry.propose("slack_post", {"channel": "#General", "text": "hi"})
-    assert action.required_permission == "tool:slack:post:channel:General"
+    assert action.required_permission == "tool:slack:post:channel:general"
 
 
 def test_slack_post_permission_uses_raw_channel_id_unchanged() -> None:
@@ -107,3 +110,13 @@ def test_permission_scope_cannot_be_injected_via_args() -> None:
         {"to": "a@b.com", "subject": "x", "body": "y", "required_permission": "tool:admin:*"},
     )
     assert action.required_permission == "tool:send:domain:b.com"
+
+
+@pytest.mark.parametrize("tool_name", ["send_email", "gmail_send"])
+@pytest.mark.parametrize("bad_to", ["ab@", "@b.com", "nodomain", "a b@c.com", "a@b @c"])
+def test_malformed_recipient_rejected_at_schema_boundary(tool_name: str, bad_to: str) -> None:
+    # "ab@" would otherwise scope to an empty "domain:" segment, which a "domain:*" wildcard grant
+    # still matches — malformed addresses must never reach resource_permission().
+    registry = default_registry()
+    with pytest.raises(ValueError, match="recipient"):
+        registry.propose(tool_name, {"to": bad_to, "subject": "x", "body": "y"})

@@ -322,6 +322,24 @@ def test_approve_stream_409_for_owner_on_non_awaiting_thread() -> None:
     assert resp.status_code == 409
 
 
+def test_approve_stream_missing_bearer_token_is_401_before_any_event() -> None:
+    # Same security spine as /chat/stream: identity is enforced before any event streams.
+    client, _ = _build(_send_plan, authenticator=_unverified_authenticator())
+    resp = client.post("/approve/stream", json={"thread_id": "thr_x", "approve": True})
+    assert resp.status_code == 401
+    assert resp.headers["content-type"].startswith("application/json")
+    assert resp.json()["ok"] is False
+
+
+def test_approve_stream_rate_limited_is_429_before_any_event() -> None:
+    # 429 must fire before the thread is even looked up (a bogus thread id 429s, not 404s).
+    client, _ = _build(_send_plan, rate_limiter=_DenyLimiter())
+    resp = _stream_approve(client, "thr_x", _headers("alice"), approve=True)
+    assert resp.status_code == 429
+    assert resp.headers["content-type"].startswith("application/json")
+    assert resp.headers.get("Retry-After") is not None
+
+
 def test_approve_stream_openapi_documents_text_event_stream() -> None:
     client, _ = _build(_search_plan)
     content = client.get("/openapi.json").json()["paths"]["/approve/stream"]["post"]["responses"][

@@ -130,6 +130,7 @@ def test_slack_delete_message_proposal_and_execution() -> None:
     registry.register(tool)
     action = registry.propose("slack_delete_message", {"channel": "C1", "ts": "123.45"})
     assert action.risk_tier is RiskTier.DELETE
+    assert action.required_permission == "tool:slack:delete_message"
     result = registry.execute(action, _PRINCIPAL)
     assert result.ok is True
     assert result.output == {"channel": "C1", "ts": "123.45", "provider": "slack"}
