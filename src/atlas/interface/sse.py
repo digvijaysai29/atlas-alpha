@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from collections.abc import Sequence
 from typing import Any, Final
 
@@ -61,6 +62,7 @@ async def run_graph_stream(
     send_stream: MemoryObjectSendStream[Any],
     *,
     stream_modes: Sequence[str] = ("updates",),
+    resume_lock: threading.Lock | None = None,
 ) -> None:
     """Run ``graph.stream(...)`` to completion, pushing chunks to *send_stream*.
 
@@ -68,11 +70,21 @@ async def run_graph_stream(
     consumer is gone (``anyio.BrokenResourceError`` on send), the producer continues draining the
     iterator silently so the graph reaches a terminal checkpoint. ``iterator.close()`` runs only in
     ``finally`` after the iterator is exhausted.
+
+    When ``resume_lock`` is supplied (``/approve/stream``), it stays held for the full stream so a
+    concurrent resume cannot pass the awaiting-approval gate until this run finishes.
     """
     modes: str | list[str] = stream_modes[0] if len(stream_modes) == 1 else list(stream_modes)
-    iterator: Any = await anyio.to_thread.run_sync(
-        lambda: iter(graph.stream(state, config, stream_mode=modes))
-    )
+
+    def _start() -> Any:
+        try:
+            return iter(graph.stream(state, config, stream_mode=modes))
+        except Exception:
+            if resume_lock is not None and resume_lock.locked():
+                resume_lock.release()
+            raise
+
+    iterator: Any = await anyio.to_thread.run_sync(_start)
 
     def _next() -> Any:
         try:
@@ -93,6 +105,8 @@ async def run_graph_stream(
                     if chunk is _DONE:
                         return
     finally:
+        if resume_lock is not None and resume_lock.locked():
+            resume_lock.release()
         await send_stream.aclose()
         with anyio.CancelScope(shield=True):
             try:

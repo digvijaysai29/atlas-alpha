@@ -59,7 +59,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             "tool:gmail:send:*",
             "tool:calendar:write",
             "tool:slack:post_as_user",
-            "tool:slack:delete_message",
+            "tool:slack:delete_message:*",
             "kg:read:org",
             "kg:read:personal",
         }

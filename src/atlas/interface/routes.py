@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from typing import Annotated, Any, Final
@@ -20,8 +21,8 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command, StateSnapshot
 from sse_starlette import EventSourceResponse, ServerSentEvent
 
-from atlas.governance.rbac import Principal
 from atlas.interface.rate_limit import RateLimited
+from atlas.interface.resume_lock import gate_resume, is_awaiting_approval
 from atlas.interface.schemas import AgentResponse, ApproveRequest, ChatRequest
 from atlas.interface.security import RequestPrincipal, thread_owner, verify_thread_owner
 from atlas.interface.sse import (
@@ -115,32 +116,11 @@ def _response_from_snapshot(thread_id: str, snapshot: StateSnapshot) -> AgentRes
 
 
 def _is_awaiting_approval(snapshot: StateSnapshot) -> bool:
-    return "approval" in (snapshot.next or ())
+    return is_awaiting_approval(snapshot)
 
 
 def _is_in_progress(snapshot: StateSnapshot) -> bool:
     return bool(snapshot.next) and not _is_awaiting_approval(snapshot)
-
-
-def _decision_payload(
-    body: ApproveRequest, snapshot: StateSnapshot, caller: Principal
-) -> list[dict[str, Any]]:
-    """Translate the request into explicit per-action decisions with ``decided_by`` set to the real
-    approver (so the audit trail names them). Foreign ids are dropped downstream by _parse_decisions.
-    """
-    by = caller.user_id
-    if body.approve is not None:
-        gated = [a for a in (snapshot.values.get("proposed_actions") or []) if a.needs_approval]
-        return [
-            {"action_id": a.action_id, "approved": body.approve, "decided_by": by} for a in gated
-        ]
-    decisions = [
-        {"action_id": aid, "approved": True, "decided_by": by} for aid in body.approved_ids
-    ]
-    decisions += [
-        {"action_id": aid, "approved": False, "decided_by": by} for aid in body.rejected_ids
-    ]
-    return decisions
 
 
 @router.get("/healthz")
@@ -177,7 +157,12 @@ def _chunk_text(message_chunk: Any) -> str:
 
 
 async def _stream_lifecycle(
-    atlas: Atlas, resumable: Any, thread_id: str, config: RunnableConfig
+    atlas: Atlas,
+    resumable: Any,
+    thread_id: str,
+    config: RunnableConfig,
+    *,
+    resume_lock: threading.Lock | None = None,
 ) -> AsyncIterator[ServerSentEvent]:
     """Stream one graph run's lifecycle as SSE: ``open → node*/token* → (awaiting_approval |
     completed) → done``. Shared by :func:`chat_stream` (a fresh initial state) and
@@ -198,7 +183,12 @@ async def _stream_lifecycle(
     send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=16)
     producer_task = asyncio.create_task(
         run_graph_stream(
-            atlas.graph, resumable, config, send_stream, stream_modes=("updates", "messages")
+            atlas.graph,
+            resumable,
+            config,
+            send_stream,
+            stream_modes=("updates", "messages"),
+            resume_lock=resume_lock,
         )
     )
     try:
@@ -287,17 +277,14 @@ async def chat_stream(
 
 @router.post("/approve", response_model=AgentResponse, dependencies=[RateLimited])
 def approve(body: ApproveRequest, principal: RequestPrincipal, atlas: AtlasDep) -> AgentResponse:
-    snapshot = atlas.graph.get_state(_config(body.thread_id))
-    if not snapshot.values:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Thread not found.")
-    # Authorize BEFORE any state-dependent check so a non-owner can't distinguish thread state
-    # (awaiting vs not) by 409-vs-403 — resume-time binding (403 on mismatch).
-    verify_thread_owner(thread_owner(snapshot), principal)
-    if not _is_awaiting_approval(snapshot):
-        raise HTTPException(status.HTTP_409_CONFLICT, "Thread is not awaiting approval.")
-    decisions = _decision_payload(body, snapshot, principal)
-    result = atlas.graph.invoke(Command(resume=decisions), _config(body.thread_id))
-    return _response_from_invoke(body.thread_id, result)
+    config = _config(body.thread_id)
+    decisions, lock = gate_resume(atlas, config, body.thread_id, principal, body)
+    try:
+        result = atlas.graph.invoke(Command(resume=decisions), config)
+        return _response_from_invoke(body.thread_id, result)
+    finally:
+        if lock.locked():
+            lock.release()
 
 
 @router.post(
@@ -339,15 +326,13 @@ async def approve_stream(
     loop via a worker thread since this route is ``async``.
     """
     config = _config(body.thread_id)
-    snapshot = await anyio.to_thread.run_sync(atlas.graph.get_state, config)
-    if not snapshot.values:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Thread not found.")
-    verify_thread_owner(thread_owner(snapshot), principal)
-    if not _is_awaiting_approval(snapshot):
-        raise HTTPException(status.HTTP_409_CONFLICT, "Thread is not awaiting approval.")
-    decisions = _decision_payload(body, snapshot, principal)
+    decisions, lock = await anyio.to_thread.run_sync(
+        gate_resume, atlas, config, body.thread_id, principal, body
+    )
     return EventSourceResponse(
-        _stream_lifecycle(atlas, Command(resume=decisions), body.thread_id, config),
+        _stream_lifecycle(
+            atlas, Command(resume=decisions), body.thread_id, config, resume_lock=lock
+        ),
         headers={"X-Accel-Buffering": "no"},
         send_timeout=SSE_SEND_TIMEOUT_SECONDS,
     )

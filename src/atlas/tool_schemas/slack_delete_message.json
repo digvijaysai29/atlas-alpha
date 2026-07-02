@@ -4,6 +4,7 @@
   "schema_version": "1",
   "risk_tier": "delete",
   "required_permission": "tool:slack:delete_message",
+  "resource_permission_arg": "channel",
   "provider": "slack",
   "required_scopes": ["chat:write"],
   "endpoint": "https://slack.com/api/chat.delete",

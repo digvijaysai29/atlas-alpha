@@ -71,6 +71,13 @@ def test_gmail_send_permission_is_scoped_by_recipient_domain() -> None:
     assert action.required_permission == "tool:gmail:send:domain:example.org"
 
 
+def test_slack_channel_resource_segment_normalization() -> None:
+    from atlas.tools import slack_channel_resource_segment
+
+    assert slack_channel_resource_segment("#General") == "channel:general"
+    assert slack_channel_resource_segment("C123ABC") == "channel:C123ABC"
+
+
 def test_slack_post_permission_is_scoped_by_channel() -> None:
     # "#name" is unambiguously a channel *name* and Slack names are lowercase-only, so the segment
     # is normalized — "#General" matches a "channel:general" grant (parity with lowercased email

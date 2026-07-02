@@ -166,6 +166,18 @@ class ToolRegistry:
             )
 
 
+def slack_channel_resource_segment(channel: str) -> str:
+    """Resource segment for Slack channel-scoped RBAC (M4.8c).
+
+    A ``#name`` form is unambiguously a channel *name*, and Slack forces names to lowercase —
+    normalize so ``#General`` matches a ``channel:general`` grant. Bare values may be channel IDs
+    (case-sensitive, e.g. ``C123ABC``) and are kept verbatim.
+    """
+    if channel.startswith("#"):
+        return f"channel:{channel[1:].lower()}"
+    return f"channel:{channel}"
+
+
 def _combine_permission(base: str | None, resource: str | None) -> str | None:
     """Append an optional resource segment to a tool's base permission (M4.8c).
 
@@ -312,13 +324,7 @@ class SlackPostTool(BaseTool):
     def resource_permission(self, args: BaseModel) -> str | None:
         if not isinstance(args, _SlackPostArgs):
             raise TypeError(f"expected _SlackPostArgs, got {type(args).__name__}")
-        # A "#name" form is unambiguously a channel *name*, and Slack forces names to lowercase —
-        # normalize so "#General" matches a "channel:general" grant (mirrors the email tools'
-        # lowercased domain segment). Bare values may be channel IDs (case-sensitive, e.g.
-        # "C123ABC") and are kept verbatim.
-        if args.channel.startswith("#"):
-            return f"channel:{args.channel[1:].lower()}"
-        return f"channel:{args.channel}"
+        return slack_channel_resource_segment(args.channel)
 
     def run(self, args: BaseModel, *, principal: Principal) -> Any:
         del principal

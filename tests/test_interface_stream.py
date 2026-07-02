@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from langgraph.checkpoint.memory import InMemorySaver
@@ -320,6 +321,27 @@ def test_approve_stream_409_for_owner_on_non_awaiting_thread() -> None:
 
     resp = _stream_approve(client, thread_id, _headers("alice"), approve=True)
     assert resp.status_code == 409
+
+
+def test_concurrent_double_approve_stream_returns_one_200_and_one_409() -> None:
+    client, _ = _build(_send_plan)
+    chat_resp = client.post("/chat", json={"message": "email a@b.com"}, headers=_headers("alice"))
+    assert chat_resp.json()["status"] == "awaiting_approval"
+    thread_id = chat_resp.json()["thread_id"]
+    payload = {"thread_id": thread_id, "approve": True}
+    headers = _headers("alice")
+    app = client.app
+
+    def approve_stream_once() -> int:
+        with TestClient(app) as stream_client:
+            return stream_client.post("/approve/stream", json=payload, headers=headers).status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        codes = sorted(
+            f.result() for f in (pool.submit(approve_stream_once), pool.submit(approve_stream_once))
+        )
+
+    assert codes == [200, 409]
 
 
 def test_approve_stream_missing_bearer_token_is_401_before_any_event() -> None:

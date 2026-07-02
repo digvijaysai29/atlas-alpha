@@ -102,6 +102,7 @@ def test_slack_delete_message_schema_loads_and_validates() -> None:
     assert schema.name == "slack_delete_message"
     assert schema.risk_tier is RiskTier.DELETE
     assert schema.required_permission == "tool:slack:delete_message"
+    assert schema.resource_permission_arg == "channel"
     assert schema.provider.value == "slack"
     assert schema.required_scopes == ("chat:write",)  # reuses slack_post_as_user's existing scope
     assert schema.endpoint == "https://slack.com/api/chat.delete"
@@ -130,11 +131,22 @@ def test_slack_delete_message_proposal_and_execution() -> None:
     registry.register(tool)
     action = registry.propose("slack_delete_message", {"channel": "C1", "ts": "123.45"})
     assert action.risk_tier is RiskTier.DELETE
-    assert action.required_permission == "tool:slack:delete_message"
+    assert action.required_permission == "tool:slack:delete_message:channel:C1"
     result = registry.execute(action, _PRINCIPAL)
     assert result.ok is True
     assert result.output == {"channel": "C1", "ts": "123.45", "provider": "slack"}
     assert transport.calls[0][1] == {"channel": "C1", "ts": "123.45"}  # flat payload, no nesting
+
+
+def test_slack_delete_message_permission_normalizes_channel_name() -> None:
+    schema = load_schema(_delete_message_schema_path())
+    tool = _engine(FakeTransport(_ALLOWLIST)).build_tool(schema)
+    registry = ToolRegistry()
+    registry.register(tool)
+    action = registry.propose(
+        "slack_delete_message", {"channel": "#General", "ts": "123.45"}
+    )
+    assert action.required_permission == "tool:slack:delete_message:channel:general"
 
 
 def test_load_schema_dir_includes_both_bundled_schemas() -> None:

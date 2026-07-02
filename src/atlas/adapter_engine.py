@@ -44,7 +44,7 @@ from atlas.tool_egress import (
     Transport,
     assert_host_allowed,
 )
-from atlas.tools import BaseTool
+from atlas.tools import BaseTool, slack_channel_resource_segment
 
 # Schemas may declare an auto-run ``READ`` tier ONLY for tool names on this code-reviewed allowlist.
 # Empty => no schema may be READ, so every schema-built tool is approval-gated. Lowering a tool to
@@ -135,6 +135,9 @@ class ToolSchema(BaseModel):
     # is explicitly code-allowlisted (see _READ_TIER_ALLOWLIST), enforced in AdapterEngine.build_tool.
     risk_tier: RiskTier = RiskTier.SEND
     required_permission: str | None = None
+    # When set, :meth:`_SchemaTool.resource_permission` appends a segment derived from this arg
+    # (must name a declared ``str`` arg — validated below).
+    resource_permission_arg: str | None = None
     provider: OAuthProvider
     required_scopes: tuple[str, ...] = ()
     endpoint: str = Field(min_length=1)
@@ -152,6 +155,17 @@ class ToolSchema(BaseModel):
             if field.arg is not None and field.arg not in declared:
                 raise ToolSchemaError(
                     f"payload field '{key}' references undeclared arg '{field.arg}'"
+                )
+        if self.resource_permission_arg is not None:
+            arg_name = self.resource_permission_arg
+            if arg_name not in declared:
+                raise ToolSchemaError(
+                    f"resource_permission_arg '{arg_name}' references undeclared arg"
+                )
+            arg_spec = next(a for a in self.args if a.name == arg_name)
+            if arg_spec.type != "str":
+                raise ToolSchemaError(
+                    f"resource_permission_arg '{arg_name}' must name a declared str arg"
                 )
         return self
 
@@ -256,6 +270,14 @@ class _SchemaTool(BaseTool):
         self._transport = transport
         # Destination host derived from the same parser the egress uses (no parser differential).
         self._destination_host = (httpx.URL(schema.endpoint).host or "").lower()
+
+    def resource_permission(self, args: BaseModel) -> str | None:
+        arg_name = self._schema.resource_permission_arg
+        if arg_name is None:
+            return None
+        if not isinstance(args, self.ArgsSchema):
+            raise TypeError(f"expected {self.ArgsSchema.__name__}, got {type(args).__name__}")
+        return slack_channel_resource_segment(getattr(args, arg_name))
 
     def audit_metadata(self) -> dict[str, Any]:
         """Non-secret context the executor folds into the audit event (reconstructability).

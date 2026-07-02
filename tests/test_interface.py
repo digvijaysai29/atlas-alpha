@@ -8,6 +8,8 @@ through the HTTP layer.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 from langgraph.checkpoint.memory import InMemorySaver
 
 from atlas.actions import ProposedAction
@@ -178,6 +180,23 @@ def test_approve_thread_not_awaiting_is_409() -> None:
         "/approve", json={"thread_id": tid, "approve": True}, headers=_headers("alice")
     )
     assert resp.status_code == 409
+
+
+def test_concurrent_double_approve_returns_one_200_and_one_409() -> None:
+    client, _ = _build(_send_plan)
+    tid = client.post("/chat", json={"message": "email"}, headers=_headers("alice")).json()[
+        "thread_id"
+    ]
+    payload = {"thread_id": tid, "approve": True}
+    headers = _headers("alice")
+
+    def approve_once() -> int:
+        return client.post("/approve", json=payload, headers=headers).status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        codes = sorted(f.result() for f in (pool.submit(approve_once), pool.submit(approve_once)))
+
+    assert codes == [200, 409]
 
 
 def test_validation_error_uses_envelope() -> None:

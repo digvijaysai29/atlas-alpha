@@ -64,6 +64,12 @@ def test_wildcard_grant_satisfies_resource_scoped_permission() -> None:
     assert can(MEMBER, "tool:slack:post:channel:general") is True
 
 
+def test_wildcard_grant_satisfies_delete_channel_permission() -> None:
+    """M4.8c parity: member's tool:slack:delete_message:* covers any channel segment."""
+    assert can(MEMBER, "tool:slack:delete_message:channel:general") is True
+    assert can(MEMBER, "tool:slack:delete_message:channel:C123ABC") is True
+
+
 def test_wildcard_grant_does_not_satisfy_bare_unscoped_string() -> None:
     """A granted "tool:send:*" does not cover the bare "tool:send" itself (no partial-prefix
     collapse — only the explicit ":*" suffix expands, and it always requires at least one more
@@ -109,7 +115,7 @@ def test_effective_permissions_expands_role_grants() -> None:
             "tool:gmail:send:*",
             "tool:calendar:write",
             "tool:slack:post_as_user",
-            "tool:slack:delete_message",
+            "tool:slack:delete_message:*",
             "kg:read:org",
             "kg:read:personal",
         }
@@ -271,6 +277,92 @@ def test_channel_scoped_grant_denies_a_different_channel_before_approval() -> No
         config={"configurable": {"thread_id": "t2"}},
     )
     assert "__interrupt__" not in denied_result  # #other is not granted -> denied at planning
+    assert denied_result.get("action_results") == []
+    event_types = [e.event_type.value for e in atlas_denied.audit.events()]
+    assert "denied" in event_types
+
+
+def _delete_general_plan(
+    _request: str, registry: ToolRegistry, _context: object
+) -> list[ProposedAction]:
+    return [registry.propose("slack_delete_message", {"channel": "#general", "ts": "1.0"})]
+
+
+def _delete_other_channel_plan(
+    _request: str, registry: ToolRegistry, _context: object
+) -> list[ProposedAction]:
+    return [registry.propose("slack_delete_message", {"channel": "#other", "ts": "1.0"})]
+
+
+def _delete_message_registry() -> ToolRegistry:
+    from atlas.adapter_engine import AdapterEngine, load_schema, packaged_schema_dir
+    from atlas.config import Settings
+    from atlas.governance.credentials import (
+        CredentialResolver,
+        InMemoryCredentialVault,
+        OAuthProvider,
+        StoredCredential,
+    )
+    from atlas.integrations.oauth import SLACK_USER_CHAT_WRITE, build_credential_resolver
+    from atlas.tool_egress import FakeTransport
+
+    allowlist = frozenset({"slack.com"})
+    principal = Principal(user_id="alice", roles=("member",), org_id="acme")
+    vault = InMemoryCredentialVault()
+    vault.put(
+        principal,
+        OAuthProvider.SLACK,
+        StoredCredential(
+            provider=OAuthProvider.SLACK,
+            scopes=(SLACK_USER_CHAT_WRITE,),
+            access_token="xoxp-tok",
+        ),
+    )
+    resolver: CredentialResolver = build_credential_resolver(vault, Settings())
+    engine = AdapterEngine(
+        credential_resolver=resolver,
+        transport=FakeTransport(allowlist),
+        allowlist=allowlist,
+    )
+    registry = ToolRegistry()
+    registry.register(
+        engine.build_tool(load_schema(packaged_schema_dir() / "slack_delete_message.json"))
+    )
+    return registry
+
+
+def test_delete_channel_scoped_grant_denies_a_different_channel_before_approval() -> None:
+    """End-to-end: a role granted only tool:slack:delete_message:channel:general may delete in
+    #general but is denied — before approval — for any other channel (schema-driven tool)."""
+    from atlas.governance.policy import InMemoryPolicyStore
+
+    narrow_policy = InMemoryPolicyStore(
+        {"member": frozenset({"tool:slack:delete_message:channel:general"})}
+    )
+    registry = _delete_message_registry()
+    atlas = build_graph(
+        plan_fn=_delete_general_plan,
+        registry=registry,
+        policy=narrow_policy,
+        checkpointer=InMemorySaver(serde=atlas_serde()),
+    )
+    result = atlas.graph.invoke(
+        initial_state("delete slack message", principal=MEMBER),
+        config={"configurable": {"thread_id": "t-del-1"}},
+    )
+    assert "__interrupt__" in result
+
+    atlas_denied = build_graph(
+        plan_fn=_delete_other_channel_plan,
+        registry=registry,
+        policy=narrow_policy,
+        checkpointer=InMemorySaver(serde=atlas_serde()),
+    )
+    denied_result = atlas_denied.graph.invoke(
+        initial_state("delete slack message", principal=MEMBER),
+        config={"configurable": {"thread_id": "t-del-2"}},
+    )
+    assert "__interrupt__" not in denied_result
     assert denied_result.get("action_results") == []
     event_types = [e.event_type.value for e in atlas_denied.audit.events()]
     assert "denied" in event_types
