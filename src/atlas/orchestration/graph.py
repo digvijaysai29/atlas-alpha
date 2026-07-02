@@ -315,7 +315,7 @@ def build_graph(
     builder.add_node("planner", make_planner_node(plan_fn, registry, audit, knowledge, policy))
     builder.add_node("approval", make_approval_node(audit))
     builder.add_node("executor", make_executor_node(registry, audit, policy))
-    builder.add_node("responder", make_responder_node())
+    builder.add_node("responder", make_responder_node(settings))
 
     builder.add_edge(START, "planner")
     builder.add_conditional_edges(

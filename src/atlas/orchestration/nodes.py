@@ -13,6 +13,7 @@ Security invariants enforced here:
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable, Iterable, Sequence
 from typing import Any
@@ -20,16 +21,19 @@ from typing import Any
 from langchain_core.messages import AIMessage, AnyMessage
 from langgraph.types import interrupt
 
-from atlas.actions import ApprovalDecision, ProposedAction, requires_approval
+from atlas.actions import ActionResult, ApprovalDecision, ProposedAction, requires_approval
 from atlas.config import Settings, get_settings
 from atlas.governance import AuditLog, PolicyStore
 from atlas.governance.audit import AuditToolContext
-from atlas.governance.confidence import collect_sources, score_confidence
+from atlas.governance.confidence import Source, collect_sources, score_confidence
 from atlas.governance.rbac import get_current_principal
 from atlas.knowledge.interfaces import Entity, KnowledgeGraph
+from atlas.orchestration.responder_llm import ResponderNarrator, make_responder_llm
 from atlas.orchestration.state import AgentState
 from atlas.execution import GuardedExecutor
 from atlas.tools import ToolRegistry
+
+logger = logging.getLogger("atlas.orchestration")
 
 # A planning strategy turns a user request + registry + RBAC-scoped knowledge into proposed actions.
 PlanFn = Callable[[str, ToolRegistry, Sequence[Entity]], list[ProposedAction]]
@@ -249,7 +253,22 @@ def make_executor_node(
     return executor_node
 
 
-def make_responder_node() -> Callable[[AgentState], dict[str, Any]]:
+def make_responder_node(
+    settings: Settings | None = None,
+    *,
+    responder_llm: ResponderNarrator | None = None,
+) -> Callable[[AgentState], dict[str, Any]]:
+    """Build the responder node.
+
+    ``responder_llm`` overrides the settings-based factory (test injection); otherwise
+    :func:`~atlas.orchestration.responder_llm.make_responder_llm` decides from ``settings`` — an
+    OpenRouter-backed narrator when configured + enabled, ``None`` otherwise. When there is no
+    narrator the responder is the deterministic string-formatted summary, byte-for-byte the
+    pre-M4.8d behavior (so CI and the eval gate stay hermetic by default).
+    """
+    settings = settings or get_settings()
+    narrator = responder_llm if responder_llm is not None else make_responder_llm(settings)
+
     def responder_node(state: AgentState) -> dict[str, Any]:
         proposed = state.get("proposed_actions") or []
         results = state.get("action_results") or []
@@ -257,9 +276,20 @@ def make_responder_node() -> Callable[[AgentState], dict[str, Any]]:
         kg_context = state.get("kg_context") or []
         # Confidence factors execution success + whether the answer was grounded in knowledge.
         confidence = score_confidence(results, kg_context)
-        summary = _summarize(proposed, results, rejected)
         # Structured provenance: tool outputs (from the results) + the RBAC-scoped KG entities used.
         sources = collect_sources(results, kg_context)
+        # The deterministic summary is always computed first (cheap, pure) — it is both the default
+        # responder text AND the fallback if the LLM narrator fails below. All authorization-relevant
+        # decisions (risk tier, RBAC, approval) are already final by this point; the narrator below
+        # only rephrases them, it never re-decides anything.
+        summary = _summarize(proposed, results, rejected)
+        if narrator is not None:
+            request = _last_user_text(state.get("messages") or [])
+            facts = _facts_block(summary, sources)
+            try:
+                summary = narrator.respond(request, facts)
+            except Exception:
+                logger.exception("Responder LLM failed; falling back to the deterministic summary")
         return {
             "messages": [AIMessage(content=summary)],
             "confidence": confidence,
@@ -321,9 +351,23 @@ def _parse_decisions(raw: Any, valid_ids: set[str]) -> list[ApprovalDecision]:
     return decisions
 
 
+def _facts_block(summary: str, sources: Sequence[Source]) -> str:
+    """Render the turn's already-decided facts as plain text for the responder LLM prompt (M4.8d).
+
+    Reuses the same deterministic summary :func:`_summarize` already produced — the LLM only
+    rephrases what already happened; it never decides or adds to it. ``sources`` is the RBAC-filtered
+    provenance list, already safe to surface.
+    """
+    lines = [summary]
+    if sources:
+        lines.append("Sources used:")
+        lines.extend(f"- {source.label or source.ref}" for source in sources)
+    return "\n".join(lines)
+
+
 def _summarize(
     proposed: list[ProposedAction],
-    results: list[Any],
+    results: list[ActionResult],
     rejected: set[str],
 ) -> str:
     if not proposed:

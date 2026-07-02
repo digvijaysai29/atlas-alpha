@@ -95,6 +95,30 @@ Hand-written tools (`send_email`, `slack_post`) are unchanged — proxy applies 
 engine path.
 
 
+## Streaming + responder narration (M4.8d)
+
+`POST /chat/stream` and `POST /approve/stream` are the SSE siblings of `/chat` and `/approve` — same
+OIDC/rate-limit spine, same `AgentResponse` shaping, delivered as `open → node*/token* →
+(awaiting_approval | completed) → done`. `/approve/stream` performs the identical ownership check
+`/approve` does (403 before the 409 awaiting-approval check) before any byte streams.
+
+`token` events only appear when `ATLAS_RESPONDER_LLM_ENABLED=true` and `OPENROUTER_API_KEY` is set —
+otherwise the responder is the deterministic summary and the stream is unchanged from M4.7 (just
+`open → node* → completed/awaiting_approval → done`, no `token` events). Enabling it makes an
+OpenRouter call on **every** `/chat`, `/chat/stream`, `/approve`, and `/approve/stream` turn (not just
+streamed ones) — a real per-turn cost/latency addition; a failed call falls back to the deterministic
+summary rather than failing the turn.
+
+```bash
+uv run python scripts/run_api.py &
+curl -N -X POST localhost:8000/chat/stream -H 'X-Atlas-User-Id: alice' \
+  -H 'X-Atlas-Roles: member' -H 'Content-Type: application/json' \
+  -d '{"message":"find the latest roadmap"}'
+curl -N -X POST localhost:8000/approve/stream -H 'X-Atlas-User-Id: alice' \
+  -H 'X-Atlas-Roles: member' -H 'Content-Type: application/json' \
+  -d '{"thread_id":"thr_...","approve":true}'
+```
+
 ## Observability
 
 LangSmith tracing is **env-driven, zero-code**: set `LANGSMITH_TRACING=true` + `LANGSMITH_API_KEY`

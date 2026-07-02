@@ -249,3 +249,184 @@ def test_in_progress_snapshot_returns_minimal_response() -> None:
     assert response.status == "in_progress"
     assert response.thread_id == "thr_test"
     assert response.response is None
+
+
+# --- /approve/stream (M4.8d) ---------------------------------------------------
+def _stream_approve(
+    client: TestClient, thread_id: str, headers: dict[str, str], *, approve: bool
+) -> Any:
+    return client.post(
+        "/approve/stream",
+        json={"thread_id": thread_id, "approve": approve},
+        headers=headers,
+    )
+
+
+def test_approve_stream_happy_path_resumes_and_completes() -> None:
+    client, _ = _build(_send_plan)
+    chat_resp = client.post("/chat", json={"message": "email a@b.com"}, headers=_headers("alice"))
+    assert chat_resp.json()["status"] == "awaiting_approval"
+    thread_id = chat_resp.json()["thread_id"]
+
+    resp = _stream_approve(client, thread_id, _headers("alice"), approve=True)
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    events = _parse_sse(resp.text)
+    names = [e for e, _ in events]
+    assert names[0] == "open"
+    assert names[-1] == "done"
+    completed = next(data for e, data in events if e == "completed")
+    assert completed["status"] == "completed"
+    assert completed["action_results"][0]["ok"] is True
+    assert completed["action_results"][0]["tool"] == "send_email"
+
+
+def test_approve_stream_reject_path_skips_execution() -> None:
+    client, _ = _build(_send_plan)
+    chat_resp = client.post("/chat", json={"message": "email a@b.com"}, headers=_headers("alice"))
+    thread_id = chat_resp.json()["thread_id"]
+
+    resp = _stream_approve(client, thread_id, _headers("alice"), approve=False)
+    assert resp.status_code == 200
+    events = _parse_sse(resp.text)
+    completed = next(data for e, data in events if e == "completed")
+    assert completed["action_results"] == []
+
+
+def test_approve_stream_denies_non_owner_before_awaiting_check() -> None:
+    # A completed (not-awaiting) thread + a non-owner caller must still 403, not 409 — proves
+    # ownership is checked BEFORE the state check, so a non-owner can't distinguish thread state by
+    # which error code comes back (mirrors the sync /approve's documented anti-enumeration ordering).
+    client, _ = _build(_search_plan)  # read-only -> completes immediately, never awaits approval
+    chat_resp = client.post("/chat", json={"message": "find"}, headers=_headers("alice"))
+    assert chat_resp.json()["status"] == "completed"
+    thread_id = chat_resp.json()["thread_id"]
+
+    resp = _stream_approve(client, thread_id, _headers("mallory"), approve=True)
+    assert resp.status_code == 403
+    assert resp.headers["content-type"].startswith("application/json")
+
+
+def test_approve_stream_404_for_unknown_thread() -> None:
+    client, _ = _build(_search_plan)
+    resp = _stream_approve(client, "thr_does_not_exist", _headers("alice"), approve=True)
+    assert resp.status_code == 404
+
+
+def test_approve_stream_409_for_owner_on_non_awaiting_thread() -> None:
+    client, _ = _build(_search_plan)
+    chat_resp = client.post("/chat", json={"message": "find"}, headers=_headers("alice"))
+    thread_id = chat_resp.json()["thread_id"]
+
+    resp = _stream_approve(client, thread_id, _headers("alice"), approve=True)
+    assert resp.status_code == 409
+
+
+def test_approve_stream_openapi_documents_text_event_stream() -> None:
+    client, _ = _build(_search_plan)
+    content = client.get("/openapi.json").json()["paths"]["/approve/stream"]["post"]["responses"][
+        "200"
+    ]["content"]
+    assert "text/event-stream" in content
+    assert "application/json" not in content
+
+
+# --- token events (M4.8d) — dispatch tested via a fake graph, no real LLM call --
+class _FakeMessageChunk:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+class _FakeStreamGraph:
+    """Minimal stand-in for LangGraph's compiled graph: just ``.stream()``/``.get_state()``, enough
+    for :func:`atlas.interface.sse.run_graph_stream` / :func:`atlas.interface.routes._stream_lifecycle`
+    to run against. Emits synthetic ``updates`` + ``messages`` mode chunks so the token-event dispatch
+    path is exercised hermetically — no real graph run or LLM call.
+    """
+
+    def __init__(self, snapshot: StateSnapshot) -> None:
+        self._snapshot = snapshot
+
+    def stream(self, state: Any, config: Any, *, stream_mode: Any) -> Any:
+        del state, config, stream_mode
+        yield ("updates", {"planner": {}})
+        yield ("messages", (_FakeMessageChunk("Hello"), {"langgraph_node": "responder"}))
+        yield ("messages", (_FakeMessageChunk(", world"), {"langgraph_node": "responder"}))
+        # A planner-node message must never surface as a token event (no leak of tool-call deltas).
+        yield ("messages", (_FakeMessageChunk("SHOULD-NOT-LEAK"), {"langgraph_node": "planner"}))
+        yield ("updates", {"responder": {}})
+
+    def get_state(self, config: Any) -> StateSnapshot:
+        del config
+        return self._snapshot
+
+
+async def test_token_events_surface_responder_text_filtered_by_node() -> None:
+    from types import SimpleNamespace
+    from typing import cast
+
+    from langchain_core.messages import AIMessage
+
+    from atlas.interface.routes import _stream_lifecycle
+    from atlas.orchestration.graph import Atlas
+
+    snapshot = StateSnapshot(
+        values={
+            "messages": [AIMessage(content="Hello, world")],
+            "sources": [],
+            "confidence": 0.9,
+            "action_results": [],
+        },
+        next=(),
+        config={},
+        metadata=None,
+        created_at=None,
+        parent_config=None,
+        tasks=(),
+        interrupts=(),
+    )
+    atlas = cast(Atlas, SimpleNamespace(graph=_FakeStreamGraph(snapshot)))
+    thread_id = "thr_fake"
+
+    events = []
+    async for event in _stream_lifecycle(atlas, {}, thread_id, _config(thread_id)):
+        assert isinstance(event.data, str)
+        events.append((event.event, json.loads(event.data)))
+
+    names = [e for e, _ in events]
+    assert names[0] == "open"
+    assert names[-1] == "done"
+    token_texts = [data["content"] for e, data in events if e == "token"]
+    assert token_texts == ["Hello", ", world"]  # only the responder's two chunks, in order
+    assert "SHOULD-NOT-LEAK" not in token_texts
+    completed = next(data for e, data in events if e == "completed")
+    assert completed["response"] == "Hello, world"
+
+
+# --- _chunk_text (pure helper) ---------------------------------------------------
+def test_chunk_text_extracts_plain_string_content() -> None:
+    from types import SimpleNamespace
+
+    from atlas.interface.routes import _chunk_text
+
+    assert _chunk_text(SimpleNamespace(content="hello")) == "hello"
+
+
+def test_chunk_text_extracts_text_blocks_from_list_content() -> None:
+    from types import SimpleNamespace
+
+    from atlas.interface.routes import _chunk_text
+
+    chunk = SimpleNamespace(
+        content=[{"type": "text", "text": "hi "}, {"type": "text", "text": "there"}]
+    )
+    assert _chunk_text(chunk) == "hi there"
+
+
+def test_chunk_text_returns_empty_for_missing_or_none_content() -> None:
+    from types import SimpleNamespace
+
+    from atlas.interface.routes import _chunk_text
+
+    assert _chunk_text(SimpleNamespace(content=None)) == ""
+    assert _chunk_text(SimpleNamespace()) == ""

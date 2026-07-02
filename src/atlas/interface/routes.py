@@ -31,6 +31,7 @@ from atlas.interface.sse import (
     ERROR,
     NODE,
     OPEN,
+    TOKEN,
     run_graph_stream,
     sse_event,
 )
@@ -156,37 +157,69 @@ def chat(body: ChatRequest, principal: RequestPrincipal, atlas: AtlasDep) -> Age
     return _response_from_invoke(thread_id, result)
 
 
-async def _chat_event_stream(
-    atlas: Atlas, message: str, principal: Principal, thread_id: str
+def _chunk_text(message_chunk: Any) -> str:
+    """Extract plain text from a streamed LLM message chunk.
+
+    Defensive: a chunk's ``content`` may be a plain string or (depending on the provider's streaming
+    format) a list of content blocks; non-text blocks (e.g. partial tool-call deltas) are skipped.
+    """
+    content = getattr(message_chunk, "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            block if isinstance(block, str) else block.get("text", "")
+            for block in content
+            if isinstance(block, str) or isinstance(block, dict)
+        ]
+        return "".join(p for p in parts if isinstance(p, str))
+    return ""
+
+
+async def _stream_lifecycle(
+    atlas: Atlas, resumable: Any, thread_id: str, config: RunnableConfig
 ) -> AsyncIterator[ServerSentEvent]:
-    """Stream one chat turn's lifecycle as SSE: ``open → node* → (awaiting_approval | completed) → done``.
+    """Stream one graph run's lifecycle as SSE: ``open → node*/token* → (awaiting_approval |
+    completed) → done``. Shared by :func:`chat_stream` (a fresh initial state) and
+    :func:`approve_stream` (a ``Command(resume=...)``) — the only difference between the two routes
+    is what ``resumable`` is and the authorization check the caller performs first.
 
     Identity, authorization, and rate limiting have already been enforced by the route's dependencies
-    before this generator runs, so the body never streams to a rejected caller. Events expose only the
-    fields the existing :class:`AgentResponse` helpers shape (RBAC-filtered sources, etc.); ``node``
-    events carry the node name only — never action payloads. Any failure once the stream is open is
-    logged server-side and surfaced as a single **generic** ``error`` event (no internals leak), mirroring
-    the app's unhandled-error posture. ``done`` is emitted on normal completion or a handled error — but
-    not on client disconnect (a ``GeneratorExit`` skips it), which is correct.
+    (and, for resume, ``verify_thread_owner``) before this generator runs, so the body never streams
+    to a rejected caller. Events expose only the fields the existing :class:`AgentResponse` helpers
+    shape (RBAC-filtered sources, etc.); ``node`` events carry the node name only. ``token`` events
+    (M4.8d) surface the responder's narrated text as it streams — filtered to the ``responder`` node
+    only, so planner tool-call-argument deltas are never forwarded as if they were the answer. Any
+    failure once the stream is open is logged server-side and surfaced as a single **generic**
+    ``error`` event (no internals leak), mirroring the app's unhandled-error posture. ``done`` is
+    emitted on normal completion or a handled error — but not on client disconnect (a
+    ``GeneratorExit`` skips it), which is correct.
     """
-    config = _config(thread_id)
     send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=16)
     producer_task = asyncio.create_task(
         run_graph_stream(
-            atlas.graph, initial_state(message, principal=principal), config, send_stream
+            atlas.graph, resumable, config, send_stream, stream_modes=("updates", "messages")
         )
     )
     try:
         yield sse_event(OPEN, {"thread_id": thread_id})
         awaiting = False
         async with receive_stream:
-            async for chunk in receive_stream:
-                if "__interrupt__" in chunk:
-                    response = _response_from_invoke(thread_id, chunk)
+            async for mode, data in receive_stream:
+                if mode == "messages":
+                    message_chunk, metadata = data
+                    if metadata.get("langgraph_node") != "responder":
+                        continue  # never forward planner tool-call deltas as if they were the answer
+                    text = _chunk_text(message_chunk)
+                    if text:
+                        yield sse_event(TOKEN, {"content": text})
+                    continue
+                if "__interrupt__" in data:
+                    response = _response_from_invoke(thread_id, data)
                     yield sse_event(AWAITING_APPROVAL, response.model_dump(mode="json"))
                     awaiting = True
                     break
-                for node_name in chunk:
+                for node_name in data:
                     # updates chunks map node-name -> update, but may also carry internal dunder
                     # keys (e.g. __metadata__); only surface real node names as progress events.
                     if not node_name.startswith("__"):
@@ -198,7 +231,7 @@ async def _chat_event_stream(
             response = _response_from_snapshot(thread_id, snapshot)
             yield sse_event(COMPLETED, response.model_dump(mode="json"))
     except Exception:
-        logger.exception("Error while streaming chat turn")
+        logger.exception("Error while streaming graph turn")
         yield sse_event(ERROR, {"code": "internal_error", "message": "Internal server error."})
     finally:
         await receive_stream.aclose()
@@ -244,8 +277,9 @@ async def chat_stream(
     """Streaming sibling of :func:`chat`: same fresh caller-owned thread, delivered as Server-Sent
     Events. ``X-Accel-Buffering: no`` disables proxy buffering so events flush incrementally."""
     thread_id = f"thr_{uuid.uuid4().hex}"
+    resumable = initial_state(body.message, principal=principal)
     return EventSourceResponse(
-        _chat_event_stream(atlas, body.message, principal, thread_id),
+        _stream_lifecycle(atlas, resumable, thread_id, _config(thread_id)),
         headers={"X-Accel-Buffering": "no"},
         send_timeout=SSE_SEND_TIMEOUT_SECONDS,
     )
@@ -264,6 +298,59 @@ def approve(body: ApproveRequest, principal: RequestPrincipal, atlas: AtlasDep) 
     decisions = _decision_payload(body, snapshot, principal)
     result = atlas.graph.invoke(Command(resume=decisions), _config(body.thread_id))
     return _response_from_invoke(body.thread_id, result)
+
+
+@router.post(
+    "/approve/stream",
+    response_class=EventSourceResponse,
+    responses={
+        200: {
+            "description": (
+                "SSE stream of the resumed turn's lifecycle "
+                "(open → node*/token* → awaiting_approval | completed → done)."
+            ),
+            "content": {
+                "text/event-stream": {
+                    "itemSchema": {
+                        "type": "object",
+                        "required": ["data"],
+                        "properties": {
+                            "event": {"type": "string"},
+                            "data": {
+                                "type": "string",
+                                "contentMediaType": "application/json",
+                            },
+                        },
+                    }
+                }
+            },
+        }
+    },
+    dependencies=[RateLimited],
+)
+async def approve_stream(
+    body: ApproveRequest, principal: RequestPrincipal, atlas: AtlasDep
+) -> EventSourceResponse:
+    """Streaming sibling of :func:`approve`: resumes a paused thread, delivered as Server-Sent
+    Events. Performs the identical synchronous checks :func:`approve` does — 404 if the thread is
+    unknown, then owner verification (403) **before** the awaiting-approval check (409), so a
+    non-owner can't distinguish thread state before the body ever streams — this ordering is exactly
+    why M4.7 deferred this endpoint. ``get_state`` is a blocking checkpointer call, kept off the event
+    loop via a worker thread since this route is ``async``.
+    """
+    config = _config(body.thread_id)
+    snapshot = await anyio.to_thread.run_sync(atlas.graph.get_state, config)
+    if not snapshot.values:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Thread not found.")
+    verify_thread_owner(thread_owner(snapshot), principal)
+    if not _is_awaiting_approval(snapshot):
+        raise HTTPException(status.HTTP_409_CONFLICT, "Thread is not awaiting approval.")
+    decisions = _decision_payload(body, snapshot, principal)
+    return EventSourceResponse(
+        _stream_lifecycle(atlas, Command(resume=decisions), body.thread_id, config),
+        headers={"X-Accel-Buffering": "no"},
+        send_timeout=SSE_SEND_TIMEOUT_SECONDS,
+    )
 
 
 @router.get("/threads/{thread_id}", response_model=AgentResponse)

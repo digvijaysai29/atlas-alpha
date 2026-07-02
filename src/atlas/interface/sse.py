@@ -1,4 +1,4 @@
-"""Server-Sent Events plumbing for the streaming interface (M4.7).
+"""Server-Sent Events plumbing for the streaming interface (M4.7; ``token`` events added in M4.8d).
 
 Two responsibilities, both **transport-only** (nothing here is checkpointed graph state, so — like the
 rest of the interface layer — none of it goes in the ``atlas_serde()`` allowlist):
@@ -12,12 +12,21 @@ rest of the interface layer — none of it goes in the ``atlas_serde()`` allowli
    is drained in a worker thread that pushes each chunk through an ``anyio`` memory-object send stream.
    If the consumer disconnects (``BrokenResourceError``), the producer keeps draining silently so the
    graph reaches a terminal checkpoint before ``iterator.close()`` runs in ``finally``.
+
+   ``stream_modes`` defaults to just ``"updates"`` (M4.7's lifecycle events, unchanged shape: bare
+   per-node update dicts). The interface routes pass ``("updates", "messages")`` so a node's LLM calls
+   (when one is configured — the M4.8d responder) also surface as ``token`` events. LangGraph's v1
+   stream dispatches on ``isinstance(stream_mode, list)`` — passing a *list* always yields
+   ``(mode, data)`` 2-tuples, even for a single mode — so :func:`run_graph_stream` passes a bare
+   string when there is exactly one mode (preserving M4.7's exact shape) and a list only when there
+   are several; the *consumer* (not this module) is responsible for branching on ``mode`` in that case.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Sequence
 from typing import Any, Final
 
 import anyio
@@ -29,6 +38,7 @@ logger = logging.getLogger("atlas.interface")
 # Event names (the SSE ``event:`` field). Clients switch on these.
 OPEN: Final = "open"
 NODE: Final = "node"
+TOKEN: Final = "token"
 AWAITING_APPROVAL: Final = "awaiting_approval"
 COMPLETED: Final = "completed"
 ERROR: Final = "error"
@@ -48,17 +58,20 @@ async def run_graph_stream(
     graph: Any,
     state: Any,
     config: Any,
-    send_stream: MemoryObjectSendStream[dict[str, Any]],
+    send_stream: MemoryObjectSendStream[Any],
+    *,
+    stream_modes: Sequence[str] = ("updates",),
 ) -> None:
-    """Run ``graph.stream(..., stream_mode="updates")`` to completion, pushing chunks to *send_stream*.
+    """Run ``graph.stream(...)`` to completion, pushing chunks to *send_stream*.
 
     The synchronous iterator is advanced one ``next()`` at a time inside a worker thread. If the
     consumer is gone (``anyio.BrokenResourceError`` on send), the producer continues draining the
     iterator silently so the graph reaches a terminal checkpoint. ``iterator.close()`` runs only in
     ``finally`` after the iterator is exhausted.
     """
+    modes: str | list[str] = stream_modes[0] if len(stream_modes) == 1 else list(stream_modes)
     iterator: Any = await anyio.to_thread.run_sync(
-        lambda: iter(graph.stream(state, config, stream_mode="updates"))
+        lambda: iter(graph.stream(state, config, stream_mode=modes))
     )
 
     def _next() -> Any:

@@ -97,6 +97,17 @@ Every schema-built tool runs through the **unchanged** execution gate:
   corporate policy requires a central gateway. Direct IP-pinned egress remains the default. See
   [`RUNBOOK.md`](./RUNBOOK.md#adapter-engine--egress-proxy-m48a--m48b).
 
+## A second example: a new connector with zero code (M4.8d)
+
+`slack_delete_message` (`chat.delete`) is a real, bundled second schema — added with **no Python
+changes at all**, proving the "just add JSON" story end-to-end:
+
+- Reuses the `slack` provider and the `chat:write` scope already granted for `slack_post_as_user` —
+  no new OAuth wiring, no reconnect required for already-connected users.
+- `slack.com` was already on the default egress allowlist.
+- Uses `"risk_tier": "delete"` — schemas aren't limited to `send`; any non-`read` tier works the same
+  way (still approval-gated, still requires `required_permission`).
+
 ## Limits today (M4.8a)
 
 - `POST` + JSON bodies only; payload/response mapping is top-level field copy or constants (no nested
