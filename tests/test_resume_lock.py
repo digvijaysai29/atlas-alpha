@@ -1,4 +1,4 @@
-"""Resume lock reclamation and deadlock regression tests."""
+"""Resume lock reclamation, deadlock, and owner-safety regression tests."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from atlas.actions import ProposedAction
 from atlas.config import Settings
 from atlas.governance.rbac import Principal
 from atlas.interface import create_app
-from atlas.interface.resume_lock import _thread_locks, finish_resume_lock, gate_resume
+from atlas.interface.resume_lock import _entries, acquire_resume_lock, gate_resume
 from atlas.interface.routes import _config
 from atlas.interface.schemas import ApproveRequest
 from atlas.orchestration import build_graph
@@ -43,7 +43,7 @@ def _headers(user: str) -> dict[str, str]:
 
 
 def _clear_lock_cache() -> None:
-    _thread_locks.clear()
+    _entries.clear()
 
 
 def test_gate_resume_403_releases_lock() -> None:
@@ -60,11 +60,30 @@ def test_gate_resume_403_releases_lock() -> None:
     assert exc_info.value.status_code == 403
 
     alice = Principal(user_id="alice", roles=("member",))
-    decisions, lock = gate_resume(atlas, config, thread_id, alice, body)
+    decisions, lease = gate_resume(atlas, config, thread_id, alice, body)
     try:
         atlas.graph.invoke(Command(resume=decisions), config)
     finally:
-        finish_resume_lock(thread_id, lock)
+        lease.release()
+
+
+def test_forbidden_approve_does_not_block_later_owner_approval() -> None:
+    """End-to-end regression: a non-owner 403 must not leave the thread's resume wedged."""
+    _clear_lock_cache()
+    client, _ = _build()
+    chat_resp = client.post("/chat", json={"message": "email"}, headers=_headers("alice"))
+    thread_id = chat_resp.json()["thread_id"]
+
+    denied = client.post(
+        "/approve", json={"thread_id": thread_id, "approve": True}, headers=_headers("mallory")
+    )
+    assert denied.status_code == 403
+
+    allowed = client.post(
+        "/approve", json={"thread_id": thread_id, "approve": True}, headers=_headers("alice")
+    )
+    assert allowed.status_code == 200
+    assert allowed.json()["status"] == "completed"
 
 
 def test_gate_resume_404_discards_lock() -> None:
@@ -78,7 +97,7 @@ def test_gate_resume_404_discards_lock() -> None:
     with pytest.raises(HTTPException) as exc_info:
         gate_resume(atlas, config, thread_id, principal, body)
     assert exc_info.value.status_code == 404
-    assert thread_id not in _thread_locks
+    assert thread_id not in _entries
 
 
 def test_many_unknown_thread_ids_do_not_grow_lock_cache() -> None:
@@ -93,7 +112,7 @@ def test_many_unknown_thread_ids_do_not_grow_lock_cache() -> None:
         with pytest.raises(HTTPException):
             gate_resume(atlas, config, thread_id, principal, body)
 
-    assert len(_thread_locks) == 0
+    assert len(_entries) == 0
 
 
 def test_successful_approve_discards_lock() -> None:
@@ -106,4 +125,29 @@ def test_successful_approve_discards_lock() -> None:
         "/approve", json={"thread_id": thread_id, "approve": True}, headers=_headers("alice")
     )
     assert resp.status_code == 200
-    assert thread_id not in _thread_locks
+    assert thread_id not in _entries
+
+
+def test_lease_release_is_idempotent_and_owner_safe() -> None:
+    """A stale lease's second release must never unlock a lock another caller now holds.
+
+    This is the regression for the raw ``if lock.locked(): lock.release()`` pattern, which released
+    whoever currently held the lock when a cleanup path ran twice.
+    """
+    _clear_lock_cache()
+    thread_id = "thr_owner_safety"
+
+    first = acquire_resume_lock(thread_id)
+    first.release()
+
+    second = acquire_resume_lock(thread_id)
+    # Stale duplicate releases from the first caller's other cleanup paths: must be no-ops.
+    first.release()
+    first.release()
+
+    # The second caller still exclusively holds the resume lock for this thread.
+    assert _entries[thread_id].lock.locked() is True
+    assert _entries[thread_id].lock.acquire(blocking=False) is False
+
+    second.release()
+    assert thread_id not in _entries

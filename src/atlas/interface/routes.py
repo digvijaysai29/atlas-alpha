@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import threading
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from typing import Annotated, Any, Final
@@ -20,9 +19,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command, StateSnapshot
 from sse_starlette import EventSourceResponse, ServerSentEvent
+from starlette.background import BackgroundTask
 
 from atlas.interface.rate_limit import RateLimited
-from atlas.interface.resume_lock import finish_resume_lock, gate_resume, is_awaiting_approval
+from atlas.interface.resume_lock import ResumeLease, gate_resume, is_awaiting_approval
 from atlas.interface.schemas import AgentResponse, ApproveRequest, ChatRequest
 from atlas.interface.security import RequestPrincipal, thread_owner, verify_thread_owner
 from atlas.interface.sse import (
@@ -162,7 +162,7 @@ async def _stream_lifecycle(
     thread_id: str,
     config: RunnableConfig,
     *,
-    resume_lock: threading.Lock | None = None,
+    resume_lease: ResumeLease | None = None,
 ) -> AsyncIterator[ServerSentEvent]:
     """Stream one graph run's lifecycle as SSE: ``open → node*/token* → (awaiting_approval |
     completed) → done``. Shared by :func:`chat_stream` (a fresh initial state) and
@@ -188,8 +188,7 @@ async def _stream_lifecycle(
             config,
             send_stream,
             stream_modes=("updates", "messages"),
-            resume_lock=resume_lock,
-            thread_id=thread_id if resume_lock is not None else None,
+            resume_lease=resume_lease,
         )
     )
     try:
@@ -231,6 +230,11 @@ async def _stream_lifecycle(
                 await producer_task
             except Exception:  # pragma: no cover - best-effort cleanup; nothing to recover here
                 logger.debug("producer task failed during stream cleanup", exc_info=True)
+        # Belt-and-braces: the producer already released the lease, but if this generator is torn
+        # down before the producer got that far (client disconnected immediately), release here.
+        # Idempotent — a double release is a no-op and can never unlock another caller's resume.
+        if resume_lease is not None:
+            resume_lease.release()
     yield sse_event(DONE, {})
 
 
@@ -279,12 +283,12 @@ async def chat_stream(
 @router.post("/approve", response_model=AgentResponse, dependencies=[RateLimited])
 def approve(body: ApproveRequest, principal: RequestPrincipal, atlas: AtlasDep) -> AgentResponse:
     config = _config(body.thread_id)
-    decisions, lock = gate_resume(atlas, config, body.thread_id, principal, body)
+    decisions, lease = gate_resume(atlas, config, body.thread_id, principal, body)
     try:
         result = atlas.graph.invoke(Command(resume=decisions), config)
         return _response_from_invoke(body.thread_id, result)
     finally:
-        finish_resume_lock(body.thread_id, lock)
+        lease.release()
 
 
 @router.post(
@@ -326,15 +330,18 @@ async def approve_stream(
     loop via a worker thread since this route is ``async``.
     """
     config = _config(body.thread_id)
-    decisions, lock = await anyio.to_thread.run_sync(
+    decisions, lease = await anyio.to_thread.run_sync(
         gate_resume, atlas, config, body.thread_id, principal, body
     )
     return EventSourceResponse(
         _stream_lifecycle(
-            atlas, Command(resume=decisions), body.thread_id, config, resume_lock=lock
+            atlas, Command(resume=decisions), body.thread_id, config, resume_lease=lease
         ),
         headers={"X-Accel-Buffering": "no"},
         send_timeout=SSE_SEND_TIMEOUT_SECONDS,
+        # Runs after the response finishes (including client disconnect): the last safety net for
+        # the lease if the body generator never reached its own release paths. Idempotent.
+        background=BackgroundTask(lease.release),
     )
 
 

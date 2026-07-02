@@ -59,6 +59,7 @@ This is the bundled `slack/slack_post_as_user.json`:
 | `schema_version` | Bump when you change the schema (logged in the audit trail). |
 | `risk_tier` | `read` / `write` / `send` / `delete` / `pay`. Defaults to `send`. A schema **cannot** declare an auto-run `read` (that needs a code change), so every connector is human-approval-gated. |
 | `required_permission` | RBAC permission a caller must hold (e.g. `tool:slack:post_as_user`). **Required** for any non-`read` tool. |
+| `resource_permission_arg` | Optional: name of a declared `str` arg whose value becomes a resource segment appended to `required_permission` (e.g. `"channel"` → `tool:x:channel:<value>`). Grants must then use the `:*` wildcard or a resource-scoped form — the bare `required_permission` string no longer satisfies the check (see [AUTH.md](./AUTH.md)). |
 | `provider` | OAuth provider whose per-user token is used (`google`, `slack`). |
 | `required_scopes` | OAuth scopes the token must carry, else the call fails closed. |
 | `endpoint` | Full `https://` URL. Its **host must be on the egress allowlist** and its host+port+path become the only route this tool may hit. |
@@ -107,6 +108,10 @@ changes at all**, proving the "just add JSON" story end-to-end:
 - `slack.com` was already on the default egress allowlist.
 - Uses `"risk_tier": "delete"` — schemas aren't limited to `send`; any non-`read` tier works the same
   way (still approval-gated, still requires `required_permission`).
+- Declares `resource_permission_arg: "channel"`, so the effective permission is channel-scoped
+  (`tool:slack:delete_message:channel:<name-or-id>`). Roles need the seeded wildcard
+  `tool:slack:delete_message:*` or a channel-scoped grant — a bare `tool:slack:delete_message`
+  grant will not pass RBAC.
 
 ## Limits today (M4.8a)
 

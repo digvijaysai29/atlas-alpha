@@ -113,8 +113,29 @@ class ResponderLLM(ResponderNarrator):
             ("human", f"<request>\n{request}\n</request>\n<facts>\n{facts}\n</facts>"),
         ]
         ai = self._runnable.invoke(messages)
-        content = ai.content
-        return content if isinstance(content, str) else str(content)
+        return _content_text(ai.content)
+
+
+def _content_text(content: Any) -> str:
+    """Flatten an AIMessage ``content`` into plain text.
+
+    Providers may return a plain string or a list of content blocks (the same shape the streaming
+    path already handles in ``routes._chunk_text``); falling back to ``str(...)`` on a block list
+    would send the user a Python repr like ``[{'type': 'text', ...}]``.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                text = block.get("text", "")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    return str(content)
 
 
 class FakeResponderLLM(ResponderNarrator):

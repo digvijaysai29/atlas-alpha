@@ -31,7 +31,7 @@ from atlas.knowledge.interfaces import Entity, KnowledgeGraph
 from atlas.orchestration.responder_llm import ResponderNarrator, make_responder_llm
 from atlas.orchestration.state import AgentState
 from atlas.execution import GuardedExecutor
-from atlas.tools import ToolRegistry
+from atlas.tools import BaseTool, ToolRegistry
 
 logger = logging.getLogger("atlas.orchestration")
 
@@ -163,6 +163,26 @@ def default_plan_fn(settings: Settings | None = None) -> PlanFn:
 # ---------------------------------------------------------------------------
 # Nodes
 # ---------------------------------------------------------------------------
+def _required_permission_for(action: ProposedAction, tool: BaseTool) -> str | None:
+    """Fail-closed resolution of the RBAC permission an action requires (planner + executor).
+
+    Always re-derives from the tool + the action's args via the exact combination ``propose()``
+    used, then reconciles with the stamped value:
+
+    - stamped is ``None`` (a pre-M4.8c checkpoint, or an action built outside ``propose()``) →
+      the derived value stands in, so ``None`` is never mistaken for "nothing required";
+    - stamped differs from derived → the args no longer match the permission they were stamped
+      under (post-proposal mutation of the args dict) → raise, and the caller denies.
+
+    Raises on invalid args too — any failure here must deny, never run.
+    """
+    derived = tool.permission_for(tool.ArgsSchema.model_validate(action.args))
+    stamped = action.required_permission
+    if stamped is not None and stamped != derived:
+        raise ValueError(f"stamped permission {stamped!r} != args-derived {derived!r}")
+    return derived
+
+
 def make_planner_node(
     plan_fn: PlanFn,
     registry: ToolRegistry,
@@ -181,10 +201,18 @@ def make_planner_node(
         authorized: list[ProposedAction] = []
         for action in proposed:
             audit.proposed(action)
-            # M4.8c: the (optionally resource-scoped) permission was stamped once at proposal time
-            # (ToolRegistry.propose) — read it here rather than re-deriving from the tool, so the
-            # planner and the executor's re-check always agree.
-            required = action.required_permission
+            # M4.8c: resolve the (optionally resource-scoped) permission fail-closed. A plan_fn
+            # normally stamps it via ToolRegistry.propose, but an action built by hand (custom
+            # plan_fn, injected state) may carry None or reference an unknown tool — those must be
+            # denied here, before they can ever be surfaced for human approval.
+            try:
+                tool = registry.get(action.tool)
+                required = _required_permission_for(action, tool)
+            except Exception:  # noqa: BLE001 - security gate: any failure must deny, not crash
+                audit.denied(
+                    action, principal.user_id, reason="could not resolve required permission"
+                )
+                continue
             if not policy.can(principal, required):
                 audit.denied(action, principal.user_id, reason=f"missing permission: {required}")
                 continue
@@ -229,31 +257,35 @@ def make_executor_node(
         approved = set(state.get("approved_action_ids") or [])
         results = []
         for action in state.get("proposed_actions") or []:
-            tool = registry.get(action.tool)
+            try:
+                tool = registry.get(action.tool)
+            except KeyError:
+                # An action for an unregistered tool (injected state / stale checkpoint) is denied,
+                # not crashed on — the rest of the turn's actions still execute.
+                audit.denied(
+                    action,
+                    principal.user_id,
+                    reason="unknown tool",
+                    extra=AuditToolContext(principal=principal.user_id),
+                )
+                continue
             # Non-secret context (schema id/version, destination host, provider, principal) folded into
             # every audit event for this action so the generated tool action is reconstructable later.
             meta = AuditToolContext(**tool.audit_metadata(), principal=principal.user_id)
             # RBAC re-check (defense-in-depth): never run a tool the principal isn't permitted to use,
-            # even if it somehow reached the executor. Reads the same stamped, possibly
-            # resource-scoped permission the planner already checked (M4.8c) — never re-derived from
-            # the tool here, so this can't silently diverge from the planner's decision.
-            required = action.required_permission
-            if required is None:
-                # Pre-M4.8c checkpoint: the action predates permission stamping, so None means
-                # "unknown", not "nothing required" (policy.can would treat it as the latter and
-                # always allow). Re-derive from the tool via the same combination propose() uses,
-                # so a policy tightened while the thread was paused at approval still applies on
-                # resume. Any derivation failure denies — fail-closed.
-                try:
-                    required = tool.permission_for(tool.ArgsSchema.model_validate(action.args))
-                except Exception:  # noqa: BLE001 - security gate: any failure must deny, not crash
-                    audit.denied(
-                        action,
-                        principal.user_id,
-                        reason="could not derive required permission",
-                        extra=meta,
-                    )
-                    continue
+            # even if it somehow reached the executor. _required_permission_for re-derives from the
+            # args and reconciles with the stamped value, so a None (pre-M4.8c checkpoint) is never
+            # read as "nothing required" and args mutated after proposal can't ride a stale grant.
+            try:
+                required = _required_permission_for(action, tool)
+            except Exception:  # noqa: BLE001 - security gate: any failure must deny, not crash
+                audit.denied(
+                    action,
+                    principal.user_id,
+                    reason="could not resolve required permission",
+                    extra=meta,
+                )
+                continue
             if not policy.can(principal, required):
                 audit.denied(
                     action, principal.user_id, reason=f"missing permission: {required}", extra=meta

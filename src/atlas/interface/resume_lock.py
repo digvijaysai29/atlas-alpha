@@ -4,6 +4,18 @@ Two concurrent resume requests on the same ``thread_id`` can both pass a pre-str
 ``get_state`` awaiting-approval check (TOCTOU). A per-thread lock closes that window:
 the first caller holds the lock through ``invoke`` (sync) or through
 ``iter(graph.stream(...))`` (stream); the second sees a non-awaiting thread and gets HTTP 409.
+
+Callers hold the lock via a :class:`ResumeLease` whose ``release()`` is **idempotent and
+owner-safe**: releasing twice (or after another request has re-acquired the underlying lock) can
+never unlock someone else's resume — unlike a raw ``Lock.release()`` guarded by ``lock.locked()``,
+which releases whoever holds it. Entries are refcounted, so the map cannot grow without bound from
+404 probes, yet an entry is never dropped while another caller is still blocked on it (which would
+mint a second lock for the same thread and reopen the race).
+
+Scope: this serializes resumes **within one Python process**. Multi-worker deployments sharing one
+durable checkpointer need sticky routing for approvals (or a future cross-process advisory lock);
+the second worker's resume is still rejected by LangGraph's checkpoint state, but without the
+pre-stream 409 courtesy.
 """
 
 from __future__ import annotations
@@ -20,18 +32,60 @@ from atlas.interface.schemas import ApproveRequest
 from atlas.interface.security import thread_owner, verify_thread_owner
 from atlas.orchestration.graph import Atlas
 
-_locks_guard = threading.Lock()
-_thread_locks: dict[str, threading.Lock] = {}
+
+class _LockEntry:
+    __slots__ = ("lock", "refs")
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.refs = 0
 
 
-def resume_lock(thread_id: str) -> threading.Lock:
-    """Return the per-thread resume lock, creating it on first use."""
-    with _locks_guard:
-        lock = _thread_locks.get(thread_id)
-        if lock is None:
-            lock = threading.Lock()
-            _thread_locks[thread_id] = lock
-        return lock
+_entries_guard = threading.Lock()
+_entries: dict[str, _LockEntry] = {}
+
+
+class ResumeLease:
+    """One caller's exclusive hold on a thread's resume lock.
+
+    Created only by :func:`acquire_resume_lock` (i.e. with the lock already held). ``release()``
+    may be called from any of the multiple cleanup paths a streaming response has (pre-check error,
+    producer start, producer ``finally``, response background task) — the first call releases, the
+    rest are no-ops.
+    """
+
+    def __init__(self, thread_id: str, entry: _LockEntry) -> None:
+        self._thread_id = thread_id
+        self._entry = entry
+        self._released = False
+        self._release_guard = threading.Lock()
+
+    def release(self) -> None:
+        with self._release_guard:
+            if self._released:
+                return
+            self._released = True
+        self._entry.lock.release()
+        with _entries_guard:
+            self._entry.refs -= 1
+            if self._entry.refs == 0 and _entries.get(self._thread_id) is self._entry:
+                del _entries[self._thread_id]
+
+
+def acquire_resume_lock(thread_id: str) -> ResumeLease:
+    """Blocking-acquire the per-thread resume lock; the returned lease must eventually be released.
+
+    The refcount is bumped *before* blocking on the lock, so a waiting caller keeps the entry alive
+    — the holder's release can never delete an entry someone is still queued on.
+    """
+    with _entries_guard:
+        entry = _entries.get(thread_id)
+        if entry is None:
+            entry = _LockEntry()
+            _entries[thread_id] = entry
+        entry.refs += 1
+    entry.lock.acquire()
+    return ResumeLease(thread_id, entry)
 
 
 def is_awaiting_approval(snapshot: StateSnapshot) -> bool:
@@ -57,41 +111,28 @@ def decision_payload(
     return decisions
 
 
-def finish_resume_lock(thread_id: str, lock: threading.Lock) -> None:
-    """Release *lock* if held and remove the cached entry when idle."""
-    if lock.locked():
-        lock.release()
-    with _locks_guard:
-        if _thread_locks.get(thread_id) is lock and not lock.locked():
-            del _thread_locks[thread_id]
-
-
 def gate_resume(
     atlas: Atlas,
     config: RunnableConfig,
     thread_id: str,
     principal: Principal,
     body: ApproveRequest,
-) -> tuple[list[dict[str, Any]], threading.Lock]:
-    """Blocking-acquire the per-thread lock, run resume pre-checks, return decisions with lock held.
+) -> tuple[list[dict[str, Any]], ResumeLease]:
+    """Blocking-acquire the per-thread lock, run resume pre-checks, return decisions + held lease.
 
-    On 404 / 403 / 409 the lock is released before raising :class:`HTTPException`.
+    Any failure — 404 (unknown thread), 403 (non-owner, raised by ``verify_thread_owner``),
+    409 (not awaiting), or an unexpected error — releases the lease before propagating, so a
+    rejected caller can never leave the thread's resume permanently blocked.
     """
-    lock = resume_lock(thread_id)
-    lock.acquire()
+    lease = acquire_resume_lock(thread_id)
     try:
         snapshot = atlas.graph.get_state(config)
         if not snapshot.values:
-            finish_resume_lock(thread_id, lock)
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Thread not found.")
         verify_thread_owner(thread_owner(snapshot), principal)
         if not is_awaiting_approval(snapshot):
-            finish_resume_lock(thread_id, lock)
             raise HTTPException(status.HTTP_409_CONFLICT, "Thread is not awaiting approval.")
-        return decision_payload(body, snapshot, principal), lock
-    except HTTPException:
-        finish_resume_lock(thread_id, lock)
-        raise
-    except Exception:
-        finish_resume_lock(thread_id, lock)
+        return decision_payload(body, snapshot, principal), lease
+    except BaseException:
+        lease.release()
         raise

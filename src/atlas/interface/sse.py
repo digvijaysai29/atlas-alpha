@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import json
 import logging
-import threading
 from collections.abc import Sequence
 from typing import Any, Final
 
@@ -34,7 +33,7 @@ import anyio
 from anyio.streams.memory import MemoryObjectSendStream
 from sse_starlette import ServerSentEvent
 
-from atlas.interface.resume_lock import finish_resume_lock
+from atlas.interface.resume_lock import ResumeLease
 
 logger = logging.getLogger("atlas.interface")
 
@@ -64,8 +63,7 @@ async def run_graph_stream(
     send_stream: MemoryObjectSendStream[Any],
     *,
     stream_modes: Sequence[str] = ("updates",),
-    resume_lock: threading.Lock | None = None,
-    thread_id: str | None = None,
+    resume_lease: ResumeLease | None = None,
 ) -> None:
     """Run ``graph.stream(...)`` to completion, pushing chunks to *send_stream*.
 
@@ -74,20 +72,22 @@ async def run_graph_stream(
     iterator silently so the graph reaches a terminal checkpoint. ``iterator.close()`` runs only in
     ``finally`` after the iterator is exhausted.
 
-    When ``resume_lock`` is supplied (``/approve/stream``), it stays held for the full stream so a
-    concurrent resume cannot pass the awaiting-approval gate until this run finishes.
+    When ``resume_lease`` is supplied (``/approve/stream``), the lock stays held for the full stream
+    so a concurrent resume cannot pass the awaiting-approval gate until this run finishes.
+    ``ResumeLease.release()`` is idempotent, so releasing here is safe even though the route layer
+    also releases on its own cleanup paths.
     """
     modes: str | list[str] = stream_modes[0] if len(stream_modes) == 1 else list(stream_modes)
 
-    def _finish_resume_lock() -> None:
-        if resume_lock is not None and thread_id is not None:
-            finish_resume_lock(thread_id, resume_lock)
+    def _release_lease() -> None:
+        if resume_lease is not None:
+            resume_lease.release()
 
     def _start() -> Any:
         try:
             return iter(graph.stream(state, config, stream_mode=modes))
         except Exception:
-            _finish_resume_lock()
+            _release_lease()
             raise
 
     iterator: Any | None = None
@@ -113,7 +113,7 @@ async def run_graph_stream(
                     if chunk is _DONE:
                         return
     finally:
-        _finish_resume_lock()
+        _release_lease()
         await send_stream.aclose()
         if iterator is not None:
             with anyio.CancelScope(shield=True):

@@ -306,7 +306,12 @@ class _SlackPostArgs(BaseModel):
                 "channel must be a channel name or ID (C…/G…/#name); "
                 "user/DM targets are not allowed for slack_post"
             )
-        return value
+        if stripped.startswith("#"):
+            # Slack channel names are lowercase-only; normalize at the boundary so the channel the
+            # RBAC segment authorizes (slack_channel_resource_segment) and the channel actually sent
+            # to Slack are the same string — never authorize one casing and post another.
+            return "#" + stripped[1:].lower()
+        return stripped
 
 
 class SlackPostTool(BaseTool):

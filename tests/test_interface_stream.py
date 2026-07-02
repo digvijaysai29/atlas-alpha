@@ -500,9 +500,7 @@ async def test_run_graph_stream_closes_send_on_start_failure() -> None:
     config = _config(thread_id)
 
     send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=16)
-    producer_task = asyncio.create_task(
-        run_graph_stream(atlas.graph, {}, config, send_stream, thread_id=thread_id)
-    )
+    producer_task = asyncio.create_task(run_graph_stream(atlas.graph, {}, config, send_stream))
     chunks: list[Any] = []
     try:
         async with receive_stream:

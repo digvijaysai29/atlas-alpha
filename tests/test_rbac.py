@@ -202,6 +202,59 @@ def test_executor_rederives_permission_for_pre_m48c_actions() -> None:
     assert audit.events()[-1].event_type.value == "denied"
 
 
+def test_executor_denies_when_stamped_permission_mismatches_args() -> None:
+    """Args mutated after proposal (the args dict is mutable even on the frozen model) must not
+    ride the originally-stamped grant — the executor re-derives and denies on mismatch."""
+    from typing import cast
+
+    from atlas.governance import InMemoryAuditLog, InMemoryPolicyStore
+    from atlas.orchestration.nodes import make_executor_node
+    from atlas.orchestration.state import AgentState
+
+    registry = offline_registry()
+    action = registry.propose("send_email", {"to": "a@b.com", "subject": "hi", "body": "x"})
+    action.args["to"] = "attacker@evil.example"  # stamped permission still says domain:b.com
+    audit = InMemoryAuditLog()
+    node = make_executor_node(registry, audit, InMemoryPolicyStore())
+    state = {
+        "principal": MEMBER,
+        "proposed_actions": [action],
+        "approved_action_ids": [action.action_id],
+    }
+
+    result = node(cast(AgentState, state))
+
+    assert result["action_results"] == []
+    assert audit.events()[-1].event_type.value == "denied"
+
+
+def _unstamped_plan(
+    _request: str, _registry: ToolRegistry, _context: object
+) -> list[ProposedAction]:
+    # A hand-built action (no registry.propose stamping): required_permission is None.
+    from atlas.actions import RiskTier
+
+    return [
+        ProposedAction(
+            tool="send_email",
+            args={"to": "a@b.com", "subject": "hi", "body": "x"},
+            risk_tier=RiskTier.SEND,
+        )
+    ]
+
+
+def test_planner_derives_permission_for_unstamped_actions() -> None:
+    """None must mean "derive it", not "nothing required": a guest's hand-built send_email action
+    is denied at planning instead of being surfaced for human approval."""
+    atlas = _fresh(_unstamped_plan)
+    result = atlas.graph.invoke(initial_state("email a@b.com", principal=GUEST), config=THREAD)
+
+    assert "__interrupt__" not in result
+    assert result.get("action_results") == []
+    event_types = [e.event_type.value for e in atlas.audit.events()]
+    assert "denied" in event_types
+
+
 def test_executor_rederived_permission_still_allows_authorized_legacy_action() -> None:
     """The fallback must not over-deny: under the default policy the same legacy action runs."""
     from typing import cast

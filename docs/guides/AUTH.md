@@ -150,6 +150,7 @@ can never disagree. Matching is the **same** hierarchical wildcard rule above; n
 | `slack_post` | `channel:<name-or-id>` | `tool:slack:post:channel:general` |
 | `send_email` | `domain:<lowercased recipient domain>` | `tool:send:domain:company.com` |
 | `gmail_send` | `domain:<lowercased recipient domain>` | `tool:gmail:send:domain:company.com` |
+| `slack_delete_message` (schema-driven) | `channel:<name-or-id>` | `tool:slack:delete_message:channel:general` |
 
 The default policy grants the **wildcard** form (`tool:slack:post:*`, etc.) — today's "any
 channel/any recipient" behavior, unchanged. An operator can instead grant a **narrower** permission to
@@ -166,9 +167,17 @@ resource-scoped required permissions (a bare grant has no trailing `:*`). The ex
 `missing_default_grants` startup warning will report this; re-run `manage_policy.py seed` (additive,
 safe to run repeatedly) after upgrading.
 
-**Not yet resource-scoped:** `slack_post_as_user` (it has a schema-driven twin built by the adapter
-engine, and scoping only the hand-written side would break their equivalence guarantee) and all
-schema-driven tools under `tool_schemas/<provider>/` (see [TOOL_SCHEMAS.md](./TOOL_SCHEMAS.md)) — `required_permission` there stays a flat string).
+**Schema-driven tools** under `tool_schemas/<provider>/` (see [TOOL_SCHEMAS.md](./TOOL_SCHEMAS.md))
+declare a flat `required_permission` and may opt into resource scoping with
+`resource_permission_arg: "<arg>"` — the adapter engine then appends the same kind of resource
+segment as the hand-written tools above. The bundled `slack_delete_message` does this
+(`resource_permission_arg: "channel"`), so its effective permission is
+`tool:slack:delete_message:channel:<name-or-id>`: grant the wildcard
+`tool:slack:delete_message:*` (the seeded default) or a channel-scoped form — a bare
+`tool:slack:delete_message` grant will **not** satisfy it.
+
+**Not resource-scoped:** `slack_post_as_user` — its schema declares no `resource_permission_arg`
+(scoping only the hand-written side would break the hand-written/schema equivalence guarantee).
 
 ## Rate limiting (M3.6)
 

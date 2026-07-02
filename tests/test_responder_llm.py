@@ -108,17 +108,37 @@ def test_responder_llm_streams_enabled_and_uses_fallbacks() -> None:
     mock_primary.with_fallbacks.assert_called_once_with([mock_fallback])
 
 
-def test_responder_llm_coerces_non_string_content() -> None:
+def test_responder_llm_flattens_content_block_lists() -> None:
+    # Providers may return content as a list of blocks; the user must get the text, never a repr.
     from unittest.mock import MagicMock, patch
 
     mock_client = MagicMock()
-    mock_client.invoke.return_value = MagicMock(content=[{"type": "text", "text": "hi"}])
+    mock_client.invoke.return_value = MagicMock(
+        content=[
+            {"type": "text", "text": "hi "},
+            {"type": "tool_use"},
+            {"type": "text", "text": "there"},
+        ]
+    )
 
     with patch("langchain_openrouter.ChatOpenRouter", return_value=mock_client):
         narrator = ResponderLLM("sk-or-test", "anthropic/claude-opus-4-8")
         result = narrator.respond("q", "f")
 
-    assert result == "[{'type': 'text', 'text': 'hi'}]"
+    assert result == "hi there"
+
+
+def test_responder_llm_coerces_scalar_non_string_content() -> None:
+    from unittest.mock import MagicMock, patch
+
+    mock_client = MagicMock()
+    mock_client.invoke.return_value = MagicMock(content=42)
+
+    with patch("langchain_openrouter.ChatOpenRouter", return_value=mock_client):
+        narrator = ResponderLLM("sk-or-test", "anthropic/claude-opus-4-8")
+        result = narrator.respond("q", "f")
+
+    assert result == "42"
 
 
 # --- FakeResponderLLM (test double) -------------------------------------------

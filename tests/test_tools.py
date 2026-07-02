@@ -87,6 +87,14 @@ def test_slack_post_permission_is_scoped_by_channel() -> None:
     assert action.required_permission == "tool:slack:post:channel:general"
 
 
+def test_slack_post_channel_name_arg_is_normalized_to_lowercase() -> None:
+    # The executed channel and the RBAC-authorized channel must be the same string: a grant for
+    # channel:general can never authorize a post that is then sent to a differently-cased target.
+    registry = default_registry()
+    action = registry.propose("slack_post", {"channel": "#General", "text": "hi"})
+    assert action.args["channel"] == "#general"
+
+
 def test_slack_post_permission_uses_raw_channel_id_unchanged() -> None:
     registry = default_registry()
     action = registry.propose("slack_post", {"channel": "C123ABC", "text": "hi"})
