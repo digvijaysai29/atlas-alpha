@@ -22,7 +22,7 @@ from langgraph.types import Command, StateSnapshot
 from sse_starlette import EventSourceResponse, ServerSentEvent
 
 from atlas.interface.rate_limit import RateLimited
-from atlas.interface.resume_lock import gate_resume, is_awaiting_approval
+from atlas.interface.resume_lock import finish_resume_lock, gate_resume, is_awaiting_approval
 from atlas.interface.schemas import AgentResponse, ApproveRequest, ChatRequest
 from atlas.interface.security import RequestPrincipal, thread_owner, verify_thread_owner
 from atlas.interface.sse import (
@@ -189,6 +189,7 @@ async def _stream_lifecycle(
             send_stream,
             stream_modes=("updates", "messages"),
             resume_lock=resume_lock,
+            thread_id=thread_id if resume_lock is not None else None,
         )
     )
     try:
@@ -283,8 +284,7 @@ def approve(body: ApproveRequest, principal: RequestPrincipal, atlas: AtlasDep) 
         result = atlas.graph.invoke(Command(resume=decisions), config)
         return _response_from_invoke(body.thread_id, result)
     finally:
-        if lock.locked():
-            lock.release()
+        finish_resume_lock(body.thread_id, lock)
 
 
 @router.post(

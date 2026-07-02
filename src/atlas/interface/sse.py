@@ -34,6 +34,8 @@ import anyio
 from anyio.streams.memory import MemoryObjectSendStream
 from sse_starlette import ServerSentEvent
 
+from atlas.interface.resume_lock import finish_resume_lock
+
 logger = logging.getLogger("atlas.interface")
 
 # Event names (the SSE ``event:`` field). Clients switch on these.
@@ -63,6 +65,7 @@ async def run_graph_stream(
     *,
     stream_modes: Sequence[str] = ("updates",),
     resume_lock: threading.Lock | None = None,
+    thread_id: str | None = None,
 ) -> None:
     """Run ``graph.stream(...)`` to completion, pushing chunks to *send_stream*.
 
@@ -76,23 +79,27 @@ async def run_graph_stream(
     """
     modes: str | list[str] = stream_modes[0] if len(stream_modes) == 1 else list(stream_modes)
 
+    def _finish_resume_lock() -> None:
+        if resume_lock is not None and thread_id is not None:
+            finish_resume_lock(thread_id, resume_lock)
+
     def _start() -> Any:
         try:
             return iter(graph.stream(state, config, stream_mode=modes))
         except Exception:
-            if resume_lock is not None and resume_lock.locked():
-                resume_lock.release()
+            _finish_resume_lock()
             raise
 
-    iterator: Any = await anyio.to_thread.run_sync(_start)
-
-    def _next() -> Any:
-        try:
-            return next(iterator)
-        except StopIteration:
-            return _DONE
-
+    iterator: Any | None = None
     try:
+        iterator = await anyio.to_thread.run_sync(_start)
+
+        def _next() -> Any:
+            try:
+                return next(iterator)
+            except StopIteration:
+                return _DONE
+
         while True:
             chunk = await anyio.to_thread.run_sync(_next)
             if chunk is _DONE:
@@ -105,11 +112,11 @@ async def run_graph_stream(
                     if chunk is _DONE:
                         return
     finally:
-        if resume_lock is not None and resume_lock.locked():
-            resume_lock.release()
+        _finish_resume_lock()
         await send_stream.aclose()
-        with anyio.CancelScope(shield=True):
-            try:
-                await anyio.to_thread.run_sync(iterator.close)
-            except Exception:  # pragma: no cover - best-effort cleanup; nothing to recover here
-                logger.debug("graph stream close() failed during cleanup", exc_info=True)
+        if iterator is not None:
+            with anyio.CancelScope(shield=True):
+                try:
+                    await anyio.to_thread.run_sync(iterator.close)
+                except Exception:  # pragma: no cover - best-effort cleanup; nothing to recover here
+                    logger.debug("graph stream close() failed during cleanup", exc_info=True)

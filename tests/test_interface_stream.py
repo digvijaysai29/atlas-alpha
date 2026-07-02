@@ -10,6 +10,8 @@ scripted plan) so no API key, network, or Postgres is needed. The headline asser
 from __future__ import annotations
 
 import asyncio
+
+import pytest
 import json
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -441,6 +443,75 @@ async def test_token_events_surface_responder_text_filtered_by_node() -> None:
     assert "SHOULD-NOT-LEAK" not in token_texts
     completed = next(data for e, data in events if e == "completed")
     assert completed["response"] == "Hello, world"
+
+
+class _FailingStreamGraph:
+    """Graph whose ``stream()`` raises before the first yield — exercises setup-failure cleanup."""
+
+    def stream(self, state: Any, config: Any, *, stream_mode: Any) -> Any:
+        del state, config, stream_mode
+        raise RuntimeError("stream setup failed")
+
+    def get_state(self, config: Any) -> StateSnapshot:
+        del config
+        return StateSnapshot(
+            values={"messages": []},
+            next=(),
+            config={},
+            metadata=None,
+            created_at=None,
+            parent_config=None,
+            tasks=(),
+            interrupts=(),
+        )
+
+
+async def test_stream_setup_failure_emits_error_and_done() -> None:
+    from types import SimpleNamespace
+    from typing import cast
+
+    from atlas.interface.routes import _stream_lifecycle
+    from atlas.orchestration.graph import Atlas
+
+    atlas = cast(Atlas, SimpleNamespace(graph=_FailingStreamGraph()))
+    thread_id = "thr_fail"
+
+    events = []
+    async for event in _stream_lifecycle(atlas, {}, thread_id, _config(thread_id)):
+        assert isinstance(event.data, str)
+        events.append((event.event, json.loads(event.data)))
+
+    names = [e for e, _ in events]
+    assert names == ["open", "error", "done"]
+    error = next(data for e, data in events if e == "error")
+    assert error == {"code": "internal_error", "message": "Internal server error."}
+
+
+async def test_run_graph_stream_closes_send_on_start_failure() -> None:
+    from types import SimpleNamespace
+    from typing import cast
+
+    from atlas.orchestration.graph import Atlas
+
+    atlas = cast(Atlas, SimpleNamespace(graph=_FailingStreamGraph()))
+    thread_id = "thr_fail"
+    config = _config(thread_id)
+
+    send_stream, receive_stream = anyio.create_memory_object_stream(max_buffer_size=16)
+    producer_task = asyncio.create_task(
+        run_graph_stream(atlas.graph, {}, config, send_stream, thread_id=thread_id)
+    )
+    chunks: list[Any] = []
+    try:
+        async with receive_stream:
+            async for chunk in receive_stream:
+                chunks.append(chunk)
+    finally:
+        await receive_stream.aclose()
+        with pytest.raises(RuntimeError, match="stream setup failed"):
+            await producer_task
+
+    assert chunks == []
 
 
 # --- _chunk_text (pure helper) ---------------------------------------------------

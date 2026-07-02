@@ -57,9 +57,13 @@ def decision_payload(
     return decisions
 
 
-def _release_if_held(lock: threading.Lock) -> None:
+def finish_resume_lock(thread_id: str, lock: threading.Lock) -> None:
+    """Release *lock* if held and remove the cached entry when idle."""
     if lock.locked():
         lock.release()
+    with _locks_guard:
+        if _thread_locks.get(thread_id) is lock and not lock.locked():
+            del _thread_locks[thread_id]
 
 
 def gate_resume(
@@ -78,15 +82,16 @@ def gate_resume(
     try:
         snapshot = atlas.graph.get_state(config)
         if not snapshot.values:
-            _release_if_held(lock)
+            finish_resume_lock(thread_id, lock)
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Thread not found.")
         verify_thread_owner(thread_owner(snapshot), principal)
         if not is_awaiting_approval(snapshot):
-            _release_if_held(lock)
+            finish_resume_lock(thread_id, lock)
             raise HTTPException(status.HTTP_409_CONFLICT, "Thread is not awaiting approval.")
         return decision_payload(body, snapshot, principal), lock
     except HTTPException:
+        finish_resume_lock(thread_id, lock)
         raise
     except Exception:
-        _release_if_held(lock)
+        finish_resume_lock(thread_id, lock)
         raise
