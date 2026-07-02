@@ -336,7 +336,9 @@ def test_concurrent_double_approve_stream_returns_one_200_and_one_409() -> None:
 
     def approve_stream_once() -> int:
         with TestClient(app) as stream_client:
-            return stream_client.post("/approve/stream", json=payload, headers=headers).status_code
+            return int(
+                stream_client.post("/approve/stream", json=payload, headers=headers).status_code
+            )
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         codes = sorted(

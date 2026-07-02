@@ -191,7 +191,7 @@ def test_concurrent_double_approve_returns_one_200_and_one_409() -> None:
     headers = _headers("alice")
 
     def approve_once() -> int:
-        return client.post("/approve", json=payload, headers=headers).status_code
+        return int(client.post("/approve", json=payload, headers=headers).status_code)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         codes = sorted(f.result() for f in (pool.submit(approve_once), pool.submit(approve_once)))

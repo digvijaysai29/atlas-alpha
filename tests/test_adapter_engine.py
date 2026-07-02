@@ -143,9 +143,7 @@ def test_slack_delete_message_permission_normalizes_channel_name() -> None:
     tool = _engine(FakeTransport(_ALLOWLIST)).build_tool(schema)
     registry = ToolRegistry()
     registry.register(tool)
-    action = registry.propose(
-        "slack_delete_message", {"channel": "#General", "ts": "123.45"}
-    )
+    action = registry.propose("slack_delete_message", {"channel": "#General", "ts": "123.45"})
     assert action.required_permission == "tool:slack:delete_message:channel:general"
 
 

@@ -95,6 +95,7 @@ async def run_graph_stream(
         iterator = await anyio.to_thread.run_sync(_start)
 
         def _next() -> Any:
+            assert iterator is not None
             try:
                 return next(iterator)
             except StopIteration:

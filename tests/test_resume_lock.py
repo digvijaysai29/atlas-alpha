@@ -18,7 +18,7 @@ from atlas.interface.resume_lock import _thread_locks, finish_resume_lock, gate_
 from atlas.interface.routes import _config
 from atlas.interface.schemas import ApproveRequest
 from atlas.orchestration import build_graph
-from atlas.orchestration.nodes import PlanFn
+from atlas.orchestration.graph import Atlas
 from atlas.orchestration.serde import atlas_serde
 from atlas.tools import ToolRegistry
 from tests.helpers import offline_registry
@@ -28,7 +28,7 @@ def _send_plan(_req: str, registry: ToolRegistry, _ctx: object) -> list[Proposed
     return [registry.propose("send_email", {"to": "a@b.com", "subject": "hi", "body": "x"})]
 
 
-def _build() -> tuple[TestClient, object]:
+def _build() -> tuple[TestClient, Atlas]:
     atlas = build_graph(
         plan_fn=_send_plan,
         registry=offline_registry(),
