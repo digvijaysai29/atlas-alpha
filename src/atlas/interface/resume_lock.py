@@ -12,10 +12,13 @@ which releases whoever holds it. Entries are refcounted, so the map cannot grow 
 404 probes, yet an entry is never dropped while another caller is still blocked on it (which would
 mint a second lock for the same thread and reopen the race).
 
-Scope: this serializes resumes **within one Python process**. Multi-worker deployments sharing one
-durable checkpointer need sticky routing for approvals (or a future cross-process advisory lock);
-the second worker's resume is still rejected by LangGraph's checkpoint state, but without the
-pre-stream 409 courtesy.
+Scope: this serializes resumes **within one Python process** — its job is the deterministic
+pre-stream 409, not side-effect safety. Duplicate side effects from a cross-worker double resume
+are independently prevented by the durable audit-ledger idempotency in
+:class:`atlas.execution.GuardedExecutor` (an already-executed ``action_id`` replays as a no-op),
+which is exactly why real senders require ``DATABASE_URL``. Multi-worker deployments that also
+want the deterministic 409 need sticky routing for approvals or a future cross-process advisory
+lock (see RUNBOOK).
 """
 
 from __future__ import annotations
