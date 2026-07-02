@@ -176,15 +176,24 @@ def load_schema(path: Path) -> ToolSchema:
     return ToolSchema.model_validate(raw)
 
 
+def iter_schema_paths(directory: Path) -> list[Path]:
+    """Return every ``*.json`` schema under ``directory``, recursively (sorted for deterministic order).
+
+    Schemas are grouped in provider subfolders (e.g. ``slack/``, ``google/``); see
+    ``docs/guides/TOOL_SCHEMAS.md``.
+    """
+    return sorted(directory.glob("**/*.json"))
+
+
 def load_schema_dir(directory: Path) -> list[ToolSchema]:
-    """Load every ``*.json`` schema in ``directory`` (sorted for deterministic order).
+    """Load every ``*.json`` schema under ``directory``, recursively (sorted for deterministic order).
 
     Fail-closed when the adapter engine is enabled: a missing directory or one with no schemas
     raises :class:`ToolSchemaError` so startup cannot silently keep hand-written tools on legacy egress.
     """
     if not directory.is_dir():
         raise ToolSchemaError(f"schema directory does not exist: {directory}")
-    paths = sorted(directory.glob("*.json"))
+    paths = iter_schema_paths(directory)
     if not paths:
         raise ToolSchemaError(f"schema directory contains no *.json schemas: {directory}")
     return [load_schema(path) for path in paths]
@@ -337,8 +346,8 @@ class AdapterEngine:
         )
 
     def build_tools_from_dir(self, directory: Path) -> list[BaseTool]:
-        """Build every ``*.json`` schema in ``directory`` (sorted for deterministic order)."""
-        return [self.build_tool(load_schema(path)) for path in sorted(directory.glob("*.json"))]
+        """Build every ``*.json`` schema under ``directory``, recursively (sorted for deterministic order)."""
+        return [self.build_tool(load_schema(path)) for path in iter_schema_paths(directory)]
 
     def _validate_security(self, schema: ToolSchema) -> None:
         # 1. A schema may not declare auto-run READ unless the tool name is code-allowlisted.

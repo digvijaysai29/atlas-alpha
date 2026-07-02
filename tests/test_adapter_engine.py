@@ -65,7 +65,7 @@ def _engine(
 
 
 def _slack_schema_path() -> Path:
-    return packaged_schema_dir() / "slack_post_as_user.json"
+    return packaged_schema_dir() / "slack" / "slack_post_as_user.json"
 
 
 def _base_schema(**overrides: object) -> ToolSchema:
@@ -94,7 +94,7 @@ def test_packaged_slack_schema_matches_handwritten_metadata() -> None:
 
 # --- slack_delete_message (M4.8d — new connector purely via schema) --------
 def _delete_message_schema_path() -> Path:
-    return packaged_schema_dir() / "slack_delete_message.json"
+    return packaged_schema_dir() / "slack" / "slack_delete_message.json"
 
 
 def test_slack_delete_message_schema_loads_and_validates() -> None:

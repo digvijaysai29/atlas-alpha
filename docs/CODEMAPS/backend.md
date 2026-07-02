@@ -56,12 +56,12 @@ execution (`REPLAY_SKIPPED`/`FAILED`/`EXECUTED`).
 
 ## Adapter engine (M4.8a/b — `adapter_engine.py`, `tool_egress.py`)
 
-Trusted JSON `ToolSchema` files (`src/atlas/tool_schemas/*.json`, CODEOWNERS-reviewed) are compiled at
+Trusted JSON `ToolSchema` files (`src/atlas/tool_schemas/**/*.json`, CODEOWNERS-reviewed) are compiled at
 startup into `BaseTool`s (`_SchemaTool`) behind the same approval/RBAC/audit gate. Egress is
 SSRF-hardened: single-parsed `httpx.URL`, host + exact `(method,host,path)` route allowlist
 (`EgressPolicy`), IP-pinned direct transport (`HttpxTransport`) or an optional forward proxy
 (`ProxyTransport`, `make_adapter_transport`), redirects never followed. Guide:
-[`CUSTOM_CONNECTORS.md`](../guides/CUSTOM_CONNECTORS.md).
+[`CUSTOM_CONNECTORS.md`](../guides/CUSTOM_CONNECTORS.md) · [`TOOL_SCHEMAS.md`](../guides/TOOL_SCHEMAS.md).
 
 ## Scripts (`scripts/*.py`)
 

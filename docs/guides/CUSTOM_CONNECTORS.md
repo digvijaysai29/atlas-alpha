@@ -2,14 +2,14 @@
 
 A **custom connector** is an outbound tool (e.g. "post a Slack message", "create a calendar event")
 that the agent can propose. Instead of writing Python for each one, you drop a small **JSON schema**
-into `src/atlas/tool_schemas/` and the **adapter engine** turns it into a real tool — with all the
+into `src/atlas/tool_schemas/<provider>/` and the **adapter engine** turns it into a real tool — with all the
 security controls (approval gate, RBAC, audit, SSRF-safe egress) applied automatically.
 
 > You write *what* the tool calls. The engine enforces *how* it is allowed to run.
 
 ## TL;DR
 
-1. Add a `*.json` file under `src/atlas/tool_schemas/`.
+1. Add a `*.json` file under `src/atlas/tool_schemas/<provider>/` (see [`TOOL_SCHEMAS.md`](./TOOL_SCHEMAS.md)).
 2. Add the endpoint host to the egress allowlist (`ATLAS_ADAPTER_EGRESS_ALLOWLIST`).
 3. Turn the engine on (`ATLAS_ADAPTER_ENGINE_ENABLED=true`).
 4. Open a PR — schema files are **code** (CODEOWNERS-reviewed).
@@ -18,7 +18,7 @@ No Python, no redeploy logic, no hand-rolled HTTP.
 
 ## Example schema
 
-This is the bundled `slack_post_as_user.json`:
+This is the bundled `slack/slack_post_as_user.json`:
 
 ```json
 {
@@ -83,7 +83,7 @@ Every schema-built tool runs through the **unchanged** execution gate:
 
 ## Adding one — step by step
 
-1. **Write the schema** under `src/atlas/tool_schemas/<name>.json` (copy the example above).
+1. **Write the schema** under `src/atlas/tool_schemas/<provider>/<name>.json` (copy the example above).
 2. **Allowlist the host:** add the endpoint host to `ATLAS_ADAPTER_EGRESS_ALLOWLIST` (comma-separated).
 3. **Connect the provider:** the caller must have linked the `provider` via OAuth (see
    [`AUTH.md`](./AUTH.md)) with the `required_scopes`.

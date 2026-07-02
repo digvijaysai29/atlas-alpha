@@ -168,7 +168,7 @@ safe to run repeatedly) after upgrading.
 
 **Not yet resource-scoped:** `slack_post_as_user` (it has a schema-driven twin built by the adapter
 engine, and scoping only the hand-written side would break their equivalence guarantee) and all
-schema-driven tools (`tool_schemas/*.json` — `required_permission` there stays a flat string).
+schema-driven tools under `tool_schemas/<provider>/` (see [TOOL_SCHEMAS.md](./TOOL_SCHEMAS.md)) — `required_permission` there stays a flat string).
 
 ## Rate limiting (M3.6)
 

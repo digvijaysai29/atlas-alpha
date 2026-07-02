@@ -326,7 +326,7 @@ def _delete_message_registry() -> ToolRegistry:
     )
     registry = ToolRegistry()
     registry.register(
-        engine.build_tool(load_schema(packaged_schema_dir() / "slack_delete_message.json"))
+        engine.build_tool(load_schema(packaged_schema_dir() / "slack" / "slack_delete_message.json"))
     )
     return registry
 
