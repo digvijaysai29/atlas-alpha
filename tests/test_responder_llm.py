@@ -54,6 +54,12 @@ def test_make_responder_llm_returns_llm_when_enabled_with_key() -> None:
     assert isinstance(make_responder_llm(settings), ResponderLLM)
 
 
+def test_default_responder_model_is_openrouter_dot_slug() -> None:
+    # OpenRouter slugs use a dot before the minor version (anthropic/claude-opus-4.8); the
+    # hyphenated Anthropic-direct id would fail every request and silently fall back each turn.
+    assert _settings().responder_model == "anthropic/claude-opus-4.8"
+
+
 def test_flag_without_key_is_rejected_fail_fast() -> None:
     with pytest.raises(ValidationError):
         _settings(ATLAS_RESPONDER_LLM_ENABLED=True)
@@ -76,7 +82,7 @@ def test_responder_fallback_model_list_parses_and_trims() -> None:
 # --- ResponderLLM construction (no network) -----------------------------------
 def test_responder_llm_rejects_blank_key() -> None:
     with pytest.raises(ValueError):
-        ResponderLLM("   ", "anthropic/claude-opus-4-8")
+        ResponderLLM("   ", "anthropic/claude-opus-4.8")
 
 
 def test_responder_llm_rejects_blank_model() -> None:
@@ -97,7 +103,7 @@ def test_responder_llm_streams_enabled_and_uses_fallbacks() -> None:
         "langchain_openrouter.ChatOpenRouter", side_effect=[mock_primary, mock_fallback]
     ) as mock_ctor:
         narrator = ResponderLLM(
-            "sk-or-test", "anthropic/claude-opus-4-8", fallback_models=("openai/gpt-4o",)
+            "sk-or-test", "anthropic/claude-opus-4.8", fallback_models=("openai/gpt-4o",)
         )
         result = narrator.respond("what happened?", "facts here")
 
@@ -122,7 +128,7 @@ def test_responder_llm_flattens_content_block_lists() -> None:
     )
 
     with patch("langchain_openrouter.ChatOpenRouter", return_value=mock_client):
-        narrator = ResponderLLM("sk-or-test", "anthropic/claude-opus-4-8")
+        narrator = ResponderLLM("sk-or-test", "anthropic/claude-opus-4.8")
         result = narrator.respond("q", "f")
 
     assert result == "hi there"
@@ -135,7 +141,7 @@ def test_responder_llm_coerces_scalar_non_string_content() -> None:
     mock_client.invoke.return_value = MagicMock(content=42)
 
     with patch("langchain_openrouter.ChatOpenRouter", return_value=mock_client):
-        narrator = ResponderLLM("sk-or-test", "anthropic/claude-opus-4-8")
+        narrator = ResponderLLM("sk-or-test", "anthropic/claude-opus-4.8")
         result = narrator.respond("q", "f")
 
     assert result == "42"

@@ -135,8 +135,9 @@ class ToolSchema(BaseModel):
     # is explicitly code-allowlisted (see _READ_TIER_ALLOWLIST), enforced in AdapterEngine.build_tool.
     risk_tier: RiskTier = RiskTier.SEND
     required_permission: str | None = None
-    # When set, :meth:`_SchemaTool.resource_permission` appends a segment derived from this arg
-    # (must name a declared ``str`` arg — validated below).
+    # When set, :meth:`_SchemaTool.resource_permission` appends a ``<arg>:<value>`` segment derived
+    # from this arg (must name a declared *required* ``str`` arg — validated below). A ``channel``
+    # arg additionally gets Slack channel-name normalization.
     resource_permission_arg: str | None = None
     provider: OAuthProvider
     required_scopes: tuple[str, ...] = ()
@@ -163,9 +164,9 @@ class ToolSchema(BaseModel):
                     f"resource_permission_arg '{arg_name}' references undeclared arg"
                 )
             arg_spec = next(a for a in self.args if a.name == arg_name)
-            if arg_spec.type != "str":
+            if arg_spec.type != "str" or not arg_spec.required:
                 raise ToolSchemaError(
-                    f"resource_permission_arg '{arg_name}' must name a declared str arg"
+                    f"resource_permission_arg '{arg_name}' must name a declared required str arg"
                 )
         return self
 
@@ -286,7 +287,13 @@ class _SchemaTool(BaseTool):
             return None
         if not isinstance(args, self.ArgsSchema):
             raise TypeError(f"expected {self.ArgsSchema.__name__}, got {type(args).__name__}")
-        return slack_channel_resource_segment(getattr(args, arg_name))
+        value = getattr(args, arg_name)
+        # ``channel`` args get Slack's channel-name normalization (``#General`` -> ``general``);
+        # any other resource arg is stamped verbatim under its own kind, e.g. ``repo:<value>``,
+        # so a non-Slack schema is never mislabeled as channel-scoped.
+        if arg_name == "channel":
+            return slack_channel_resource_segment(value)
+        return f"{arg_name}:{value}"
 
     def audit_metadata(self) -> dict[str, Any]:
         """Non-secret context the executor folds into the audit event (reconstructability).

@@ -101,7 +101,9 @@ class Settings(BaseSettings):
     # never influences authorization, risk tier, or approval — those are already final by the time it
     # runs — and any LLM failure falls back to the deterministic summary rather than failing the turn.
     responder_llm_enabled: bool = Field(default=False, alias="ATLAS_RESPONDER_LLM_ENABLED")
-    responder_model: str = Field(default="anthropic/claude-opus-4-8", alias="ATLAS_RESPONDER_MODEL")
+    # OpenRouter slug (dot form, e.g. ``anthropic/claude-opus-4.8``) — NOT the hyphenated
+    # Anthropic-direct model id used by ATLAS_MODEL above.
+    responder_model: str = Field(default="anthropic/claude-opus-4.8", alias="ATLAS_RESPONDER_MODEL")
     # Comma-separated OpenRouter model ids tried in order when the primary fails. Blank => no fallbacks.
     responder_fallback_models: str = Field(default="", alias="ATLAS_RESPONDER_FALLBACK_MODELS")
 

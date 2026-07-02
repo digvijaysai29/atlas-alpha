@@ -147,6 +147,29 @@ def test_slack_delete_message_permission_normalizes_channel_name() -> None:
     assert action.required_permission == "tool:slack:delete_message:channel:general"
 
 
+def test_resource_permission_arg_must_be_required_str() -> None:
+    # An optional resource arg could arrive as None at permission-derivation time; reject at load.
+    with pytest.raises(ValidationError, match="required str arg"):
+        _base_schema(
+            resource_permission_arg="text",
+            args=[{"name": "text", "type": "str", "required": False}],
+        )
+
+
+def test_resource_segment_uses_arg_name_for_non_channel_args() -> None:
+    # A non-Slack resource arg is stamped under its own kind, verbatim — never as ``channel:``.
+    schema = _base_schema(
+        resource_permission_arg="repo",
+        args=[{"name": "repo", "type": "str"}],
+        payload={"repo": {"arg": "repo"}},
+    )
+    tool = _engine(FakeTransport(_ALLOWLIST)).build_tool(schema)
+    registry = ToolRegistry()
+    registry.register(tool)
+    action = registry.propose("x_tool", {"repo": "Acme/Site"})
+    assert action.required_permission == "tool:test:repo:Acme/Site"
+
+
 def test_load_schema_dir_includes_both_bundled_schemas() -> None:
     schemas = {s.name for s in load_schema_dir(packaged_schema_dir())}
     assert schemas == {"slack_post_as_user", "slack_delete_message"}

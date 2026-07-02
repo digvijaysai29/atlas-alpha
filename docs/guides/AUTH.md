@@ -169,8 +169,9 @@ safe to run repeatedly) after upgrading.
 
 **Schema-driven tools** under `tool_schemas/<provider>/` (see [TOOL_SCHEMAS.md](./TOOL_SCHEMAS.md))
 declare a flat `required_permission` and may opt into resource scoping with
-`resource_permission_arg: "<arg>"` — the adapter engine then appends the same kind of resource
-segment as the hand-written tools above. The bundled `slack_delete_message` does this
+`resource_permission_arg: "<arg>"` — the adapter engine then appends a `<arg>:<value>` segment
+derived from that (required) arg, with Slack channel-name normalization applied when the arg is
+`channel`. The bundled `slack_delete_message` does this
 (`resource_permission_arg: "channel"`), so its effective permission is
 `tool:slack:delete_message:channel:<name-or-id>`: grant the wildcard
 `tool:slack:delete_message:*` (the seeded default) or a channel-scoped form — a bare
