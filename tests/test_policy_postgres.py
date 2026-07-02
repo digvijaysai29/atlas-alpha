@@ -75,7 +75,8 @@ def test_missing_default_grants_reports_absent_permissions(pg_pool: object) -> N
     store = PostgresPolicyStore(pg_pool)  # type: ignore[arg-type]
     store.grant("member", "tool:send")
     drift = store.missing_default_grants()
-    assert "tool:slack:post" in drift.get("member", frozenset())
+    # M4.8c: the member default is the resource-scoped wildcard, not the bare grant.
+    assert "tool:slack:post:*" in drift.get("member", frozenset())
 
 
 def test_missing_default_grants_empty_when_fully_seeded(pg_pool: object) -> None:

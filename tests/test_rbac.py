@@ -161,7 +161,7 @@ def test_principal_survives_checkpoint_resume() -> None:
     assert final["principal"] == MEMBER
 
 
-def _legacy_executor_state(registry: ToolRegistry) -> tuple[ProposedAction, dict]:
+def _legacy_executor_state(registry: ToolRegistry) -> tuple[ProposedAction, dict[str, object]]:
     """An approved send_email action whose ``required_permission`` deserialized to ``None`` —
     exactly what a checkpoint written before M4.8c looks like after resume."""
     stamped = registry.propose("send_email", {"to": "a@b.com", "subject": "hi", "body": "x"})
