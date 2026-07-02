@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import abc
 import logging
+import re
 from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
@@ -74,6 +75,28 @@ class BaseTool(abc.ABC):
         """Execute the tool with already-validated arguments and return its output."""
         raise NotImplementedError
 
+    def resource_permission(self, args: BaseModel) -> str | None:
+        """Optional resource segment appended to ``required_permission`` (M4.8c).
+
+        Default: no resource scoping (``None``) — the tool's permission stays exactly
+        ``required_permission``, today's behavior. Tools that gate by an argument (e.g. Slack
+        channel, email recipient domain) override this to return a segment like
+        ``"channel:general"``; :meth:`ToolRegistry.propose` appends it once, at proposal time, so
+        the planner and executor always check the identical string (never re-derived from raw args
+        at two different points, which could diverge).
+        """
+        return None
+
+    def permission_for(self, args: BaseModel) -> str | None:
+        """The full RBAC permission for validated ``args``: base + optional resource segment.
+
+        The single place base and resource permissions are combined. :meth:`ToolRegistry.propose`
+        stamps this onto every new action; the executor re-derives via this same method for legacy
+        (pre-M4.8c) checkpointed actions whose ``required_permission`` deserialized to ``None`` —
+        so the two paths can never disagree.
+        """
+        return _combine_permission(self.required_permission, self.resource_permission(args))
+
     def audit_metadata(self) -> dict[str, Any]:
         """Non-secret context merged into this tool's audit events (default: none).
 
@@ -106,7 +129,10 @@ class ToolRegistry:
     def propose(self, tool_name: str, args: dict[str, Any], rationale: str = "") -> ProposedAction:
         """Build a risk-tagged :class:`ProposedAction`, validating args against the tool's schema.
 
-        The ``risk_tier`` is taken from the tool definition — this is the security invariant.
+        The ``risk_tier`` is taken from the tool definition — this is the security invariant. The
+        RBAC ``required_permission`` (optionally resource-scoped, M4.8c) is likewise computed here,
+        once, from the tool + validated args, and stamped onto the immutable action so the planner
+        and executor never re-derive it (and can't disagree).
         """
         tool = self.get(tool_name)
         validated = tool.ArgsSchema.model_validate(args)  # raises on invalid input
@@ -115,6 +141,7 @@ class ToolRegistry:
             args=validated.model_dump(),
             risk_tier=tool.risk_tier,
             rationale=rationale,
+            required_permission=tool.permission_for(validated),
         )
 
     def execute(self, action: ProposedAction, principal: Principal) -> ActionResult:
@@ -137,6 +164,58 @@ class ToolRegistry:
                 ok=False,
                 error=f"{type(exc).__name__}: {exc}",
             )
+
+
+def slack_channel_resource_segment(channel: str) -> str:
+    """Resource segment for Slack channel-scoped RBAC (M4.8c).
+
+    A ``#name`` form is unambiguously a channel *name*, and Slack forces names to lowercase —
+    normalize so ``#General`` matches a ``channel:general`` grant. Bare values may be channel IDs
+    (case-sensitive, e.g. ``C123ABC``) and are kept verbatim.
+    """
+    if channel.startswith("#"):
+        return f"channel:{channel[1:].lower()}"
+    return f"channel:{channel}"
+
+
+def _combine_permission(base: str | None, resource: str | None) -> str | None:
+    """Append an optional resource segment to a tool's base permission (M4.8c).
+
+    Returns ``base`` unchanged whenever there is no resource segment (or no base permission at
+    all) — a tool that doesn't override :meth:`BaseTool.resource_permission` keeps today's exact
+    behavior. The combined string is plain, colon-segmented text; RBAC matching
+    (:func:`atlas.governance.rbac.permission_satisfied`) already handles arbitrary segments and
+    trailing ``:*`` wildcards, so nothing in the matcher itself needs to change.
+    """
+    if base is None or resource is None:
+        return base
+    return f"{base}:{resource}"
+
+
+# Minimal well-formedness for a recipient: non-empty local part, "@", non-empty domain. Malformed
+# addresses are rejected at the schema boundary so they can never reach resource_permission().
+_EMAIL_RECIPIENT_RE = re.compile(r"[^@\s]+@[^@\s]+")
+
+
+def _validated_recipient(value: str) -> str:
+    """Shared ``to``-field validator for email tools — rejects addresses with a missing local part
+    or domain (e.g. ``"ab@"``), which would otherwise produce an empty ``domain:`` resource segment
+    that a ``domain:*`` wildcard grant still matches."""
+    if not _EMAIL_RECIPIENT_RE.fullmatch(value):
+        raise ValueError("recipient must be a plain email address (local@domain)")
+    return value
+
+
+def _recipient_domain(recipient: str) -> str:
+    """Lowercased domain portion of an email address (or the whole value, lowercased, if malformed).
+
+    Args reaching this are already validated by :func:`_validated_recipient`, so the fallbacks are
+    defense-in-depth: a value with no ``@`` — or an empty domain like ``"ab@"`` — maps to the full
+    lowercased string, never to an empty segment (which a ``domain:*`` wildcard grant would match).
+    Fail-closed, not fail-open.
+    """
+    domain = recipient.rpartition("@")[2].lower()
+    return domain if domain else recipient.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +251,11 @@ class _SendEmailArgs(BaseModel):
     subject: str = Field(default="", description="Email subject.")
     body: str = Field(default="", description="Email body.")
 
+    @field_validator("to")
+    @classmethod
+    def require_well_formed_address(cls, value: str) -> str:
+        return _validated_recipient(value)
+
 
 class SendEmailTool(BaseTool):
     """Sends an email — an external, irreversible side effect. Must be gated."""
@@ -184,6 +268,11 @@ class SendEmailTool(BaseTool):
 
     def __init__(self, sender: EmailSender | None = None) -> None:
         self._sender = sender
+
+    def resource_permission(self, args: BaseModel) -> str | None:
+        if not isinstance(args, _SendEmailArgs):
+            raise TypeError(f"expected _SendEmailArgs, got {type(args).__name__}")
+        return f"domain:{_recipient_domain(args.to)}"
 
     def run(self, args: BaseModel, *, principal: Principal) -> Any:
         del principal
@@ -217,7 +306,12 @@ class _SlackPostArgs(BaseModel):
                 "channel must be a channel name or ID (C…/G…/#name); "
                 "user/DM targets are not allowed for slack_post"
             )
-        return value
+        if stripped.startswith("#"):
+            # Slack channel names are lowercase-only; normalize at the boundary so the channel the
+            # RBAC segment authorizes (slack_channel_resource_segment) and the channel actually sent
+            # to Slack are the same string — never authorize one casing and post another.
+            return "#" + stripped[1:].lower()
+        return stripped
 
 
 class SlackPostTool(BaseTool):
@@ -231,6 +325,11 @@ class SlackPostTool(BaseTool):
 
     def __init__(self, sender: SlackSender | None = None) -> None:
         self._sender = sender
+
+    def resource_permission(self, args: BaseModel) -> str | None:
+        if not isinstance(args, _SlackPostArgs):
+            raise TypeError(f"expected _SlackPostArgs, got {type(args).__name__}")
+        return slack_channel_resource_segment(args.channel)
 
     def run(self, args: BaseModel, *, principal: Principal) -> Any:
         del principal
@@ -246,6 +345,11 @@ class _GmailSendArgs(BaseModel):
     to: str = Field(min_length=3, description="Recipient address.")
     subject: str = Field(default="", description="Email subject.")
     body: str = Field(default="", description="Email body.")
+
+    @field_validator("to")
+    @classmethod
+    def require_well_formed_address(cls, value: str) -> str:
+        return _validated_recipient(value)
 
 
 class GmailSendTool(BaseTool):
@@ -265,6 +369,11 @@ class GmailSendTool(BaseTool):
     ) -> None:
         self._sender = sender
         self._credential_resolver = credential_resolver
+
+    def resource_permission(self, args: BaseModel) -> str | None:
+        if not isinstance(args, _GmailSendArgs):
+            raise TypeError(f"expected _GmailSendArgs, got {type(args).__name__}")
+        return f"domain:{_recipient_domain(args.to)}"
 
     def run(self, args: BaseModel, *, principal: Principal) -> Any:
         if not isinstance(args, _GmailSendArgs):

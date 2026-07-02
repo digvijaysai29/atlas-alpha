@@ -95,6 +95,30 @@ Hand-written tools (`send_email`, `slack_post`) are unchanged — proxy applies 
 engine path.
 
 
+## Streaming + responder narration (M4.8d)
+
+`POST /chat/stream` and `POST /approve/stream` are the SSE siblings of `/chat` and `/approve` — same
+OIDC/rate-limit spine, same `AgentResponse` shaping, delivered as `open → node*/token* →
+(awaiting_approval | completed) → done`. `/approve/stream` performs the identical ownership check
+`/approve` does (403 before the 409 awaiting-approval check) before any byte streams.
+
+`token` events only appear when `ATLAS_RESPONDER_LLM_ENABLED=true` and `OPENROUTER_API_KEY` is set —
+otherwise the responder is the deterministic summary and the stream is unchanged from M4.7 (just
+`open → node* → completed/awaiting_approval → done`, no `token` events). Enabling it makes an
+OpenRouter call on **every** `/chat`, `/chat/stream`, `/approve`, and `/approve/stream` turn (not just
+streamed ones) — a real per-turn cost/latency addition; a failed call falls back to the deterministic
+summary rather than failing the turn.
+
+```bash
+uv run python scripts/run_api.py &
+curl -N -X POST localhost:8000/chat/stream -H 'X-Atlas-User-Id: alice' \
+  -H 'X-Atlas-Roles: member' -H 'Content-Type: application/json' \
+  -d '{"message":"find the latest roadmap"}'
+curl -N -X POST localhost:8000/approve/stream -H 'X-Atlas-User-Id: alice' \
+  -H 'X-Atlas-Roles: member' -H 'Content-Type: application/json' \
+  -d '{"thread_id":"thr_...","approve":true}'
+```
+
 ## Observability
 
 LangSmith tracing is **env-driven, zero-code**: set `LANGSMITH_TRACING=true` + `LANGSMITH_API_KEY`
@@ -107,7 +131,10 @@ The **audit log** is the system of record: append-only, hash-chained; verify int
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | All roles denied / empty KG-policy | Fresh Postgres `atlas_role_permissions` is **deny-all** (no auto-seed) | `uv run python scripts/manage_policy.py seed` |
+| `slack_post`/`send_email`/`gmail_send` start being denied after upgrading to M4.8c | Postgres was seeded **before** M4.8c with the old bare grants (`tool:slack:post`, etc.); those don't satisfy the now resource-scoped required permissions | `uv run python scripts/manage_policy.py seed` (additive/idempotent — safe to re-run) |
 | `send_email`/`slack_post` fail after approval | Creds set but `DATABASE_URL` unset (no durable audit) | configure Postgres; both are required |
+| Concurrent `/approve` on the same thread returns a mid-stream error instead of 409 when running multiple API workers | The per-thread resume lock is process-local; only same-worker races get the deterministic 409. Duplicate side effects are still prevented by durable audit idempotency (`DATABASE_URL`) | run one API worker, or sticky-route approval endpoints per `thread_id`; a cross-process advisory lock is a planned follow-up |
+| Thread resumed after a policy change executes/denies unexpectedly | Grants were edited while threads sat paused at approval; the executor re-checks the **current** policy at resume time (pre-M4.8c checkpoints re-derive the permission from the tool, fail-closed) | intended behavior — drain or complete in-flight approval threads before tightening grants if you need the old policy to apply |
 | `POST /kg/ingest` → 403 on `scope=org` | Principal lacks `kg:write:org` (admin-only by default) | grant via policy store, or use `scope=personal` |
 | Anyone can spoof identity | Dev header shim exposed without a trusted proxy | configure OIDC (`ATLAS_OIDC_*`) for any real deployment |
 | Rate limits not enforced | Upstash creds unset ⇒ fail-open by design | set `UPSTASH_REDIS_REST_URL`/`TOKEN` |

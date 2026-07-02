@@ -1,0 +1,26 @@
+{
+  "name": "slack_delete_message",
+  "description": "Delete a previously posted Slack message. Irreversible external action.",
+  "schema_version": "1",
+  "risk_tier": "delete",
+  "required_permission": "tool:slack:delete_message",
+  "resource_permission_arg": "channel",
+  "provider": "slack",
+  "required_scopes": ["chat:write"],
+  "endpoint": "https://slack.com/api/chat.delete",
+  "method": "POST",
+  "args": [
+    { "name": "channel", "type": "str", "required": true, "min_length": 1 },
+    { "name": "ts", "type": "str", "required": true, "min_length": 1 }
+  ],
+  "payload": {
+    "channel": { "arg": "channel" },
+    "ts": { "arg": "ts" }
+  },
+  "response": {
+    "channel": { "path": "channel" },
+    "ts": { "path": "ts" },
+    "provider": { "value": "slack" }
+  },
+  "ok_field": "ok"
+}

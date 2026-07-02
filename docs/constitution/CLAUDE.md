@@ -41,8 +41,8 @@ sub-phase is its own branch → PR into `main` → CI must be green.
 | **M4.7** | **SSE streaming** — additive `POST /chat/stream` (`text/event-stream`, via `sse-starlette`) streams a turn's lifecycle (`open → node* → (awaiting_approval \| completed) → done`); same OIDC/rate-limit/identity spine enforced **before** the body; mid-stream failures degrade to a generic `error` event. See [`M4.7_PLAN.md`](../plans/M4.7_PLAN.md) | ✅ **branch `feat/m4.7-sse-streaming`** |
 | **M4.8a** | **Metadata-driven adapter engine** — a trusted JSON `ToolSchema` is loaded at startup and built into a registry-ready `BaseTool` (`adapter_engine.py`); execution still flows through the unchanged executor gate + `GuardedExecutor` + audit. Risk tier stays code-anchored (a schema can't auto-run); tokens are `CredentialResolver`-resolved. **SSRF-hardened egress** (`tool_egress.py`): single-parse `httpx.URL`, https-only/no-userinfo, host + per-tool method/path route allowlist, resolve+validate IP against private/metadata ranges, IP-pinned connect (Host+SNI), redirects disabled. **Reconstructable audit** (schema id/version, destination host, provider, correlation id; no secrets). Schemas-as-code (versioned + CODEOWNERS). Proven by re-expressing `slack_post_as_user` with no behavior change. Off by default. See [`M4.8a_PLAN.md`](../plans/M4.8a_PLAN.md) | ✅ **branch `feat/m4.8a-adapter-engine`** |
 | **M4.8b** | **Proxy-bound egress** — optional forward proxy for schema-tool calls (`ProxyTransport` + `make_adapter_transport`); same in-app `EgressPolicy` guard; direct IP-pinned mode remains default; off unless `ATLAS_ADAPTER_EGRESS_PROXY_URL` set. See [`M4.8b_PLAN.md`](../plans/M4.8b_PLAN.md) | ✅ **implemented** |
-| **M4.8c** | **Resource/argument-aware `ToolPermission`** — replace the raw-string `required_permission` with a structured permission that scopes by resource/argument (e.g. channel/recipient), not just tool name | next |
-| **M4.8d** | **New connector purely via schema** (the N-scaling payoff — e.g. Google Calendar) over the adapter engine; see [`CUSTOM_CONNECTORS.md`](../guides/CUSTOM_CONNECTORS.md); plus `/approve/stream` + token-level streaming | next |
+| **M4.8c** | **Resource/argument-aware `ToolPermission`** — `BaseTool.resource_permission(args)` scopes `required_permission` by channel (`slack_post`) / recipient domain (`send_email`, `gmail_send`), stamped onto `ProposedAction` at proposal time; RBAC matching (`permission_satisfied`) is unchanged. See [`M4.8c_PLAN.md`](../plans/M4.8c_PLAN.md) | ✅ **branch `feat/m4.8c-m4.8d`** |
+| **M4.8d** | **New connector purely via schema** (`slack_delete_message`, Slack `chat.delete`, `DELETE` tier, reusing the existing `chat:write` scope) over the adapter engine; see [`CUSTOM_CONNECTORS.md`](../guides/CUSTOM_CONNECTORS.md); plus **`/approve/stream`** (owner-bound resume streaming) and an OpenRouter-backed LLM responder (primary + fallback chain, mirrors M4.5's extraction pattern) for real token-level streaming. See [`M4.8d_PLAN.md`](../plans/M4.8d_PLAN.md) | ✅ **branch `feat/m4.8c-m4.8d`** |
 | **M4.9+** | OAuth-connector **ingestion** (Gmail/Jira/Calendar) over the same `IngestionService` (pull → PKG) | future |
 
 ## 3. Tech Stack
@@ -133,7 +133,7 @@ Planner denies RBAC-unauthorized actions **early**; executor re-checks **late**;
   `InMemoryPolicyStore` (default, seeded from `ROLE_PERMISSIONS`) or `PostgresPolicyStore` (durable,
   runtime-editable via `scripts/manage_policy.py`). `make_policy_store` selects by `DATABASE_URL`; the
   store is **injected** through `build_graph` into the planner, executor, and KG backends. Tools
-  declare an optional `required_permission` (string; richer `ToolPermission` is a future placeholder).
+  declare an optional `required_permission` (string, optionally resource-scoped — M4.8c below).
   **(M3.5) Hierarchical wildcard grants:** a granted `kg:read:*` satisfies a required `kg:read:org`;
   `tool:*` satisfies any `tool:...`. Matching lives in one place — `rbac.py:permission_satisfied` —
   shared by both `PolicyStore` backends, the Postgres KG SQL filter, and `can_read` (backend parity).
@@ -142,6 +142,12 @@ Planner denies RBAC-unauthorized actions **early**; executor re-checks **late**;
   Enforcement is **defense-in-depth**: deny-early in the planner **and** re-check-late in the executor.
   Authorization is re-evaluated every call — persisted ACLs are never trusted as authz. **An empty
   Postgres policy table is deny-all (fail-closed); seed explicitly — never auto-seed on connect.**
+  **(M4.8c) Resource/argument-aware `ToolPermission`:** a tool may override
+  `BaseTool.resource_permission(args)` to append a segment (e.g. `channel:general`,
+  `domain:company.com`) to its base `required_permission`; `ToolRegistry.propose` computes this
+  **once** and stamps it onto the immutable `ProposedAction`, so the planner and executor's
+  re-check always agree. The matcher itself (`permission_satisfied`) is unchanged — a
+  resource-scoped string is matched by the same hierarchical `:*` wildcard rule.
 - **Knowledge Graph = interface + two backends.** `KnowledgeGraph.query(principal, text, limit)`
   applies `can_read` **before** returning, so unreadable entities never reach the planner/LLM/sources.
   M3.1 adds a durable **`PostgresKnowledgeGraph`** (full-text search) that pushes the RBAC filter
@@ -195,9 +201,9 @@ A change that weakens any of these is a **blocking defect**.
 **Known future-work security items (tracked):** the **dev header shim** (`interface/security.py`) is
 still TRUSTED-NETWORK only — fine for local/dev, but real deployments **must** set `ATLAS_OIDC_*`.
 Fail-closed default `Entity.acl` once untrusted `upsert_entity` write paths exist (no KG write
-endpoint yet, still deferred). Resource/argument-aware `ToolPermission`, org-level thread delegation,
-policy versioning/admin-UI → M4 (enumerated in [`AUTH.md`](../guides/AUTH.md)). (Hierarchical wildcard RBAC landed in M3.5;
-per-principal rate limiting in M3.6.) **M4.1 (PR #22) landed:** `send_email` is a **real** human-gated
+endpoint yet, still deferred). Org-level thread delegation, policy versioning/admin-UI → M4+
+(enumerated in [`AUTH.md`](../guides/AUTH.md)). (Hierarchical wildcard RBAC landed in M3.5;
+per-principal rate limiting in M3.6; resource/argument-aware `ToolPermission` in M4.8c.) **M4.1 (PR #22) landed:** `send_email` is a **real** human-gated
 send (Resend, behind a pluggable `EmailSender`) with **idempotent execution** so an executor replay
 never double-sends — the side-effect rule lives in a reusable execution wrapper (`GuardedExecutor`, not
 the node), keyed by the checkpointed `action_id` via the audit log (`REPLAY_SKIPPED`/`FAILED` events;

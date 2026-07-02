@@ -13,8 +13,10 @@ from atlas.actions import ProposedAction
 from atlas.governance.rbac import (
     Principal,
     can,
+    expand_roles,
     get_current_principal,
     get_effective_permissions,
+    permission_satisfied,
 )
 from atlas.orchestration import build_graph
 from atlas.orchestration.graph import Atlas
@@ -25,7 +27,8 @@ from atlas.tools import ToolRegistry
 from tests.helpers import offline_registry
 
 THREAD: RunnableConfig = {"configurable": {"thread_id": "rbac-test"}}
-MEMBER = Principal(user_id="alice", roles=("member",))  # has tool:send + tool:slack:post
+# has tool:send:* + tool:slack:post:* (M4.8c: resource-scoped wildcards) + tool:calendar:write
+MEMBER = Principal(user_id="alice", roles=("member",))
 GUEST = Principal(user_id="bob", roles=("guest",))  # no tool:send / tool:slack:post
 
 
@@ -52,7 +55,36 @@ def test_default_deny_for_anonymous_and_guest() -> None:
 
 
 def test_role_grant_allows() -> None:
-    assert can(MEMBER, "tool:send") is True
+    assert can(MEMBER, "tool:calendar:write") is True
+
+
+def test_wildcard_grant_satisfies_resource_scoped_permission() -> None:
+    """M4.8c: a member's tool:send:* / tool:slack:post:* wildcard covers any resource segment."""
+    assert can(MEMBER, "tool:send:domain:example.com") is True
+    assert can(MEMBER, "tool:slack:post:channel:general") is True
+
+
+def test_wildcard_grant_satisfies_delete_channel_permission() -> None:
+    """M4.8c parity: member's tool:slack:delete_message:* covers any channel segment."""
+    assert can(MEMBER, "tool:slack:delete_message:channel:general") is True
+    assert can(MEMBER, "tool:slack:delete_message:channel:C123ABC") is True
+
+
+def test_wildcard_grant_does_not_satisfy_bare_unscoped_string() -> None:
+    """A granted "tool:send:*" does not cover the bare "tool:send" itself (no partial-prefix
+    collapse — only the explicit ":*" suffix expands, and it always requires at least one more
+    segment after the colon, per permission_satisfied's documented contract)."""
+    assert can(MEMBER, "tool:send") is False
+
+
+def test_narrowed_grant_restricts_to_one_domain() -> None:
+    """M4.8c real-world example: an operator can grant a single recipient domain instead of the
+    default wildcard, e.g. to stop a role from emailing outside the company — a genuine
+    data-exfiltration control, not just a demo of the string format."""
+    restricted = {"member": frozenset({"tool:gmail:send:domain:company.com"})}
+    granted = expand_roles(("member",), restricted)
+    assert permission_satisfied(granted, "tool:gmail:send:domain:company.com") is True
+    assert permission_satisfied(granted, "tool:gmail:send:domain:evil.example") is False
 
 
 def test_admin_wildcard_grants_everything() -> None:
@@ -78,11 +110,12 @@ def test_effective_permissions_none_principal_is_empty() -> None:
 def test_effective_permissions_expands_role_grants() -> None:
     assert get_effective_permissions(MEMBER) == frozenset(
         {
-            "tool:send",
-            "tool:slack:post",
-            "tool:gmail:send",
+            "tool:send:*",
+            "tool:slack:post:*",
+            "tool:gmail:send:*",
             "tool:calendar:write",
             "tool:slack:post_as_user",
+            "tool:slack:delete_message:*",
             "kg:read:org",
             "kg:read:personal",
         }
@@ -134,6 +167,112 @@ def test_principal_survives_checkpoint_resume() -> None:
     assert final["principal"] == MEMBER
 
 
+def _legacy_executor_state(registry: ToolRegistry) -> tuple[ProposedAction, dict[str, object]]:
+    """An approved send_email action whose ``required_permission`` deserialized to ``None`` —
+    exactly what a checkpoint written before M4.8c looks like after resume."""
+    stamped = registry.propose("send_email", {"to": "a@b.com", "subject": "hi", "body": "x"})
+    legacy = stamped.model_copy(update={"required_permission": None})
+    state = {
+        "principal": MEMBER,
+        "proposed_actions": [legacy],
+        "approved_action_ids": [legacy.action_id],
+    }
+    return legacy, state
+
+
+def test_executor_rederives_permission_for_pre_m48c_actions() -> None:
+    """A policy tightened while a thread was paused at approval must still apply on resume: the
+    executor may not treat a legacy action's ``required_permission=None`` as "nothing required"."""
+    from typing import cast
+
+    from atlas.governance import InMemoryAuditLog, InMemoryPolicyStore
+    from atlas.orchestration.nodes import make_executor_node
+    from atlas.orchestration.state import AgentState
+
+    registry = offline_registry()
+    _, state = _legacy_executor_state(registry)
+    audit = InMemoryAuditLog()
+    # Tightened while paused: members may now only email company.com — b.com must be denied.
+    tightened = InMemoryPolicyStore({"member": frozenset({"tool:send:domain:company.com"})})
+    node = make_executor_node(registry, audit, tightened)
+
+    result = node(cast(AgentState, state))
+
+    assert result["action_results"] == []
+    assert audit.events()[-1].event_type.value == "denied"
+
+
+def test_executor_denies_when_stamped_permission_mismatches_args() -> None:
+    """Args mutated after proposal (the args dict is mutable even on the frozen model) must not
+    ride the originally-stamped grant — the executor re-derives and denies on mismatch."""
+    from typing import cast
+
+    from atlas.governance import InMemoryAuditLog, InMemoryPolicyStore
+    from atlas.orchestration.nodes import make_executor_node
+    from atlas.orchestration.state import AgentState
+
+    registry = offline_registry()
+    action = registry.propose("send_email", {"to": "a@b.com", "subject": "hi", "body": "x"})
+    action.args["to"] = "attacker@evil.example"  # stamped permission still says domain:b.com
+    audit = InMemoryAuditLog()
+    node = make_executor_node(registry, audit, InMemoryPolicyStore())
+    state = {
+        "principal": MEMBER,
+        "proposed_actions": [action],
+        "approved_action_ids": [action.action_id],
+    }
+
+    result = node(cast(AgentState, state))
+
+    assert result["action_results"] == []
+    assert audit.events()[-1].event_type.value == "denied"
+
+
+def _unstamped_plan(
+    _request: str, _registry: ToolRegistry, _context: object
+) -> list[ProposedAction]:
+    # A hand-built action (no registry.propose stamping): required_permission is None.
+    from atlas.actions import RiskTier
+
+    return [
+        ProposedAction(
+            tool="send_email",
+            args={"to": "a@b.com", "subject": "hi", "body": "x"},
+            risk_tier=RiskTier.SEND,
+        )
+    ]
+
+
+def test_planner_derives_permission_for_unstamped_actions() -> None:
+    """None must mean "derive it", not "nothing required": a guest's hand-built send_email action
+    is denied at planning instead of being surfaced for human approval."""
+    atlas = _fresh(_unstamped_plan)
+    result = atlas.graph.invoke(initial_state("email a@b.com", principal=GUEST), config=THREAD)
+
+    assert "__interrupt__" not in result
+    assert result.get("action_results") == []
+    event_types = [e.event_type.value for e in atlas.audit.events()]
+    assert "denied" in event_types
+
+
+def test_executor_rederived_permission_still_allows_authorized_legacy_action() -> None:
+    """The fallback must not over-deny: under the default policy the same legacy action runs."""
+    from typing import cast
+
+    from atlas.governance import InMemoryAuditLog, InMemoryPolicyStore
+    from atlas.orchestration.nodes import make_executor_node
+    from atlas.orchestration.state import AgentState
+
+    registry = offline_registry()
+    _, state = _legacy_executor_state(registry)
+    node = make_executor_node(registry, InMemoryAuditLog(), InMemoryPolicyStore())
+
+    result = node(cast(AgentState, state))
+
+    assert len(result["action_results"]) == 1
+    assert result["action_results"][0].ok is True
+
+
 def _slack_plan(_request: str, registry: ToolRegistry, _context: object) -> list[ProposedAction]:
     return [registry.propose("slack_post", {"channel": "#general", "text": "hi"})]
 
@@ -154,3 +293,131 @@ def test_member_reaches_approval_for_slack_post() -> None:
     assert "__interrupt__" in result
     event_types = [e.event_type.value for e in atlas.audit.events()]
     assert "denied" not in event_types
+
+
+def _other_channel_plan(
+    _request: str, registry: ToolRegistry, _context: object
+) -> list[ProposedAction]:
+    return [registry.propose("slack_post", {"channel": "#other", "text": "hi"})]
+
+
+def test_channel_scoped_grant_denies_a_different_channel_before_approval() -> None:
+    """M4.8c end-to-end: a role granted only "tool:slack:post:channel:general" (no wildcard) may
+    post to #general but is denied — before ever reaching human approval — for any other channel."""
+    from atlas.governance.policy import InMemoryPolicyStore
+
+    narrow_policy = InMemoryPolicyStore({"member": frozenset({"tool:slack:post:channel:general"})})
+    atlas = build_graph(
+        plan_fn=_slack_plan,
+        registry=offline_registry(),
+        policy=narrow_policy,
+        checkpointer=InMemorySaver(serde=atlas_serde()),
+    )
+    result = atlas.graph.invoke(
+        initial_state("post to slack", principal=MEMBER),
+        config={"configurable": {"thread_id": "t1"}},
+    )
+    assert "__interrupt__" in result  # #general is granted -> normal approval flow
+
+    atlas_denied = build_graph(
+        plan_fn=_other_channel_plan,
+        registry=offline_registry(),
+        policy=narrow_policy,
+        checkpointer=InMemorySaver(serde=atlas_serde()),
+    )
+    denied_result = atlas_denied.graph.invoke(
+        initial_state("post to slack", principal=MEMBER),
+        config={"configurable": {"thread_id": "t2"}},
+    )
+    assert "__interrupt__" not in denied_result  # #other is not granted -> denied at planning
+    assert denied_result.get("action_results") == []
+    event_types = [e.event_type.value for e in atlas_denied.audit.events()]
+    assert "denied" in event_types
+
+
+def _delete_general_plan(
+    _request: str, registry: ToolRegistry, _context: object
+) -> list[ProposedAction]:
+    return [registry.propose("slack_delete_message", {"channel": "#general", "ts": "1.0"})]
+
+
+def _delete_other_channel_plan(
+    _request: str, registry: ToolRegistry, _context: object
+) -> list[ProposedAction]:
+    return [registry.propose("slack_delete_message", {"channel": "#other", "ts": "1.0"})]
+
+
+def _delete_message_registry() -> ToolRegistry:
+    from atlas.adapter_engine import AdapterEngine, load_schema, packaged_schema_dir
+    from atlas.config import Settings
+    from atlas.governance.credentials import (
+        CredentialResolver,
+        InMemoryCredentialVault,
+        OAuthProvider,
+        StoredCredential,
+    )
+    from atlas.integrations.oauth import SLACK_USER_CHAT_WRITE, build_credential_resolver
+    from atlas.tool_egress import FakeTransport
+
+    allowlist = frozenset({"slack.com"})
+    principal = Principal(user_id="alice", roles=("member",), org_id="acme")
+    vault = InMemoryCredentialVault()
+    vault.put(
+        principal,
+        OAuthProvider.SLACK,
+        StoredCredential(
+            provider=OAuthProvider.SLACK,
+            scopes=(SLACK_USER_CHAT_WRITE,),
+            access_token="xoxp-tok",
+        ),
+    )
+    resolver: CredentialResolver = build_credential_resolver(vault, Settings())
+    engine = AdapterEngine(
+        credential_resolver=resolver,
+        transport=FakeTransport(allowlist),
+        allowlist=allowlist,
+    )
+    registry = ToolRegistry()
+    registry.register(
+        engine.build_tool(
+            load_schema(packaged_schema_dir() / "slack" / "slack_delete_message.json")
+        )
+    )
+    return registry
+
+
+def test_delete_channel_scoped_grant_denies_a_different_channel_before_approval() -> None:
+    """End-to-end: a role granted only tool:slack:delete_message:channel:general may delete in
+    #general but is denied — before approval — for any other channel (schema-driven tool)."""
+    from atlas.governance.policy import InMemoryPolicyStore
+
+    narrow_policy = InMemoryPolicyStore(
+        {"member": frozenset({"tool:slack:delete_message:channel:general"})}
+    )
+    registry = _delete_message_registry()
+    atlas = build_graph(
+        plan_fn=_delete_general_plan,
+        registry=registry,
+        policy=narrow_policy,
+        checkpointer=InMemorySaver(serde=atlas_serde()),
+    )
+    result = atlas.graph.invoke(
+        initial_state("delete slack message", principal=MEMBER),
+        config={"configurable": {"thread_id": "t-del-1"}},
+    )
+    assert "__interrupt__" in result
+
+    atlas_denied = build_graph(
+        plan_fn=_delete_other_channel_plan,
+        registry=registry,
+        policy=narrow_policy,
+        checkpointer=InMemorySaver(serde=atlas_serde()),
+    )
+    denied_result = atlas_denied.graph.invoke(
+        initial_state("delete slack message", principal=MEMBER),
+        config={"configurable": {"thread_id": "t-del-2"}},
+    )
+    assert "__interrupt__" not in denied_result
+    assert denied_result.get("action_results") == []
+    event_types = [e.event_type.value for e in atlas_denied.audit.events()]
+    assert "denied" in event_types

@@ -93,7 +93,7 @@ def test_in_memory_store_effective_permissions() -> None:
 
 def test_in_memory_store_can() -> None:
     store = InMemoryPolicyStore()
-    assert store.can(MEMBER, "tool:send") is True
+    assert store.can(MEMBER, "tool:calendar:write") is True
     assert store.can(GUEST, "tool:send") is False
     assert store.can(ADMIN, "anything:at:all") is True  # wildcard
     assert store.can(GUEST, None) is True  # no permission required
@@ -138,8 +138,10 @@ def test_injected_policy_can_deny_an_otherwise_allowed_action() -> None:
 
 def test_injected_policy_can_allow_a_custom_role() -> None:
     # A role unknown to the defaults ("agent") is allowed by the injected store → reaches approval.
+    # send_email's stamped permission is resource-scoped by recipient domain (M4.8c), so the grant
+    # needs the wildcard to cover any recipient, same as the default "member" role does.
     result = _run(
-        InMemoryPolicyStore({"agent": frozenset({"tool:send"})}),
+        InMemoryPolicyStore({"agent": frozenset({"tool:send:*"})}),
         Principal(user_id="z", roles=("agent",)),
         "allow",
     )

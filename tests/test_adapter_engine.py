@@ -65,7 +65,7 @@ def _engine(
 
 
 def _slack_schema_path() -> Path:
-    return packaged_schema_dir() / "slack_post_as_user.json"
+    return packaged_schema_dir() / "slack" / "slack_post_as_user.json"
 
 
 def _base_schema(**overrides: object) -> ToolSchema:
@@ -90,6 +90,89 @@ def test_packaged_slack_schema_matches_handwritten_metadata() -> None:
     assert tool.name == handwritten.name
     assert tool.risk_tier == handwritten.risk_tier == RiskTier.SEND
     assert tool.required_permission == handwritten.required_permission == "tool:slack:post_as_user"
+
+
+# --- slack_delete_message (M4.8d — new connector purely via schema) --------
+def _delete_message_schema_path() -> Path:
+    return packaged_schema_dir() / "slack" / "slack_delete_message.json"
+
+
+def test_slack_delete_message_schema_loads_and_validates() -> None:
+    schema = load_schema(_delete_message_schema_path())
+    assert schema.name == "slack_delete_message"
+    assert schema.risk_tier is RiskTier.DELETE
+    assert schema.required_permission == "tool:slack:delete_message"
+    assert schema.resource_permission_arg == "channel"
+    assert schema.provider.value == "slack"
+    assert schema.required_scopes == ("chat:write",)  # reuses slack_post_as_user's existing scope
+    assert schema.endpoint == "https://slack.com/api/chat.delete"
+
+
+def test_slack_delete_message_requires_approval() -> None:
+    # DELETE is not READ, so it stays gated exactly like every other non-read schema tool.
+    schema = load_schema(_delete_message_schema_path())
+    assert requires_approval(schema.risk_tier) is True
+
+
+def test_slack_delete_message_builds_via_adapter_engine() -> None:
+    schema = load_schema(_delete_message_schema_path())
+    tool = _engine(FakeTransport(_ALLOWLIST)).build_tool(schema)
+    assert tool.name == "slack_delete_message"
+    assert tool.risk_tier is RiskTier.DELETE
+    assert tool.required_permission == "tool:slack:delete_message"
+
+
+def test_slack_delete_message_proposal_and_execution() -> None:
+    registry = ToolRegistry()
+    transport = FakeTransport(_ALLOWLIST, response={"ok": True, "channel": "C1", "ts": "123.45"})
+    tool = _engine(transport, _resolver_with_slack_token()).build_tool(
+        load_schema(_delete_message_schema_path())
+    )
+    registry.register(tool)
+    action = registry.propose("slack_delete_message", {"channel": "C1", "ts": "123.45"})
+    assert action.risk_tier is RiskTier.DELETE
+    assert action.required_permission == "tool:slack:delete_message:channel:C1"
+    result = registry.execute(action, _PRINCIPAL)
+    assert result.ok is True
+    assert result.output == {"channel": "C1", "ts": "123.45", "provider": "slack"}
+    assert transport.calls[0][1] == {"channel": "C1", "ts": "123.45"}  # flat payload, no nesting
+
+
+def test_slack_delete_message_permission_normalizes_channel_name() -> None:
+    schema = load_schema(_delete_message_schema_path())
+    tool = _engine(FakeTransport(_ALLOWLIST)).build_tool(schema)
+    registry = ToolRegistry()
+    registry.register(tool)
+    action = registry.propose("slack_delete_message", {"channel": "#General", "ts": "123.45"})
+    assert action.required_permission == "tool:slack:delete_message:channel:general"
+
+
+def test_resource_permission_arg_must_be_required_str() -> None:
+    # An optional resource arg could arrive as None at permission-derivation time; reject at load.
+    with pytest.raises(ValidationError, match="required str arg"):
+        _base_schema(
+            resource_permission_arg="text",
+            args=[{"name": "text", "type": "str", "required": False}],
+        )
+
+
+def test_resource_segment_uses_arg_name_for_non_channel_args() -> None:
+    # A non-Slack resource arg is stamped under its own kind, verbatim — never as ``channel:``.
+    schema = _base_schema(
+        resource_permission_arg="repo",
+        args=[{"name": "repo", "type": "str"}],
+        payload={"repo": {"arg": "repo"}},
+    )
+    tool = _engine(FakeTransport(_ALLOWLIST)).build_tool(schema)
+    registry = ToolRegistry()
+    registry.register(tool)
+    action = registry.propose("x_tool", {"repo": "Acme/Site"})
+    assert action.required_permission == "tool:test:repo:Acme/Site"
+
+
+def test_load_schema_dir_includes_both_bundled_schemas() -> None:
+    schemas = {s.name for s in load_schema_dir(packaged_schema_dir())}
+    assert schemas == {"slack_post_as_user", "slack_delete_message"}
 
 
 def test_proposed_action_equivalent_to_handwritten() -> None:

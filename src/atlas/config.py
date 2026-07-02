@@ -92,6 +92,21 @@ class Settings(BaseSettings):
     extraction_max_entities: int = Field(default=64, alias="ATLAS_EXTRACTION_MAX_ENTITIES")
     extraction_max_relations: int = Field(default=128, alias="ATLAS_EXTRACTION_MAX_RELATIONS")
 
+    # --- Responder narration (M4.8d — OpenRouter-backed LLM responder) -----
+    # When ATLAS_RESPONDER_LLM_ENABLED is true AND OPENROUTER_API_KEY is set (see
+    # ``responder_llm_active``), the responder node asks an LLM — via OpenRouter, primary model +
+    # fallback chain, the same pattern as extraction above — to narrate the turn's already-computed,
+    # already-RBAC-filtered facts (action results, sources, confidence) into prose. Otherwise the
+    # deterministic string-formatted summary is used, so CI and the eval gate stay hermetic. The model
+    # never influences authorization, risk tier, or approval — those are already final by the time it
+    # runs — and any LLM failure falls back to the deterministic summary rather than failing the turn.
+    responder_llm_enabled: bool = Field(default=False, alias="ATLAS_RESPONDER_LLM_ENABLED")
+    # OpenRouter slug (dot form, e.g. ``anthropic/claude-opus-4.8``) — NOT the hyphenated
+    # Anthropic-direct model id used by ATLAS_MODEL above.
+    responder_model: str = Field(default="anthropic/claude-opus-4.8", alias="ATLAS_RESPONDER_MODEL")
+    # Comma-separated OpenRouter model ids tried in order when the primary fails. Blank => no fallbacks.
+    responder_fallback_models: str = Field(default="", alias="ATLAS_RESPONDER_FALLBACK_MODELS")
+
     # --- Adapter engine (M4.8a — metadata-driven tools) --------------------
     # When ATLAS_ADAPTER_ENGINE_ENABLED is true, trusted, version-controlled JSON tool schemas are
     # loaded at startup and registered as tools (replacing their hand-written twins). The schema files
@@ -378,6 +393,21 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def validate_responder_llm_config(self) -> Self:
+        """Enabling the responder LLM requires an OpenRouter key (all-or-nothing, mirrors extraction)."""
+        if self.responder_llm_enabled:
+            if not _nonempty_secret(self.openrouter_api_key):
+                raise ValueError(
+                    "ATLAS_RESPONDER_LLM_ENABLED is true but OPENROUTER_API_KEY is not set. "
+                    "Provide a key or leave the responder LLM disabled (the deterministic default)."
+                )
+            if not self.responder_model.strip():
+                raise ValueError(
+                    "ATLAS_RESPONDER_MODEL must not be blank when the responder LLM is enabled."
+                )
+        return self
+
+    @model_validator(mode="after")
     def validate_email_config(self) -> Self:
         """Email creds must be all set or all unset — mirror validate_rate_limit_config."""
         email_fields = {
@@ -473,6 +503,22 @@ class Settings(BaseSettings):
         """The configured fallback model ids, in order (comma-separated; blanks dropped)."""
         return tuple(
             model.strip() for model in self.extraction_fallback_models.split(",") if model.strip()
+        )
+
+    @property
+    def responder_llm_active(self) -> bool:
+        """True when the responder should narrate turns via an LLM (flag on AND OpenRouter key set).
+
+        When False the responder uses the deterministic string-formatted summary, so CI and the
+        deterministic eval gate stay hermetic (byte-for-byte the pre-M4.8d responder).
+        """
+        return self.responder_llm_enabled and self.openrouter_configured
+
+    @property
+    def responder_fallback_model_list(self) -> tuple[str, ...]:
+        """The configured fallback model ids, in order (comma-separated; blanks dropped)."""
+        return tuple(
+            model.strip() for model in self.responder_fallback_models.split(",") if model.strip()
         )
 
     @property

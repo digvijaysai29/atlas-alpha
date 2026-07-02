@@ -44,7 +44,7 @@ from atlas.tool_egress import (
     Transport,
     assert_host_allowed,
 )
-from atlas.tools import BaseTool
+from atlas.tools import BaseTool, slack_channel_resource_segment
 
 # Schemas may declare an auto-run ``READ`` tier ONLY for tool names on this code-reviewed allowlist.
 # Empty => no schema may be READ, so every schema-built tool is approval-gated. Lowering a tool to
@@ -135,6 +135,10 @@ class ToolSchema(BaseModel):
     # is explicitly code-allowlisted (see _READ_TIER_ALLOWLIST), enforced in AdapterEngine.build_tool.
     risk_tier: RiskTier = RiskTier.SEND
     required_permission: str | None = None
+    # When set, :meth:`_SchemaTool.resource_permission` appends a ``<arg>:<value>`` segment derived
+    # from this arg (must name a declared *required* ``str`` arg — validated below). A ``channel``
+    # arg additionally gets Slack channel-name normalization.
+    resource_permission_arg: str | None = None
     provider: OAuthProvider
     required_scopes: tuple[str, ...] = ()
     endpoint: str = Field(min_length=1)
@@ -153,6 +157,17 @@ class ToolSchema(BaseModel):
                 raise ToolSchemaError(
                     f"payload field '{key}' references undeclared arg '{field.arg}'"
                 )
+        if self.resource_permission_arg is not None:
+            arg_name = self.resource_permission_arg
+            if arg_name not in declared:
+                raise ToolSchemaError(
+                    f"resource_permission_arg '{arg_name}' references undeclared arg"
+                )
+            arg_spec = next(a for a in self.args if a.name == arg_name)
+            if arg_spec.type != "str" or not arg_spec.required:
+                raise ToolSchemaError(
+                    f"resource_permission_arg '{arg_name}' must name a declared required str arg"
+                )
         return self
 
 
@@ -162,15 +177,24 @@ def load_schema(path: Path) -> ToolSchema:
     return ToolSchema.model_validate(raw)
 
 
+def iter_schema_paths(directory: Path) -> list[Path]:
+    """Return every ``*.json`` schema under ``directory``, recursively (sorted for deterministic order).
+
+    Schemas are grouped in provider subfolders (e.g. ``slack/``, ``google/``); see
+    ``docs/guides/TOOL_SCHEMAS.md``.
+    """
+    return sorted(directory.glob("**/*.json"))
+
+
 def load_schema_dir(directory: Path) -> list[ToolSchema]:
-    """Load every ``*.json`` schema in ``directory`` (sorted for deterministic order).
+    """Load every ``*.json`` schema under ``directory``, recursively (sorted for deterministic order).
 
     Fail-closed when the adapter engine is enabled: a missing directory or one with no schemas
     raises :class:`ToolSchemaError` so startup cannot silently keep hand-written tools on legacy egress.
     """
     if not directory.is_dir():
         raise ToolSchemaError(f"schema directory does not exist: {directory}")
-    paths = sorted(directory.glob("*.json"))
+    paths = iter_schema_paths(directory)
     if not paths:
         raise ToolSchemaError(f"schema directory contains no *.json schemas: {directory}")
     return [load_schema(path) for path in paths]
@@ -257,6 +281,20 @@ class _SchemaTool(BaseTool):
         # Destination host derived from the same parser the egress uses (no parser differential).
         self._destination_host = (httpx.URL(schema.endpoint).host or "").lower()
 
+    def resource_permission(self, args: BaseModel) -> str | None:
+        arg_name = self._schema.resource_permission_arg
+        if arg_name is None:
+            return None
+        if not isinstance(args, self.ArgsSchema):
+            raise TypeError(f"expected {self.ArgsSchema.__name__}, got {type(args).__name__}")
+        value = getattr(args, arg_name)
+        # ``channel`` args get Slack's channel-name normalization (``#General`` -> ``general``);
+        # any other resource arg is stamped verbatim under its own kind, e.g. ``repo:<value>``,
+        # so a non-Slack schema is never mislabeled as channel-scoped.
+        if arg_name == "channel":
+            return slack_channel_resource_segment(value)
+        return f"{arg_name}:{value}"
+
     def audit_metadata(self) -> dict[str, Any]:
         """Non-secret context the executor folds into the audit event (reconstructability).
 
@@ -315,8 +353,8 @@ class AdapterEngine:
         )
 
     def build_tools_from_dir(self, directory: Path) -> list[BaseTool]:
-        """Build every ``*.json`` schema in ``directory`` (sorted for deterministic order)."""
-        return [self.build_tool(load_schema(path)) for path in sorted(directory.glob("*.json"))]
+        """Build every ``*.json`` schema under ``directory``, recursively (sorted for deterministic order)."""
+        return [self.build_tool(load_schema(path)) for path in iter_schema_paths(directory)]
 
     def _validate_security(self, schema: ToolSchema) -> None:
         # 1. A schema may not declare auto-run READ unless the tool name is code-allowlisted.

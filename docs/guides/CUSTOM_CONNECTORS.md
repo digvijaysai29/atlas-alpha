@@ -2,14 +2,14 @@
 
 A **custom connector** is an outbound tool (e.g. "post a Slack message", "create a calendar event")
 that the agent can propose. Instead of writing Python for each one, you drop a small **JSON schema**
-into `src/atlas/tool_schemas/` and the **adapter engine** turns it into a real tool — with all the
+into `src/atlas/tool_schemas/<provider>/` and the **adapter engine** turns it into a real tool — with all the
 security controls (approval gate, RBAC, audit, SSRF-safe egress) applied automatically.
 
 > You write *what* the tool calls. The engine enforces *how* it is allowed to run.
 
 ## TL;DR
 
-1. Add a `*.json` file under `src/atlas/tool_schemas/`.
+1. Add a `*.json` file under `src/atlas/tool_schemas/<provider>/` (see [`TOOL_SCHEMAS.md`](./TOOL_SCHEMAS.md)).
 2. Add the endpoint host to the egress allowlist (`ATLAS_ADAPTER_EGRESS_ALLOWLIST`).
 3. Turn the engine on (`ATLAS_ADAPTER_ENGINE_ENABLED=true`).
 4. Open a PR — schema files are **code** (CODEOWNERS-reviewed).
@@ -18,7 +18,7 @@ No Python, no redeploy logic, no hand-rolled HTTP.
 
 ## Example schema
 
-This is the bundled `slack_post_as_user.json`:
+This is the bundled `slack/slack_post_as_user.json`:
 
 ```json
 {
@@ -59,6 +59,7 @@ This is the bundled `slack_post_as_user.json`:
 | `schema_version` | Bump when you change the schema (logged in the audit trail). |
 | `risk_tier` | `read` / `write` / `send` / `delete` / `pay`. Defaults to `send`. A schema **cannot** declare an auto-run `read` (that needs a code change), so every connector is human-approval-gated. |
 | `required_permission` | RBAC permission a caller must hold (e.g. `tool:slack:post_as_user`). **Required** for any non-`read` tool. |
+| `resource_permission_arg` | Optional: name of a declared **required** `str` arg whose value becomes a `<arg>:<value>` resource segment appended to `required_permission` (e.g. `"channel"` → `tool:x:channel:<value>`, `"repo"` → `tool:x:repo:<value>`). A `channel` arg additionally gets Slack channel-name normalization (`#General` → `general`). Grants must then use the `:*` wildcard or a resource-scoped form — the bare `required_permission` string no longer satisfies the check (see [AUTH.md](./AUTH.md)). |
 | `provider` | OAuth provider whose per-user token is used (`google`, `slack`). |
 | `required_scopes` | OAuth scopes the token must carry, else the call fails closed. |
 | `endpoint` | Full `https://` URL. Its **host must be on the egress allowlist** and its host+port+path become the only route this tool may hit. |
@@ -83,7 +84,7 @@ Every schema-built tool runs through the **unchanged** execution gate:
 
 ## Adding one — step by step
 
-1. **Write the schema** under `src/atlas/tool_schemas/<name>.json` (copy the example above).
+1. **Write the schema** under `src/atlas/tool_schemas/<provider>/<name>.json` (copy the example above).
 2. **Allowlist the host:** add the endpoint host to `ATLAS_ADAPTER_EGRESS_ALLOWLIST` (comma-separated).
 3. **Connect the provider:** the caller must have linked the `provider` via OAuth (see
    [`AUTH.md`](./AUTH.md)) with the `required_scopes`.
@@ -96,6 +97,21 @@ Every schema-built tool runs through the **unchanged** execution gate:
 - **Forward-proxy egress** — set `ATLAS_ADAPTER_EGRESS_PROXY_URL` (and optional static proxy auth) when
   corporate policy requires a central gateway. Direct IP-pinned egress remains the default. See
   [`RUNBOOK.md`](./RUNBOOK.md#adapter-engine--egress-proxy-m48a--m48b).
+
+## A second example: a new connector with zero code (M4.8d)
+
+`slack_delete_message` (`chat.delete`) is a real, bundled second schema — added with **no Python
+changes at all**, proving the "just add JSON" story end-to-end:
+
+- Reuses the `slack` provider and the `chat:write` scope already granted for `slack_post_as_user` —
+  no new OAuth wiring, no reconnect required for already-connected users.
+- `slack.com` was already on the default egress allowlist.
+- Uses `"risk_tier": "delete"` — schemas aren't limited to `send`; any non-`read` tier works the same
+  way (still approval-gated, still requires `required_permission`).
+- Declares `resource_permission_arg: "channel"`, so the effective permission is channel-scoped
+  (`tool:slack:delete_message:channel:<name-or-id>`). Roles need the seeded wildcard
+  `tool:slack:delete_message:*` or a channel-scoped grant — a bare `tool:slack:delete_message`
+  grant will not pass RBAC.
 
 ## Limits today (M4.8a)
 

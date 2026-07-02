@@ -13,6 +13,7 @@ Security invariants enforced here:
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable, Iterable, Sequence
 from typing import Any
@@ -20,16 +21,19 @@ from typing import Any
 from langchain_core.messages import AIMessage, AnyMessage
 from langgraph.types import interrupt
 
-from atlas.actions import ApprovalDecision, ProposedAction, requires_approval
+from atlas.actions import ActionResult, ApprovalDecision, ProposedAction, requires_approval
 from atlas.config import Settings, get_settings
 from atlas.governance import AuditLog, PolicyStore
 from atlas.governance.audit import AuditToolContext
-from atlas.governance.confidence import collect_sources, score_confidence
+from atlas.governance.confidence import Source, collect_sources, score_confidence
 from atlas.governance.rbac import get_current_principal
 from atlas.knowledge.interfaces import Entity, KnowledgeGraph
+from atlas.orchestration.responder_llm import ResponderNarrator, make_responder_llm
 from atlas.orchestration.state import AgentState
 from atlas.execution import GuardedExecutor
-from atlas.tools import ToolRegistry
+from atlas.tools import BaseTool, ToolRegistry
+
+logger = logging.getLogger("atlas.orchestration")
 
 # A planning strategy turns a user request + registry + RBAC-scoped knowledge into proposed actions.
 PlanFn = Callable[[str, ToolRegistry, Sequence[Entity]], list[ProposedAction]]
@@ -159,6 +163,26 @@ def default_plan_fn(settings: Settings | None = None) -> PlanFn:
 # ---------------------------------------------------------------------------
 # Nodes
 # ---------------------------------------------------------------------------
+def _required_permission_for(action: ProposedAction, tool: BaseTool) -> str | None:
+    """Fail-closed resolution of the RBAC permission an action requires (planner + executor).
+
+    Always re-derives from the tool + the action's args via the exact combination ``propose()``
+    used, then reconciles with the stamped value:
+
+    - stamped is ``None`` (a pre-M4.8c checkpoint, or an action built outside ``propose()``) →
+      the derived value stands in, so ``None`` is never mistaken for "nothing required";
+    - stamped differs from derived → the args no longer match the permission they were stamped
+      under (post-proposal mutation of the args dict) → raise, and the caller denies.
+
+    Raises on invalid args too — any failure here must deny, never run.
+    """
+    derived = tool.permission_for(tool.ArgsSchema.model_validate(action.args))
+    stamped = action.required_permission
+    if stamped is not None and stamped != derived:
+        raise ValueError(f"stamped permission {stamped!r} != args-derived {derived!r}")
+    return derived
+
+
 def make_planner_node(
     plan_fn: PlanFn,
     registry: ToolRegistry,
@@ -177,7 +201,18 @@ def make_planner_node(
         authorized: list[ProposedAction] = []
         for action in proposed:
             audit.proposed(action)
-            required = registry.get(action.tool).required_permission
+            # M4.8c: resolve the (optionally resource-scoped) permission fail-closed. A plan_fn
+            # normally stamps it via ToolRegistry.propose, but an action built by hand (custom
+            # plan_fn, injected state) may carry None or reference an unknown tool — those must be
+            # denied here, before they can ever be surfaced for human approval.
+            try:
+                tool = registry.get(action.tool)
+                required = _required_permission_for(action, tool)
+            except Exception:  # noqa: BLE001 - security gate: any failure must deny, not crash
+                audit.denied(
+                    action, principal.user_id, reason="could not resolve required permission"
+                )
+                continue
             if not policy.can(principal, required):
                 audit.denied(action, principal.user_id, reason=f"missing permission: {required}")
                 continue
@@ -222,13 +257,35 @@ def make_executor_node(
         approved = set(state.get("approved_action_ids") or [])
         results = []
         for action in state.get("proposed_actions") or []:
-            tool = registry.get(action.tool)
+            try:
+                tool = registry.get(action.tool)
+            except KeyError:
+                # An action for an unregistered tool (injected state / stale checkpoint) is denied,
+                # not crashed on — the rest of the turn's actions still execute.
+                audit.denied(
+                    action,
+                    principal.user_id,
+                    reason="unknown tool",
+                    extra=AuditToolContext(principal=principal.user_id),
+                )
+                continue
             # Non-secret context (schema id/version, destination host, provider, principal) folded into
             # every audit event for this action so the generated tool action is reconstructable later.
             meta = AuditToolContext(**tool.audit_metadata(), principal=principal.user_id)
             # RBAC re-check (defense-in-depth): never run a tool the principal isn't permitted to use,
-            # even if it somehow reached the executor.
-            required = tool.required_permission
+            # even if it somehow reached the executor. _required_permission_for re-derives from the
+            # args and reconciles with the stamped value, so a None (pre-M4.8c checkpoint) is never
+            # read as "nothing required" and args mutated after proposal can't ride a stale grant.
+            try:
+                required = _required_permission_for(action, tool)
+            except Exception:  # noqa: BLE001 - security gate: any failure must deny, not crash
+                audit.denied(
+                    action,
+                    principal.user_id,
+                    reason="could not resolve required permission",
+                    extra=meta,
+                )
+                continue
             if not policy.can(principal, required):
                 audit.denied(
                     action, principal.user_id, reason=f"missing permission: {required}", extra=meta
@@ -244,7 +301,22 @@ def make_executor_node(
     return executor_node
 
 
-def make_responder_node() -> Callable[[AgentState], dict[str, Any]]:
+def make_responder_node(
+    settings: Settings | None = None,
+    *,
+    responder_llm: ResponderNarrator | None = None,
+) -> Callable[[AgentState], dict[str, Any]]:
+    """Build the responder node.
+
+    ``responder_llm`` overrides the settings-based factory (test injection); otherwise
+    :func:`~atlas.orchestration.responder_llm.make_responder_llm` decides from ``settings`` — an
+    OpenRouter-backed narrator when configured + enabled, ``None`` otherwise. When there is no
+    narrator the responder is the deterministic string-formatted summary, byte-for-byte the
+    pre-M4.8d behavior (so CI and the eval gate stay hermetic by default).
+    """
+    settings = settings or get_settings()
+    narrator = responder_llm if responder_llm is not None else make_responder_llm(settings)
+
     def responder_node(state: AgentState) -> dict[str, Any]:
         proposed = state.get("proposed_actions") or []
         results = state.get("action_results") or []
@@ -252,9 +324,20 @@ def make_responder_node() -> Callable[[AgentState], dict[str, Any]]:
         kg_context = state.get("kg_context") or []
         # Confidence factors execution success + whether the answer was grounded in knowledge.
         confidence = score_confidence(results, kg_context)
-        summary = _summarize(proposed, results, rejected)
         # Structured provenance: tool outputs (from the results) + the RBAC-scoped KG entities used.
         sources = collect_sources(results, kg_context)
+        # The deterministic summary is always computed first (cheap, pure) — it is both the default
+        # responder text AND the fallback if the LLM narrator fails below. All authorization-relevant
+        # decisions (risk tier, RBAC, approval) are already final by this point; the narrator below
+        # only rephrases them, it never re-decides anything.
+        summary = _summarize(proposed, results, rejected)
+        if narrator is not None:
+            request = _last_user_text(state.get("messages") or [])
+            facts = _facts_block(summary, sources)
+            try:
+                summary = narrator.respond(request, facts)
+            except Exception:
+                logger.exception("Responder LLM failed; falling back to the deterministic summary")
         return {
             "messages": [AIMessage(content=summary)],
             "confidence": confidence,
@@ -316,9 +399,23 @@ def _parse_decisions(raw: Any, valid_ids: set[str]) -> list[ApprovalDecision]:
     return decisions
 
 
+def _facts_block(summary: str, sources: Sequence[Source]) -> str:
+    """Render the turn's already-decided facts as plain text for the responder LLM prompt (M4.8d).
+
+    Reuses the same deterministic summary :func:`_summarize` already produced — the LLM only
+    rephrases what already happened; it never decides or adds to it. ``sources`` is the RBAC-filtered
+    provenance list, already safe to surface.
+    """
+    lines = [summary]
+    if sources:
+        lines.append("Sources used:")
+        lines.extend(f"- {source.label or source.ref}" for source in sources)
+    return "\n".join(lines)
+
+
 def _summarize(
     proposed: list[ProposedAction],
-    results: list[Any],
+    results: list[ActionResult],
     rejected: set[str],
 ) -> str:
     if not proposed:
